@@ -1,27 +1,34 @@
-# Finalized character assets
+# Character asset contract
 
-The app uses one consistent character identity and ivory-white outfit direction.
+The UI is wired to the finalized Kyunghee character set through `asset_manager.py`.
 
-## Asset roles
+## Runtime file names
 
-- `master_face.png` — canonical face / tray icon / compact neutral toast (**committed**)
-- `default_full.png` — page 1 main/default playful pose
-- `cheer_full.png` — page 2 stats / fighting pose
-- `cute_cheer.png` — short praise / return / light encouragement
-- `nag.png` — repeated snooze / 18:30+ late-work nagging
-- `worry.png` — first snooze / long-session concern / 17:00 wind-down
-- `praise.png` — good break / daily praise / 17:30 leave-mode transition
-- `playful.png` — compact normal toast
+The loader accepts PNG first and JPG as a fallback:
 
-The remaining PNGs are being committed in batches because binary assets are larger than normal source files.
+- `default_full.png` / `.jpg` — normal main pose
+- `playful.png` / `.jpg` — compact playful/default dialogue
+- `cheer_full.png` / `.jpg` — stats and stronger encouragement
+- `cheer.png` / `.jpg` — compact cheer fallback
+- `cute_cheer.png` / `.jpg` — return / light praise
+- `nag.png` / `.jpg` — repeated snooze / late-work / hard-stop
+- `worry.png` / `.jpg` — first snooze / wind-down / break reminder
+- `praise.png` / `.jpg` — leave-mode close-out
+- `master_face.png` / `.jpg` — tray icon / canonical face
+
+If an image file is missing, the application falls back to a simple generated placeholder instead of crashing.
 
 ## Workday mapping
 
 - normal: default/playful
 - 17:00 wind-down: worry
-- 17:30 leave mode: praise / close-out tone
-- 18:00 strong leave prompt: nag / firm close-out
+- 17:30 leave mode: praise
+- 18:00 strong leave: nag
 - 18:30 late leave: nag
-- 9h active hard stop: nag / firm stop
+- 9h active hard stop: nag
 
-No post-17:30 mode should actively encourage starting more work.
+After 17:30 no visual/dialogue path may encourage extending work.
+
+## Repository status
+
+Source code is already wired to these exact names. Binary character files are kept separate from source commits until their final upload path is completed; the application remains runnable without them because the loader has a safe fallback.
