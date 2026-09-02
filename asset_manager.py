@@ -19,7 +19,11 @@ ROLE_FILES = {
     "nag": ("nag.webp", "nag.png", "nag.jpg"),
     "worry": ("worry.webp", "worry.png", "worry.jpg"),
     "praise": ("praise.webp", "praise.png", "praise.jpg"),
-    "master_face": ("master_face.png", "master_face.webp", "master_face.jpg"),
+    # The current master_face.png in the alpha asset pack is truncated. Until
+    # the final lossless master-face crop is committed, use the valid playful
+    # portrait for the tray icon instead of allowing a corrupt PNG to crash
+    # asset verification/runtime loading.
+    "master_face": ("playful.webp", "master_face.webp", "master_face.png", "master_face.jpg"),
 }
 
 WORK_MODE_ROLE = {
