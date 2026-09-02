@@ -9,10 +9,11 @@ import time
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageTk
 import pystray
 from pystray import MenuItem as item
 
+from asset_manager import resolve_asset, role_for_dialogue, role_for_work_mode
 from break_reminder import BreakReminderGate
 from messages import pick
 from state import load_state, save_state, rollover_daily, prepare_startup_state
@@ -70,7 +71,8 @@ class App:
 
         self.root = tk.Tk()
         self.root.title(APP_NAME)
-        self.root.geometry("470x360")
+        self.root.geometry("470x560")
+        self.root.minsize(450, 540)
         self.root.protocol("WM_DELETE_WINDOW", self.root.withdraw)
 
         self.ui_commands: queue.Queue = queue.Queue()
@@ -78,10 +80,13 @@ class App:
         self.tray_icon = None
         self.last_work_mode = "normal"
         self.last_dialogue_at = time.monotonic()
+        self.character_photo = None
+        self.character_role = None
 
         self._build_ui()
         initial = classify_workday(datetime.now(), self.state.daily.active_seconds)
         self.last_work_mode = initial.mode
+        self._set_character(role_for_work_mode(initial.mode))
         if initial.mode != "normal":
             self.speech.configure(text=pick(initial.mode))
 
@@ -92,36 +97,75 @@ class App:
 
     def _build_ui(self):
         self.status = tk.Label(self.root, text="사용 중", font=("Malgun Gothic", 9, "bold"))
-        self.status.pack(pady=(18, 4))
-        tk.Label(self.root, text="현재 연속 사용", font=("Malgun Gothic", 9)).pack()
-        self.cont = tk.Label(self.root, text="0초", font=("Malgun Gothic", 24, "bold"))
-        self.cont.pack(pady=(0, 12))
-        tk.Label(self.root, text="다음 휴식까지", font=("Malgun Gothic", 9)).pack()
-        self.remain = tk.Label(self.root, text="60분", font=("Malgun Gothic", 20, "bold"))
-        self.remain.pack(pady=(0, 14))
-        self.speech = tk.Label(self.root, text=pick("playful"), wraplength=400, font=("Malgun Gothic", 9))
-        self.speech.pack(pady=8)
+        self.status.pack(pady=(12, 2))
+
+        self.character = tk.Label(self.root, bd=0)
+        self.character.pack(pady=(2, 6))
+
+        timer_row = tk.Frame(self.root)
+        timer_row.pack(pady=(0, 6))
+        left = tk.Frame(timer_row)
+        left.pack(side="left", padx=18)
+        right = tk.Frame(timer_row)
+        right.pack(side="left", padx=18)
+
+        tk.Label(left, text="현재 연속 사용", font=("Malgun Gothic", 8)).pack()
+        self.cont = tk.Label(left, text="0초", font=("Malgun Gothic", 18, "bold"))
+        self.cont.pack()
+        tk.Label(right, text="다음 휴식까지", font=("Malgun Gothic", 8)).pack()
+        self.remain = tk.Label(right, text="60분", font=("Malgun Gothic", 18, "bold"))
+        self.remain.pack()
+
+        self.speech = tk.Label(self.root, text=pick("playful"), wraplength=410, font=("Malgun Gothic", 9))
+        self.speech.pack(padx=20, pady=(6, 8))
+
         buttons = tk.Frame(self.root)
-        buttons.pack(pady=12)
+        buttons.pack(pady=8)
         self.away_btn = tk.Button(buttons, text="자리비움", command=self.toggle_manual_away)
         self.away_btn.pack(side="left", padx=5)
         tk.Button(buttons, text="오늘 기록", command=self.show_stats).pack(side="left", padx=5)
+
+    def _fallback_character(self):
+        img = Image.new("RGB", (230, 300), "white")
+        draw = ImageDraw.Draw(img)
+        draw.ellipse((65, 34, 165, 134), outline="black", width=2)
+        draw.text((103, 150), "K", fill="black")
+        return img
+
+    def _set_character(self, role: str):
+        if role == self.character_role:
+            return
+        path = resolve_asset(role)
+        try:
+            image = Image.open(path).convert("RGB") if path else self._fallback_character()
+            image.thumbnail((230, 300), Image.Resampling.LANCZOS)
+            self.character_photo = ImageTk.PhotoImage(image)
+            self.character.configure(image=self.character_photo)
+            self.character_role = role
+        except Exception:
+            log.exception("character asset failed: %s", role)
+
+    def _say(self, kind: str, text: str | None = None, work_mode: str = "normal"):
+        self.speech.configure(text=text or pick(kind))
+        self._set_character(role_for_dialogue(kind, work_mode))
+        self.last_dialogue_at = time.monotonic()
 
     def toggle_manual_away(self):
         if self.state.session.is_away:
             self.engine.stop_manual_away()
             self.break_gate.reset()
-            self.show_toast("복귀했네. 다시 시작할게.")
+            self._say("return", "복귀했네. 다시 시작할게.")
         else:
             self.engine.start_manual_away()
             self.break_gate.reset()
-            self.show_toast(pick("away_start"))
+            self._say("away_start")
         self._update_ui()
 
     def accept_break(self):
         self.break_gate.reset()
         self._destroy_toast()
         self.engine.accept_break()
+        self._say("away_start", "좋아. 잠깐 쉬고 와. 시간은 내가 멈춰둘게.")
         self.show_toast("좋아. 잠깐 쉬고 와. 시간은 내가 멈춰둘게.")
 
     def snooze_break(self):
@@ -129,6 +173,7 @@ class App:
         if not should_encourage_more_work(mode):
             self.break_gate.reset()
             self._destroy_toast()
+            self._say(mode, work_mode=mode)
             self.show_toast(pick(mode))
             return
 
@@ -136,7 +181,9 @@ class App:
         self._destroy_toast()
         self.engine.snooze_break()
         n = self.state.session.ignored_breaks
-        self.show_toast(pick("snooze1" if n == 1 else "snooze2"))
+        kind = "snooze1" if n == 1 else "snooze2"
+        self._say(kind)
+        self.show_toast(pick(kind))
 
     def _tick_safe(self):
         try:
@@ -145,13 +192,16 @@ class App:
 
             if result.became_active:
                 self.break_gate.reset()
-                self.show_toast(pick("return", away=fmt(result.away_duration)))
+                text = pick("return", away=fmt(result.away_duration))
+                self._say("return", text)
+                self.show_toast(text)
 
             now = time.monotonic()
             if self.break_gate.should_show(result.break_due, now):
                 mode = classify_workday(datetime.now(), self.state.daily.active_seconds).mode
                 can_snooze = should_encourage_more_work(mode)
                 text = pick("break") if can_snooze else pick(mode)
+                self._set_character(role_for_dialogue("break", mode))
                 self.show_break_toast(text, allow_snooze=can_snooze)
 
             self._update_ui()
@@ -168,18 +218,15 @@ class App:
 
         if state.mode != self.last_work_mode:
             self.last_work_mode = state.mode
-            self.speech.configure(text=pick(state.mode if state.mode != "normal" else "playful"))
-            self.last_dialogue_at = now
+            kind = state.mode if state.mode != "normal" else "playful"
+            self._say(kind, work_mode=state.mode)
             return
 
-        if self.state.session.is_away:
+        if self.state.session.is_away or now - self.last_dialogue_at < DIALOGUE_INTERVAL_SEC:
             return
-        if now - self.last_dialogue_at < DIALOGUE_INTERVAL_SEC:
-            return
-        self.last_dialogue_at = now
 
         if state.mode != "normal":
-            self.speech.configure(text=pick(state.mode))
+            self._say(state.mode, work_mode=state.mode)
             return
 
         ignored = self.state.session.ignored_breaks
@@ -191,7 +238,7 @@ class App:
             kind = "cheer"
         else:
             kind = "playful"
-        self.speech.configure(text=pick(kind))
+        self._say(kind)
 
     def _update_ui(self):
         s = self.state.session
@@ -204,9 +251,8 @@ class App:
         d = self.state.daily
         total = d.active_seconds + d.away_seconds
         ratio = d.active_seconds / total * 100 if total else 0
-        self.show_toast(
-            f"오늘 실사용 {fmt(d.active_seconds)} / 자리비움 {fmt(d.away_seconds)} / 실사용률 {ratio:.0f}%"
-        )
+        self._say("stats")
+        self.show_toast(f"오늘 실사용 {fmt(d.active_seconds)} / 자리비움 {fmt(d.away_seconds)} / 실사용률 {ratio:.0f}%")
 
     def _destroy_specific(self, win):
         try:
@@ -269,7 +315,19 @@ class App:
     def _tray_call(self, fn):
         self.ui_commands.put(fn)
 
-    def _make_fallback_tray_icon(self):
+    def _make_tray_icon(self):
+        path = resolve_asset("master_face")
+        try:
+            if path:
+                image = Image.open(path).convert("RGB")
+                image.thumbnail((64, 64), Image.Resampling.LANCZOS)
+                canvas = Image.new("RGB", (64, 64), "white")
+                x = (64 - image.width) // 2
+                y = (64 - image.height) // 2
+                canvas.paste(image, (x, y))
+                return canvas
+        except Exception:
+            log.exception("tray asset failed")
         icon = Image.new("RGB", (64, 64), "white")
         draw = ImageDraw.Draw(icon)
         draw.ellipse((7, 7, 57, 57), outline="black", width=3)
@@ -277,7 +335,7 @@ class App:
         return icon
 
     def _start_tray(self):
-        icon = self._make_fallback_tray_icon()
+        icon = self._make_tray_icon()
         menu = pystray.Menu(
             item("열기", lambda: self._tray_call(self.show), default=True),
             item("자리비움/복귀", lambda: self._tray_call(self.toggle_manual_away)),
