@@ -1,0 +1,119 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from state import (
+    DailyStats,
+    PersistedState,
+    SessionState,
+    load_state,
+    reset_untracked_session,
+    rollover_daily,
+    save_state,
+)
+
+
+class StateTests(unittest.TestCase):
+    def test_midnight_keeps_global_session_but_resets_today_portion(self):
+        state = PersistedState(
+            5,
+            DailyStats(
+                day="2026-09-02",
+                active_seconds=10_000,
+                longest_continuous_today=3_000,
+            ),
+            SessionState(
+                continuous_seconds=4_000,
+                day_continuous_seconds=2_000,
+                next_break_at=4_500,
+            ),
+        )
+        rollover_daily(state, today="2026-09-03")
+        self.assertEqual(state.daily.day, "2026-09-03")
+        self.assertEqual(state.daily.active_seconds, 0)
+        self.assertEqual(state.daily.longest_continuous_today, 0)
+        self.assertEqual(state.session.continuous_seconds, 4_000)
+        self.assertEqual(state.session.day_continuous_seconds, 0)
+        self.assertEqual(state.session.next_break_at, 4_500)
+
+    def test_midnight_away_is_counted_as_one_ongoing_away(self):
+        state = PersistedState(
+            5,
+            DailyStats(day="2026-09-02", away_count=3),
+            SessionState(is_away=True, away_started_wall=123.0),
+        )
+        rollover_daily(state, today="2026-09-03")
+        self.assertEqual(state.daily.away_count, 1)
+        self.assertTrue(state.session.is_away)
+
+    def test_restart_after_long_downtime_resets_session_only(self):
+        state = PersistedState(
+            5,
+            DailyStats(day="2026-09-02", active_seconds=5_000),
+            SessionState(
+                continuous_seconds=3_500,
+                next_break_at=3_600,
+                last_seen_wall=1_000,
+            ),
+        )
+        gap = reset_untracked_session(state, now_wall=1_120, tolerance_sec=60)
+        self.assertEqual(gap, 120)
+        self.assertEqual(state.session.continuous_seconds, 0)
+        self.assertEqual(state.daily.active_seconds, 5_000)
+
+    def test_restart_within_tolerance_preserves_session(self):
+        state = PersistedState(
+            5,
+            DailyStats(day="2026-09-02"),
+            SessionState(continuous_seconds=100, last_seen_wall=1_000),
+        )
+        reset_untracked_session(state, now_wall=1_030, tolerance_sec=60)
+        self.assertEqual(state.session.continuous_seconds, 100)
+
+    def test_bad_json_is_preserved_as_corrupt_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "state.json"
+            path.write_text("{ definitely broken", encoding="utf-8")
+            state = load_state(path)
+            self.assertEqual(state.session.continuous_seconds, 0)
+            self.assertFalse(path.exists())
+            self.assertTrue(list(Path(td).glob("state.json.*.corrupt")))
+
+    def test_unknown_fields_and_bad_types_do_not_break_load(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "state.json"
+            path.write_text(
+                json.dumps({
+                    "schema_version": 999,
+                    "daily": {
+                        "day": "2026-09-02",
+                        "active_seconds": "12.5",
+                        "away_count": "2",
+                        "future_field": "ignored",
+                    },
+                    "session": {
+                        "continuous_seconds": "bad",
+                        "manual_away": "false",
+                        "future_field": 123,
+                    },
+                }),
+                encoding="utf-8",
+            )
+            state = load_state(path)
+            self.assertEqual(state.daily.active_seconds, 12.5)
+            self.assertEqual(state.daily.away_count, 2)
+            self.assertEqual(state.session.continuous_seconds, 0)
+            self.assertFalse(state.session.manual_away)
+
+    def test_save_is_readable_and_updates_last_seen(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "state.json"
+            state = PersistedState(5, DailyStats(day="2026-09-02"), SessionState())
+            save_state(path, state, now_wall=1234.5)
+            loaded = load_state(path)
+            self.assertEqual(loaded.session.last_seen_wall, 1234.5)
+
+
+if __name__ == "__main__":
+    unittest.main()
