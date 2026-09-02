@@ -9,17 +9,18 @@ import time
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
-from PIL import Image
+from PIL import Image, ImageDraw
 import pystray
 from pystray import MenuItem as item
 
 from messages import pick
 from state import load_state, save_state, rollover_daily, reset_untracked_session
 from timer_engine import TimerEngine
-from workday import classify_workday
+from workday import classify_workday, should_encourage_more_work
 
 APP_NAME = "경희 비서"
 BREAK_REMIND_SEC = 5 * 60
+DIALOGUE_INTERVAL_SEC = 60
 
 DATA_DIR = Path(os.getenv("APPDATA", Path.home())) / "KyungheeAssistant"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -29,7 +30,7 @@ LOG_FILE = DATA_DIR / "kyunghee.log"
 log = logging.getLogger("kyunghee")
 log.setLevel(logging.INFO)
 if not log.handlers:
-    h = RotatingFileHandler(LOG_FILE, maxBytes=2*1024*1024, backupCount=3, encoding="utf-8")
+    h = RotatingFileHandler(LOG_FILE, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8")
     h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     log.addHandler(h)
 
@@ -53,15 +54,21 @@ class SingleInstance:
         if os.name != "nt":
             return True
         k32 = ctypes.windll.kernel32
+        k32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+        k32.CreateMutexW.restype = ctypes.c_void_p
+        k32.GetLastError.restype = ctypes.c_ulong
         self.handle = k32.CreateMutexW(None, False, "Local\\KyungheeAssistantSingleton")
-        return k32.GetLastError() != 183
+        return bool(self.handle) and k32.GetLastError() != 183
 
 
 class App:
     def __init__(self):
         self.state = load_state(STATE_FILE)
-        rollover_daily(self.state)
+        # First discard stale continuity from an old process; only then apply
+        # today's rollover. Otherwise yesterday's stale away could become one
+        # phantom away event today.
         reset_untracked_session(self.state, time.time())
+        rollover_daily(self.state)
         self.engine = TimerEngine(self.state)
 
         self.root = tk.Tk()
@@ -74,13 +81,19 @@ class App:
         self.toast_break_active = False
         self.break_toast_shown_at = 0.0
         self.tray_icon = None
-        self.last_work_mode = None
+        self.last_work_mode = "normal"
+        self.last_dialogue_at = time.monotonic()
 
         self._build_ui()
+        initial = classify_workday(datetime.now(), self.state.daily.active_seconds)
+        self.last_work_mode = initial.mode
+        if initial.mode != "normal":
+            self.speech.configure(text=pick(initial.mode))
+
         self._start_tray()
         self.root.after(250, self._drain_ui_queue)
         self.root.after(1000, self._tick_safe)
-        self.root.after(15000, self._save_periodic)
+        self.root.after(5000, self._save_periodic)
 
     def _build_ui(self):
         self.status = tk.Label(self.root, text="사용 중", font=("Malgun Gothic", 9, "bold"))
@@ -100,7 +113,10 @@ class App:
         tk.Button(buttons, text="오늘 기록", command=self.show_stats).pack(side="left", padx=5)
 
     def toggle_manual_away(self):
-        if self.state.session.manual_away:
+        # The visible button says "복귀" for both manual and automatic away, so
+        # the branch must use is_away too. Using manual_away here made auto-away
+        # "복귀" start a second manual away instead.
+        if self.state.session.is_away:
             self.engine.stop_manual_away()
             self.toast_break_active = False
             self.show_toast("복귀했네. 다시 시작할게.")
@@ -116,6 +132,13 @@ class App:
         self.show_toast("좋아. 잠깐 쉬고 와. 시간은 내가 멈춰둘게.")
 
     def snooze_break(self):
+        mode = classify_workday(datetime.now(), self.state.daily.active_seconds).mode
+        if not should_encourage_more_work(mode):
+            self.toast_break_active = False
+            self._destroy_toast()
+            self.show_toast(pick(mode))
+            return
+
         self.toast_break_active = False
         self._destroy_toast()
         self.engine.snooze_break()
@@ -133,26 +156,59 @@ class App:
 
             if result.break_due:
                 now = time.monotonic()
+                mode = classify_workday(datetime.now(), self.state.daily.active_seconds).mode
+                can_snooze = should_encourage_more_work(mode)
+                text = pick("break") if can_snooze else pick(mode)
                 if not self.toast_break_active:
                     self.toast_break_active = True
                     self.break_toast_shown_at = now
-                    self.show_break_toast(pick("break"))
+                    self.show_break_toast(text, allow_snooze=can_snooze)
                 elif now - self.break_toast_shown_at >= BREAK_REMIND_SEC:
+                    # Re-arm; next tick shows the reminder again.
                     self.toast_break_active = False
 
             self._update_ui()
-            self._update_workday_message()
+            self._update_dialogue()
         except Exception:
             log.exception("tick failed")
         finally:
             if self.root.winfo_exists():
                 self.root.after(1000, self._tick_safe)
 
-    def _update_workday_message(self):
+    def _update_dialogue(self):
         state = classify_workday(datetime.now(), self.state.daily.active_seconds)
-        if state.message:
-            self.speech.configure(text=state.message)
-        self.last_work_mode = state.mode
+        now = time.monotonic()
+
+        # A workday-mode transition gets one immediate message, but does not
+        # overwrite the label every tick.
+        if state.mode != self.last_work_mode:
+            self.last_work_mode = state.mode
+            self.speech.configure(text=pick(state.mode if state.mode != "normal" else "playful"))
+            self.last_dialogue_at = now
+            return
+
+        if self.state.session.is_away:
+            return
+        if now - self.last_dialogue_at < DIALOGUE_INTERVAL_SEC:
+            return
+        self.last_dialogue_at = now
+
+        if state.mode != "normal":
+            # Wind-down/leave modes have their own rotating pools and never fall
+            # back to "keep pushing" encouragement after 17:30.
+            self.speech.configure(text=pick(state.mode))
+            return
+
+        ignored = self.state.session.ignored_breaks
+        if ignored >= 2:
+            kind = "nag"
+        elif ignored == 1:
+            kind = "worry"
+        elif self.engine.remaining_to_break() <= 15 * 60:
+            kind = "cheer"
+        else:
+            kind = "playful"
+        self.speech.configure(text=pick(kind))
 
     def _update_ui(self):
         s = self.state.session
@@ -191,7 +247,7 @@ class App:
         tk.Label(win, text=text, wraplength=340, font=("Malgun Gothic", 9)).pack(padx=12)
         win.after(8000, lambda w=win: self._destroy_specific(w))
 
-    def show_break_toast(self, text):
+    def show_break_toast(self, text, allow_snooze=True):
         self._destroy_toast()
         win = tk.Toplevel(self.root)
         self.toast = win
@@ -201,7 +257,8 @@ class App:
         row = tk.Frame(win)
         row.pack()
         tk.Button(row, text="알았어, 쉴게", command=self.accept_break).pack(side="left", padx=6)
-        tk.Button(row, text="5분 더", command=self.snooze_break).pack(side="left", padx=6)
+        if allow_snooze:
+            tk.Button(row, text="5분 더", command=self.snooze_break).pack(side="left", padx=6)
 
     def _save_periodic(self):
         try:
@@ -210,22 +267,35 @@ class App:
             log.exception("save failed")
         finally:
             if self.root.winfo_exists():
-                self.root.after(15000, self._save_periodic)
+                self.root.after(5000, self._save_periodic)
 
     def _drain_ui_queue(self):
         try:
             while True:
-                self.ui_commands.get_nowait()()
+                fn = self.ui_commands.get_nowait()
+                try:
+                    fn()
+                except Exception:
+                    log.exception("tray command failed")
         except queue.Empty:
             pass
-        if self.root.winfo_exists():
-            self.root.after(250, self._drain_ui_queue)
+        finally:
+            # One bad tray command must never kill all future tray controls.
+            if self.root.winfo_exists():
+                self.root.after(250, self._drain_ui_queue)
 
     def _tray_call(self, fn):
         self.ui_commands.put(fn)
 
-    def _start_tray(self):
+    def _make_fallback_tray_icon(self):
         icon = Image.new("RGB", (64, 64), "white")
+        draw = ImageDraw.Draw(icon)
+        draw.ellipse((7, 7, 57, 57), outline="black", width=3)
+        draw.text((20, 19), "K", fill="black")
+        return icon
+
+    def _start_tray(self):
+        icon = self._make_fallback_tray_icon()
         menu = pystray.Menu(
             item("열기", lambda: self._tray_call(self.show), default=True),
             item("자리비움/복귀", lambda: self._tray_call(self.toggle_manual_away)),
