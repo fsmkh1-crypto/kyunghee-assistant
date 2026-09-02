@@ -18,8 +18,11 @@ class RuntimeAssetTests(unittest.TestCase):
             with self.subTest(role=role):
                 self.assertEqual(resolve_asset(role).suffix.lower(), ".webp")
 
-    def test_master_face_prefers_lossless_png(self):
-        self.assertEqual(resolve_asset("master_face").name, "master_face.png")
+    def test_master_face_uses_valid_runtime_fallback(self):
+        # The alpha pack's master_face.png is known to be truncated, so the
+        # resolver intentionally prefers the valid playful portrait until the
+        # final lossless crop is committed.
+        self.assertEqual(resolve_asset("master_face").name, "playful.webp")
 
     def test_workday_visual_policy(self):
         self.assertEqual(role_for_work_mode("normal"), "default")
