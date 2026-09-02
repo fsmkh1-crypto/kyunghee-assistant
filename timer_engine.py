@@ -139,12 +139,12 @@ class TimerEngine:
         self._reset_active_session()
         result.long_gap = True
 
-        # A wake input means the away period ended at this tick. If there is no
-        # fresh input and idle is still high, remain away instead.
-        resumed_now = input_changed or idle_sec < IDLE_THRESHOLD_SEC
+        # A long unobserved gap ends only when a genuinely new Windows input is
+        # seen. A small idle value alone is not sufficient evidence of return.
+        resumed_now = input_changed
         if resumed_now:
             result.became_active = True
-            result.manual_resumed_by_input = was_manual and input_changed
+            result.manual_resumed_by_input = was_manual
             result.away_duration = gap if not s.away_started_wall else max(
                 0.0, now_wall - s.away_started_wall
             )
@@ -201,7 +201,7 @@ class TimerEngine:
 
         # Auto-away return: keep this transition tick as away because the exact
         # moment of the user's input inside the one-second interval is unknown.
-        if s.is_away and (input_changed or idle_sec < IDLE_THRESHOLD_SEC):
+        if s.is_away and input_changed:
             self._record_away(elapsed, manual=False)
             result.became_active = True
             result.away_duration = max(
