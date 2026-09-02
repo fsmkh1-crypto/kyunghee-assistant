@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.log
+logs/
+build/
+dist/
+*.spec
+.vscode/
+.idea/
+state.json
+state.*.tmp
+*.corrupt
+.DS_Store
