@@ -39,13 +39,13 @@ class FakeEnv:
 
 
 def new_state():
-    return PersistedState(5, DailyStats(day="2026-09-02"), SessionState())
+    return PersistedState(6, DailyStats(day="2026-09-02"), SessionState())
 
 
 class TimerEngineTests(unittest.TestCase):
-    def make(self):
-        env = FakeEnv()
-        state = new_state()
+    def make(self, state=None, env=None):
+        env = env or FakeEnv()
+        state = state or new_state()
         engine = TimerEngine(
             state,
             clock=env.clock,
@@ -108,7 +108,7 @@ class TimerEngineTests(unittest.TestCase):
         self.assertAlmostEqual(s.daily.away_seconds, gap)
         self.assertEqual(s.session.continuous_seconds, 0)
 
-    def test_manual_away_sleep_gap_remains_manual_away_time(self):
+    def test_manual_away_sleep_gap_with_input_stays_manual_away_time(self):
         e, s, eng = self.make()
         eng.start_manual_away()
         gap = GAP_TOLERANCE_SEC + 500
@@ -118,6 +118,20 @@ class TimerEngineTests(unittest.TestCase):
         self.assertTrue(result.became_active)
         self.assertAlmostEqual(s.daily.manual_away_seconds, gap)
         self.assertEqual(s.daily.active_seconds, 0)
+
+    def test_manual_away_sleep_gap_without_input_preserves_manual_classification(self):
+        e, s, eng = self.make()
+        eng.start_manual_away()
+        gap = GAP_TOLERANCE_SEC + 500
+        e.advance(gap, idle=gap, input_event=False)
+        result = eng.tick()
+        self.assertTrue(result.long_gap)
+        self.assertTrue(s.session.is_away)
+        self.assertTrue(s.session.manual_away)
+        self.assertAlmostEqual(s.daily.manual_away_seconds, gap)
+        e.advance(1, idle=gap + 1)
+        eng.tick()
+        self.assertAlmostEqual(s.daily.manual_away_seconds, gap + 1)
 
     def test_long_gap_without_return_input_remains_away(self):
         e, s, eng = self.make()
@@ -131,13 +145,11 @@ class TimerEngineTests(unittest.TestCase):
 
     def test_five_minute_idle_retroactively_becomes_away(self):
         e, s, eng = self.make()
-        # Four minutes fifty-nine seconds are provisionally active.
         for _ in range(IDLE_THRESHOLD_SEC - 1):
             e.advance(1)
             eng.tick()
         self.assertEqual(int(s.daily.active_seconds), IDLE_THRESHOLD_SEC - 1)
 
-        # At five minutes, the entire no-input interval is reclassified.
         e.advance(1)
         result = eng.tick()
         self.assertTrue(result.became_away)
@@ -169,11 +181,59 @@ class TimerEngineTests(unittest.TestCase):
         self.assertEqual(s.daily.away_seconds, before_away + 1)
         self.assertEqual(s.session.continuous_seconds, 0)
 
-    def test_wall_clock_jump_does_not_create_fake_active_time(self):
+    def test_retroactive_away_then_immediate_return(self):
         e, s, eng = self.make()
-        e.advance(1, idle=0, input_event=True, wall_delta=3600)
-        eng.tick()
-        self.assertAlmostEqual(s.daily.active_seconds, 1)
+        for _ in range(IDLE_THRESHOLD_SEC):
+            e.advance(1)
+            eng.tick()
+        self.assertTrue(s.session.is_away)
+        e.advance(1, input_event=True)
+        result = eng.tick()
+        self.assertTrue(result.became_active)
+        self.assertFalse(s.session.is_away)
+        self.assertEqual(int(s.daily.active_seconds), 0)
+        self.assertEqual(int(s.daily.away_seconds), IDLE_THRESHOLD_SEC + 1)
+
+    def test_auto_away_to_manual_away_to_return_does_not_double_count(self):
+        e, s, eng = self.make()
+        for _ in range(IDLE_THRESHOLD_SEC):
+            e.advance(1)
+            eng.tick()
+        self.assertEqual(s.daily.away_count, 1)
+        eng.start_manual_away()
+        self.assertEqual(s.daily.away_count, 1)
+        e.advance(4, input_event=True)
+        result = eng.tick()
+        self.assertTrue(result.became_active)
+        self.assertEqual(s.daily.away_count, 1)
+
+    def test_persisted_idle_candidate_is_reclassified_after_restart(self):
+        state = PersistedState(
+            6,
+            DailyStats(day="2026-09-02", active_seconds=240),
+            SessionState(
+                continuous_seconds=240,
+                day_continuous_seconds=240,
+                idle_candidate_seconds=240,
+            ),
+        )
+        env = FakeEnv()
+        env.idle = 240
+        e, s, eng = self.make(state=state, env=env)
+        for _ in range(60):
+            e.advance(1)
+            result = eng.tick()
+        self.assertTrue(result.became_away)
+        self.assertEqual(int(s.daily.active_seconds), 0)
+        self.assertEqual(int(s.daily.away_seconds), 300)
+
+    def test_wall_clock_jump_does_not_create_fake_active_time_or_away_duration(self):
+        e, s, eng = self.make()
+        eng.start_manual_away()
+        e.advance(4, input_event=True, wall_delta=3600)
+        result = eng.tick()
+        self.assertAlmostEqual(s.daily.manual_away_seconds, 4)
+        self.assertAlmostEqual(result.away_duration, 4)
 
     def test_manual_away_ends_continuous_session(self):
         _, s, eng = self.make()
