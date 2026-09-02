@@ -1,40 +1,27 @@
-# Character asset set
+# Finalized character assets
 
-The application uses one consistent Kyunghee character identity across all states.
+The app uses one consistent character identity and ivory-white outfit direction.
 
-Finalized asset roles:
+## Asset roles
 
-| File | Role |
-|---|---|
-| `default_full.png` | Main page / playful default pose |
-| `cheer_full.png` | Daily stats page / fighting-cheer pose |
-| `cute_cheer.png` | Short encouragement and positive popup |
-| `nag.png` | Repeated snooze / pouting nag |
-| `worry.png` | Long-use warning / concern |
-| `praise.png` | Good return, completed break, positive summary |
-| `master_face.png` | Tray icon and small neutral notification |
-| `playful.png` | Compact playful notification |
-| `cheer.png` | Compact cheer notification |
+- `master_face.png` — canonical face / tray icon / compact neutral toast (**committed**)
+- `default_full.png` — page 1 main/default playful pose
+- `cheer_full.png` — page 2 stats / fighting pose
+- `cute_cheer.png` — short praise / return / light encouragement
+- `nag.png` — repeated snooze / 18:30+ late-work nagging
+- `worry.png` — first snooze / long-session concern / 17:00 wind-down
+- `praise.png` — good break / daily praise / 17:30 leave-mode transition
+- `playful.png` — compact normal toast
 
-Visual lock:
+The remaining PNGs are being committed in batches because binary assets are larger than normal source files.
 
-- same face across every state
-- long wavy hair
-- soft realistic/semi-matte skin
-- light pink top
-- soft ivory-white skirt
-- playful rather than stern default personality
-- nagging should look sulky/pouting, not angry
+## Workday mapping
 
-Workday mood mapping:
+- normal: default/playful
+- 17:00 wind-down: worry
+- 17:30 leave mode: praise / close-out tone
+- 18:00 strong leave prompt: nag / firm close-out
+- 18:30 late leave: nag
+- 9h active hard stop: nag / firm stop
 
-- normal work: default/playful
-- approaching break: cheer
-- good return: cute-cheer/praise
-- first snooze: worry
-- repeated snooze: nag
-- 17:30+ leaving-work mode: praise/worry, no productivity cheerleading
-- 18:30+ late work: nag/worry
-- 9 hours actual active use: hard-stop mood
-
-The binary PNG files are generated project assets and should be committed under this directory before the Windows real-world test gate.
+No post-17:30 mode should actively encourage starting more work.
