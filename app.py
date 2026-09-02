@@ -14,7 +14,7 @@ import pystray
 from pystray import MenuItem as item
 
 from messages import pick
-from state import load_state, save_state, rollover_daily, reset_untracked_session
+from state import load_state, save_state, rollover_daily, prepare_startup_state
 from timer_engine import TimerEngine
 from workday import classify_workday, should_encourage_more_work
 
@@ -64,11 +64,7 @@ class SingleInstance:
 class App:
     def __init__(self):
         self.state = load_state(STATE_FILE)
-        # First discard stale continuity from an old process; only then apply
-        # today's rollover. Otherwise yesterday's stale away could become one
-        # phantom away event today.
-        reset_untracked_session(self.state, time.time())
-        rollover_daily(self.state)
+        prepare_startup_state(self.state, time.time())
         self.engine = TimerEngine(self.state)
 
         self.root = tk.Tk()
@@ -113,9 +109,6 @@ class App:
         tk.Button(buttons, text="오늘 기록", command=self.show_stats).pack(side="left", padx=5)
 
     def toggle_manual_away(self):
-        # The visible button says "복귀" for both manual and automatic away, so
-        # the branch must use is_away too. Using manual_away here made auto-away
-        # "복귀" start a second manual away instead.
         if self.state.session.is_away:
             self.engine.stop_manual_away()
             self.toast_break_active = False
@@ -164,7 +157,6 @@ class App:
                     self.break_toast_shown_at = now
                     self.show_break_toast(text, allow_snooze=can_snooze)
                 elif now - self.break_toast_shown_at >= BREAK_REMIND_SEC:
-                    # Re-arm; next tick shows the reminder again.
                     self.toast_break_active = False
 
             self._update_ui()
@@ -179,8 +171,6 @@ class App:
         state = classify_workday(datetime.now(), self.state.daily.active_seconds)
         now = time.monotonic()
 
-        # A workday-mode transition gets one immediate message, but does not
-        # overwrite the label every tick.
         if state.mode != self.last_work_mode:
             self.last_work_mode = state.mode
             self.speech.configure(text=pick(state.mode if state.mode != "normal" else "playful"))
@@ -194,8 +184,6 @@ class App:
         self.last_dialogue_at = now
 
         if state.mode != "normal":
-            # Wind-down/leave modes have their own rotating pools and never fall
-            # back to "keep pushing" encouragement after 17:30.
             self.speech.configure(text=pick(state.mode))
             return
 
@@ -280,7 +268,6 @@ class App:
         except queue.Empty:
             pass
         finally:
-            # One bad tray command must never kill all future tray controls.
             if self.root.winfo_exists():
                 self.root.after(250, self._drain_ui_queue)
 
