@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import time
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 @dataclass
@@ -35,7 +35,14 @@ class SessionState:
     ignored_breaks: int = 0
     is_away: bool = False
     manual_away: bool = False
+    # Wall time is retained only for human-readable persistence/debugging.
     away_started_wall: float | None = None
+    # Windows/Python monotonic time survives process restarts during one boot and
+    # keeps return-duration messages immune to NTP/manual clock adjustments.
+    away_started_mono: float | None = None
+    # Short no-input time provisionally counted as active. If idle reaches five
+    # minutes, this entire candidate is reclassified as away.
+    idle_candidate_seconds: float = 0.0
     last_seen_wall: float = 0.0
 
 
@@ -56,6 +63,8 @@ _FLOAT_FIELDS = {
     "day_continuous_seconds",
     "next_break_at",
     "away_started_wall",
+    "away_started_mono",
+    "idle_candidate_seconds",
     "last_seen_wall",
 }
 _INT_FIELDS = {"away_count", "ignored_breaks"}
@@ -129,12 +138,7 @@ def save_state(path: Path, state: PersistedState, now_wall: float | None = None)
 
 
 def rollover_daily(state: PersistedState, today: str | None = None):
-    """Reset daily counters without breaking an in-progress session.
-
-    The global continuous session and break schedule survive midnight. Today's
-    longest-continuous statistic starts from zero, because time worked before
-    midnight must not be reported as today's work.
-    """
+    """Reset daily counters without breaking an in-progress session."""
     today = today or date.today().isoformat()
     if state.daily.day == today:
         return
