@@ -5,6 +5,7 @@ from timer_engine import (
     BREAK_INTERVAL_SEC,
     GAP_TOLERANCE_SEC,
     IDLE_THRESHOLD_SEC,
+    MANUAL_INPUT_GRACE_SEC,
     SNOOZE_SEC,
     TimerEngine,
 )
@@ -86,15 +87,23 @@ class TimerEngineTests(unittest.TestCase):
         self.assertTrue(s.session.manual_away)
         self.assertFalse(result.became_active)
 
+    def test_manual_away_ignores_incidental_input_during_grace(self):
+        e, s, eng = self.make()
+        eng.start_manual_away()
+        e.advance(MANUAL_INPUT_GRACE_SEC - 1, input_event=True)
+        result = eng.tick()
+        self.assertFalse(result.became_active)
+        self.assertTrue(s.session.manual_away)
+
     def test_manual_away_resumes_on_later_input_and_resume_tick_is_away(self):
         e, s, eng = self.make()
         eng.start_manual_away()
-        e.advance(4, input_event=True)
+        e.advance(MANUAL_INPUT_GRACE_SEC + 1, input_event=True)
         result = eng.tick()
         self.assertTrue(result.became_active)
         self.assertTrue(result.manual_resumed_by_input)
         self.assertFalse(s.session.manual_away)
-        self.assertAlmostEqual(s.daily.manual_away_seconds, 4)
+        self.assertAlmostEqual(s.daily.manual_away_seconds, MANUAL_INPUT_GRACE_SEC + 1)
         self.assertEqual(s.daily.active_seconds, 0)
 
     def test_long_gap_is_away_even_if_wake_input_resets_idle(self):
@@ -106,6 +115,17 @@ class TimerEngineTests(unittest.TestCase):
         self.assertTrue(result.became_active)
         self.assertEqual(s.daily.active_seconds, 0)
         self.assertAlmostEqual(s.daily.away_seconds, gap)
+        self.assertEqual(s.session.continuous_seconds, 0)
+
+    def test_wall_gap_detects_sleep_when_monotonic_does_not_advance(self):
+        e, s, eng = self.make()
+        wall_gap = GAP_TOLERANCE_SEC + 600
+        e.advance(1, input_event=True, wall_delta=wall_gap)
+        result = eng.tick()
+        self.assertTrue(result.long_gap)
+        self.assertTrue(result.became_active)
+        self.assertEqual(s.daily.active_seconds, 0)
+        self.assertAlmostEqual(s.daily.away_seconds, wall_gap)
         self.assertEqual(s.session.continuous_seconds, 0)
 
     def test_manual_away_sleep_gap_with_input_stays_manual_away_time(self):
@@ -202,7 +222,7 @@ class TimerEngineTests(unittest.TestCase):
         self.assertEqual(s.daily.away_count, 1)
         eng.start_manual_away()
         self.assertEqual(s.daily.away_count, 1)
-        e.advance(4, input_event=True)
+        e.advance(MANUAL_INPUT_GRACE_SEC + 1, input_event=True)
         result = eng.tick()
         self.assertTrue(result.became_active)
         self.assertEqual(s.daily.away_count, 1)
@@ -227,13 +247,13 @@ class TimerEngineTests(unittest.TestCase):
         self.assertEqual(int(s.daily.active_seconds), 0)
         self.assertEqual(int(s.daily.away_seconds), 300)
 
-    def test_wall_clock_jump_does_not_create_fake_active_time_or_away_duration(self):
+    def test_wall_clock_jump_never_creates_fake_active_time(self):
         e, s, eng = self.make()
-        eng.start_manual_away()
         e.advance(4, input_event=True, wall_delta=3600)
         result = eng.tick()
-        self.assertAlmostEqual(s.daily.manual_away_seconds, 4)
-        self.assertAlmostEqual(result.away_duration, 4)
+        self.assertTrue(result.long_gap)
+        self.assertEqual(s.daily.active_seconds, 0)
+        self.assertAlmostEqual(s.daily.away_seconds, 3600)
 
     def test_manual_away_ends_continuous_session(self):
         _, s, eng = self.make()
