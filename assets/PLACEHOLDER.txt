@@ -1,0 +1,1 @@
+Runtime image assets are being added next. The app currently falls back to a generated tray icon until image files are committed.
