@@ -27,21 +27,14 @@ class DailyStats:
 
 @dataclass
 class SessionState:
-    # Continuous active use may span midnight.
     continuous_seconds: float = 0.0
-    # Portion of the current continuous session that belongs to today's stats.
     day_continuous_seconds: float = 0.0
     next_break_at: float = 3600.0
     ignored_breaks: int = 0
     is_away: bool = False
     manual_away: bool = False
-    # Wall time is retained only for human-readable persistence/debugging.
     away_started_wall: float | None = None
-    # Windows/Python monotonic time survives process restarts during one boot and
-    # keeps return-duration messages immune to NTP/manual clock adjustments.
     away_started_mono: float | None = None
-    # Short no-input time provisionally counted as active. If idle reaches five
-    # minutes, this entire candidate is reclassified as away.
     idle_candidate_seconds: float = 0.0
     last_seen_wall: float = 0.0
 
@@ -91,7 +84,6 @@ def _coerce(cls, data: dict):
             elif name == "day":
                 out[name] = str(value)
         except (TypeError, ValueError):
-            # Bad individual values fall back to dataclass defaults.
             pass
     return cls(**out)
 
@@ -115,7 +107,6 @@ def load_state(path: Path) -> PersistedState:
     except FileNotFoundError:
         return fresh_state()
     except Exception:
-        # Preserve damaged input for diagnosis instead of silently deleting it.
         try:
             corrupt = path.with_name(path.name + f".{int(time.time())}.corrupt")
             path.replace(corrupt)
@@ -138,7 +129,7 @@ def save_state(path: Path, state: PersistedState, now_wall: float | None = None)
 
 
 def rollover_daily(state: PersistedState, today: str | None = None):
-    """Reset daily counters without breaking an in-progress session."""
+    """Reset daily counters without breaking an in-progress live session."""
     today = today or date.today().isoformat()
     if state.daily.day == today:
         return
@@ -147,7 +138,6 @@ def rollover_daily(state: PersistedState, today: str | None = None):
     state.daily = DailyStats(day=today)
     state.session.day_continuous_seconds = 0.0
     if was_away:
-        # One away period is already in progress at the start of the new day.
         state.daily.away_count = 1
 
 
@@ -156,11 +146,7 @@ def reset_untracked_session(
     now_wall: float,
     tolerance_sec: float = 60.0,
 ) -> float:
-    """Reset continuity after an app shutdown/outage longer than tolerance.
-
-    Downtime is intentionally not added to active or away totals because the app
-    cannot know whether the PC was being used while it was not running.
-    """
+    """Reset continuity after an app shutdown/outage longer than tolerance."""
     last = state.session.last_seen_wall
     if last <= 0:
         state.session = SessionState()
@@ -169,4 +155,21 @@ def reset_untracked_session(
     gap = max(0.0, now_wall - last)
     if gap > tolerance_sec:
         state.session = SessionState()
+    return gap
+
+
+def prepare_startup_state(
+    state: PersistedState,
+    now_wall: float,
+    today: str | None = None,
+    tolerance_sec: float = 60.0,
+) -> float:
+    """Prepare persisted data for app startup in the only safe order.
+
+    Stale session continuity is discarded before the day rollover. Doing the
+    rollover first can turn yesterday's stale away flag into a phantom away_count
+    for the new day.
+    """
+    gap = reset_untracked_session(state, now_wall, tolerance_sec=tolerance_sec)
+    rollover_daily(state, today=today)
     return gap
