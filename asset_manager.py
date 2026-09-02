@@ -5,15 +5,21 @@ from typing import Iterable
 
 ASSET_DIR = Path(__file__).resolve().parent / "assets"
 
+# Runtime assets committed to the repository are compact WebP files. PNG/JPG
+# names remain as compatibility fallbacks for older local asset packs.
 ROLE_FILES = {
-    "default": ("default_full.png", "default_full.jpg"),
-    "playful": ("playful.png", "playful.jpg"),
-    "cheer": ("cheer_full.png", "cheer_full.jpg", "cheer.png", "cheer.jpg"),
-    "cute_cheer": ("cute_cheer.png", "cute_cheer.jpg"),
-    "nag": ("nag.png", "nag.jpg"),
-    "worry": ("worry.png", "worry.jpg"),
-    "praise": ("praise.png", "praise.jpg"),
-    "master_face": ("master_face.png", "master_face.jpg"),
+    "default": ("default_full.webp", "default_full.png", "default_full.jpg"),
+    "playful": ("playful.webp", "playful.png", "playful.jpg"),
+    "cheer": (
+        "cheer_full.webp", "cheer.webp",
+        "cheer_full.png", "cheer.png",
+        "cheer_full.jpg", "cheer.jpg",
+    ),
+    "cute_cheer": ("cute_cheer.webp", "cute_cheer.png", "cute_cheer.jpg"),
+    "nag": ("nag.webp", "nag.png", "nag.jpg"),
+    "worry": ("worry.webp", "worry.png", "worry.jpg"),
+    "praise": ("praise.webp", "praise.png", "praise.jpg"),
+    "master_face": ("master_face.png", "master_face.webp", "master_face.jpg"),
 }
 
 WORK_MODE_ROLE = {
@@ -28,6 +34,7 @@ WORK_MODE_ROLE = {
 DIALOGUE_ROLE = {
     "playful": "playful",
     "cheer": "cheer",
+    "cute_cheer": "cute_cheer",
     "worry": "worry",
     "nag": "nag",
     "praise": "praise",
