@@ -23,8 +23,8 @@ class TickResult:
 class TimerEngine:
     """Platform-independent timer state machine.
 
-    `clock`, `wall`, and `idle_provider` are injected so all timing edge cases can
-    be reproduced in unit tests without Windows.
+    `clock`, `wall`, and `idle_provider` are injected so edge cases can be
+    reproduced in unit tests without Windows.
     """
 
     def __init__(self, persisted_state, clock=time.monotonic, wall=time.time, idle_provider=None):
@@ -40,9 +40,6 @@ class TimerEngine:
         self.last_wall = self.wall()
         self.last_input_tick = self.idle_provider()[1]
         self.manual_grace_until = 0.0
-        # Short idle time is provisionally active. If it reaches five minutes,
-        # the entire no-input interval is reclassified as away time.
-        self.idle_candidate_seconds = 0.0
 
     def remaining_to_break(self) -> float:
         s = self.state.session
@@ -61,14 +58,23 @@ class TimerEngine:
         s.day_continuous_seconds = 0.0
         s.next_break_at = BREAK_INTERVAL_SEC
         s.ignored_breaks = 0
-        self.idle_candidate_seconds = 0.0
+        s.idle_candidate_seconds = 0.0
 
     def _clear_away(self):
         s = self.state.session
         s.manual_away = False
         s.is_away = False
         s.away_started_wall = None
+        s.away_started_mono = None
         self._reset_active_session()
+
+    def _away_duration(self, now_mono: float, now_wall: float) -> float:
+        s = self.state.session
+        if s.away_started_mono is not None:
+            return max(0.0, now_mono - s.away_started_mono)
+        if s.away_started_wall is not None:
+            return max(0.0, now_wall - s.away_started_wall)
+        return 0.0
 
     def start_manual_away(self):
         _, tick = self.idle_provider()
@@ -80,6 +86,7 @@ class TimerEngine:
         s.manual_away = True
         s.is_away = True
         s.away_started_wall = self.wall()
+        s.away_started_mono = self.clock()
         # The click that starts the break must never count as a resume signal.
         self.last_input_tick = tick
         self.manual_grace_until = self.clock() + MANUAL_INPUT_GRACE_SEC
@@ -103,9 +110,9 @@ class TimerEngine:
         s.continuous_seconds += elapsed
         s.day_continuous_seconds += elapsed
         if provisional_idle:
-            self.idle_candidate_seconds += elapsed
+            s.idle_candidate_seconds += elapsed
         else:
-            self.idle_candidate_seconds = 0.0
+            s.idle_candidate_seconds = 0.0
             self._finalize_longest()
 
     def _record_away(self, elapsed: float, manual: bool):
@@ -121,8 +128,8 @@ class TimerEngine:
     def _handle_long_gap(
         self,
         gap: float,
+        now_mono: float,
         now_wall: float,
-        idle_sec: float,
         input_changed: bool,
         result: TickResult,
     ) -> TickResult:
@@ -134,29 +141,30 @@ class TimerEngine:
         if not was_away:
             self._finalize_longest()
             d.away_count += 1
+            s.away_started_wall = now_wall - gap
+            s.away_started_mono = now_mono - gap
 
         self._record_away(gap, manual=was_manual)
         self._reset_active_session()
         result.long_gap = True
 
-        # A long unobserved gap ends only when a genuinely new Windows input is
+        # A long unobserved gap ends only when genuinely fresh Windows input is
         # seen. A small idle value alone is not sufficient evidence of return.
-        resumed_now = input_changed
-        if resumed_now:
+        if input_changed:
             result.became_active = True
             result.manual_resumed_by_input = was_manual
-            result.away_duration = gap if not s.away_started_wall else max(
-                0.0, now_wall - s.away_started_wall
-            )
-            s.is_away = False
-            s.manual_away = False
-            s.away_started_wall = None
+            result.away_duration = self._away_duration(now_mono, now_wall)
+            self._clear_away()
         else:
             if not was_away:
                 result.became_away = True
             s.is_away = True
-            s.manual_away = False
-            s.away_started_wall = s.away_started_wall or (now_wall - gap)
+            # Preserve manual-vs-auto classification across sleep until return.
+            s.manual_away = was_manual
+            if s.away_started_wall is None:
+                s.away_started_wall = now_wall - gap
+            if s.away_started_mono is None:
+                s.away_started_mono = now_mono - gap
 
         return result
 
@@ -166,8 +174,8 @@ class TimerEngine:
         now_wall = self.wall()
 
         mono_gap = max(0.0, now_mono - self.last_mono)
-        # wall time is diagnostic only; accumulation uses monotonic time so NTP
-        # or manual clock adjustments cannot create fake work.
+        # Wall time is diagnostic/human-readable only. Accumulation uses
+        # monotonic time so NTP or manual clock changes cannot create fake work.
         self.last_mono = now_mono
         self.last_wall = now_wall
         elapsed = mono_gap
@@ -180,8 +188,8 @@ class TimerEngine:
         if elapsed > GAP_TOLERANCE_SEC:
             return self._handle_long_gap(
                 elapsed,
+                now_mono,
                 now_wall,
-                idle_sec,
                 input_changed,
                 result,
             )
@@ -193,20 +201,16 @@ class TimerEngine:
             if input_changed and now_mono >= self.manual_grace_until:
                 result.manual_resumed_by_input = True
                 result.became_active = True
-                result.away_duration = max(
-                    0.0, now_wall - (s.away_started_wall or now_wall)
-                )
+                result.away_duration = self._away_duration(now_mono, now_wall)
                 self._clear_away()
             return result
 
         # Auto-away return: keep this transition tick as away because the exact
-        # moment of the user's input inside the one-second interval is unknown.
+        # moment of input inside the one-second interval is unknown.
         if s.is_away and input_changed:
             self._record_away(elapsed, manual=False)
             result.became_active = True
-            result.away_duration = max(
-                0.0, now_wall - (s.away_started_wall or now_wall)
-            )
+            result.away_duration = self._away_duration(now_mono, now_wall)
             self._clear_away()
             return result
 
@@ -215,18 +219,17 @@ class TimerEngine:
             return result
 
         # A fresh input confirms all short-idle time accumulated so far as real
-        # use. It remains in active_seconds and can now contribute to longest.
+        # use. It remains in active_seconds and can contribute to longest.
         if input_changed:
-            self.idle_candidate_seconds = 0.0
+            s.idle_candidate_seconds = 0.0
             self._record_active(elapsed, provisional_idle=False)
         elif idle_sec < IDLE_THRESHOLD_SEC:
-            # Short no-input intervals are provisionally treated as active.
             self._record_active(elapsed, provisional_idle=True)
         else:
-            # Five minutes without input: retroactively reclassify the whole
-            # candidate interval as away, including the current tick.
+            # Five minutes without input: retroactively reclassify the entire
+            # provisional no-input interval as away, including the current tick.
             candidate = min(
-                self.idle_candidate_seconds,
+                s.idle_candidate_seconds,
                 d.active_seconds,
                 s.continuous_seconds,
                 s.day_continuous_seconds,
@@ -243,6 +246,7 @@ class TimerEngine:
             s.is_away = True
             s.manual_away = False
             s.away_started_wall = now_wall - away_elapsed
+            s.away_started_mono = now_mono - away_elapsed
             self._reset_active_session()
             result.became_away = True
             return result
