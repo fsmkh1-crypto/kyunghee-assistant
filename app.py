@@ -54,12 +54,12 @@ class SingleInstance:
     def acquire(self) -> bool:
         if os.name != "nt":
             return True
-        k32 = ctypes.windll.kernel32
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
         k32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
         k32.CreateMutexW.restype = ctypes.c_void_p
-        k32.GetLastError.restype = ctypes.c_ulong
         self.handle = k32.CreateMutexW(None, False, "Local\\KyungheeAssistantSingleton")
-        return bool(self.handle) and k32.GetLastError() != 183
+        err = ctypes.get_last_error()
+        return bool(self.handle) and err != 183
 
 
 class App:
@@ -236,7 +236,8 @@ class App:
     def snooze_break(self):
         mode = classify_workday(datetime.now(), self.state.daily.active_seconds).mode
         if not should_encourage_more_work(mode):
-            self.break_gate.reset()
+            # Do not re-arm the gate here: otherwise an already-due break alert
+            # reappears one second later after the workday mode changes.
             self._destroy_toast()
             text = pick(mode)
             self._say(mode, text, work_mode=mode)
@@ -327,7 +328,7 @@ class App:
         self.stats_values["ratio"].configure(text=f"{ratio:.0f}%")
         if refresh_image or self.stats_photo is None:
             self._set_stats_character()
-        self.stats_speech.configure(text=pick("praise") if d.active_seconds >= 3600 else pick("stats"))
+            self.stats_speech.configure(text=pick("praise") if d.active_seconds >= 3600 else pick("stats"))
 
     def show_stats(self):
         self._show_page("stats")
