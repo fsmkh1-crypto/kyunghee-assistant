@@ -7,7 +7,8 @@ IDLE_THRESHOLD_SEC = 5 * 60
 BREAK_INTERVAL_SEC = 60 * 60
 SNOOZE_SEC = 5 * 60
 GAP_TOLERANCE_SEC = 90.0
-MANUAL_INPUT_GRACE_SEC = 3.0
+MAX_GAP_SEC = 24 * 60 * 60
+MANUAL_INPUT_GRACE_SEC = 15.0
 
 
 @dataclass
@@ -87,7 +88,7 @@ class TimerEngine:
         s.is_away = True
         s.away_started_wall = self.wall()
         s.away_started_mono = self.clock()
-        # The click that starts the break must never count as a resume signal.
+        # Ignore incidental pointer motion immediately after clicking Away.
         self.last_input_tick = tick
         self.manual_grace_until = self.clock() + MANUAL_INPUT_GRACE_SEC
 
@@ -142,7 +143,7 @@ class TimerEngine:
             self._finalize_longest()
             d.away_count += 1
             s.away_started_wall = now_wall - gap
-            s.away_started_mono = now_mono - gap
+            s.away_started_mono = now_mono - min(gap, now_mono)
 
         self._record_away(gap, manual=was_manual)
         self._reset_active_session()
@@ -159,12 +160,11 @@ class TimerEngine:
             if not was_away:
                 result.became_away = True
             s.is_away = True
-            # Preserve manual-vs-auto classification across sleep until return.
             s.manual_away = was_manual
             if s.away_started_wall is None:
                 s.away_started_wall = now_wall - gap
             if s.away_started_mono is None:
-                s.away_started_mono = now_mono - gap
+                s.away_started_mono = now_mono - min(gap, now_mono)
 
         return result
 
@@ -174,8 +174,7 @@ class TimerEngine:
         now_wall = self.wall()
 
         mono_gap = max(0.0, now_mono - self.last_mono)
-        # Wall time is diagnostic/human-readable only. Accumulation uses
-        # monotonic time so NTP or manual clock changes cannot create fake work.
+        wall_gap = max(0.0, now_wall - self.last_wall)
         self.last_mono = now_mono
         self.last_wall = now_wall
         elapsed = mono_gap
@@ -185,17 +184,23 @@ class TimerEngine:
         self.last_input_tick = input_tick
         s, d = self.state.session, self.state.daily
 
-        if elapsed > GAP_TOLERANCE_SEC:
+        # Monotonic time remains the accumulation source. Wall time is only an
+        # independent detector for suspend/resume platforms where monotonic may
+        # pause during sleep. A wall-clock jump can therefore create away time,
+        # but can never create fake active time. Cap pathological clock changes.
+        if mono_gap > GAP_TOLERANCE_SEC or wall_gap > GAP_TOLERANCE_SEC:
+            gap = max(mono_gap, min(wall_gap, MAX_GAP_SEC))
             return self._handle_long_gap(
-                elapsed,
+                gap,
                 now_mono,
                 now_wall,
                 input_changed,
                 result,
             )
 
-        # Manual away: the starting click is masked by the grace period. A later
-        # input resumes the session, and the entire resume tick remains away.
+        # Manual away: the starting click and immediate pointer cleanup are
+        # masked by a short grace period. A later input resumes the session, and
+        # the entire resume tick remains away.
         if s.manual_away:
             self._record_away(elapsed, manual=True)
             if input_changed and now_mono >= self.manual_grace_until:
