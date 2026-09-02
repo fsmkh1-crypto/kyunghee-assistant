@@ -13,13 +13,13 @@ from PIL import Image, ImageDraw
 import pystray
 from pystray import MenuItem as item
 
+from break_reminder import BreakReminderGate
 from messages import pick
 from state import load_state, save_state, rollover_daily, prepare_startup_state
 from timer_engine import TimerEngine
 from workday import classify_workday, should_encourage_more_work
 
 APP_NAME = "경희 비서"
-BREAK_REMIND_SEC = 5 * 60
 DIALOGUE_INTERVAL_SEC = 60
 
 DATA_DIR = Path(os.getenv("APPDATA", Path.home())) / "KyungheeAssistant"
@@ -66,6 +66,7 @@ class App:
         self.state = load_state(STATE_FILE)
         prepare_startup_state(self.state, time.time())
         self.engine = TimerEngine(self.state)
+        self.break_gate = BreakReminderGate()
 
         self.root = tk.Tk()
         self.root.title(APP_NAME)
@@ -74,8 +75,6 @@ class App:
 
         self.ui_commands: queue.Queue = queue.Queue()
         self.toast = None
-        self.toast_break_active = False
-        self.break_toast_shown_at = 0.0
         self.tray_icon = None
         self.last_work_mode = "normal"
         self.last_dialogue_at = time.monotonic()
@@ -111,15 +110,16 @@ class App:
     def toggle_manual_away(self):
         if self.state.session.is_away:
             self.engine.stop_manual_away()
-            self.toast_break_active = False
+            self.break_gate.reset()
             self.show_toast("복귀했네. 다시 시작할게.")
         else:
             self.engine.start_manual_away()
+            self.break_gate.reset()
             self.show_toast(pick("away_start"))
         self._update_ui()
 
     def accept_break(self):
-        self.toast_break_active = False
+        self.break_gate.reset()
         self._destroy_toast()
         self.engine.accept_break()
         self.show_toast("좋아. 잠깐 쉬고 와. 시간은 내가 멈춰둘게.")
@@ -127,12 +127,12 @@ class App:
     def snooze_break(self):
         mode = classify_workday(datetime.now(), self.state.daily.active_seconds).mode
         if not should_encourage_more_work(mode):
-            self.toast_break_active = False
+            self.break_gate.reset()
             self._destroy_toast()
             self.show_toast(pick(mode))
             return
 
-        self.toast_break_active = False
+        self.break_gate.reset()
         self._destroy_toast()
         self.engine.snooze_break()
         n = self.state.session.ignored_breaks
@@ -144,20 +144,15 @@ class App:
             result = self.engine.tick()
 
             if result.became_active:
-                self.toast_break_active = False
+                self.break_gate.reset()
                 self.show_toast(pick("return", away=fmt(result.away_duration)))
 
-            if result.break_due:
-                now = time.monotonic()
+            now = time.monotonic()
+            if self.break_gate.should_show(result.break_due, now):
                 mode = classify_workday(datetime.now(), self.state.daily.active_seconds).mode
                 can_snooze = should_encourage_more_work(mode)
                 text = pick("break") if can_snooze else pick(mode)
-                if not self.toast_break_active:
-                    self.toast_break_active = True
-                    self.break_toast_shown_at = now
-                    self.show_break_toast(text, allow_snooze=can_snooze)
-                elif now - self.break_toast_shown_at >= BREAK_REMIND_SEC:
-                    self.toast_break_active = False
+                self.show_break_toast(text, allow_snooze=can_snooze)
 
             self._update_ui()
             self._update_dialogue()
