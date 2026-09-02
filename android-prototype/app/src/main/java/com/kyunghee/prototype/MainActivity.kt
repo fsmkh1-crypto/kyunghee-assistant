@@ -1,290 +1,307 @@
 package com.kyunghee.prototype
 
+import android.app.Activity
+import android.app.AlertDialog
+import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import android.view.Gravity
+import android.view.View
+import android.widget.*
 
-private val Bg = Color(0xFF12101B)
-private val Surface = Color(0xFF1B1827)
-private val Surface2 = Color(0xFF241F34)
-private val Purple = Color(0xFF8B5CF6)
-private val Purple2 = Color(0xFF6D4AE8)
-private val Text = Color(0xFFF4F0FF)
-private val Muted = Color(0xFFA9A2BD)
-private val Line = Color(0xFF3A334D)
-private val Good = Color(0xFF39D98A)
+class MainActivity : Activity() {
+    private val bg = Color.rgb(18, 16, 27)
+    private val panel = Color.rgb(27, 24, 39)
+    private val panel2 = Color.rgb(36, 31, 52)
+    private val purple = Color.rgb(139, 92, 246)
+    private val purple2 = Color.rgb(109, 74, 232)
+    private val text = Color.rgb(244, 240, 255)
+    private val muted = Color.rgb(169, 162, 189)
+    private val good = Color.rgb(57, 217, 138)
+    private val line = Color.rgb(58, 51, 77)
 
-class MainActivity : ComponentActivity() {
+    private lateinit var body: FrameLayout
+    private lateinit var statusText: TextView
+    private var page = 0
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { KyungheePrototype() }
+        window.statusBarColor = bg
+        window.navigationBarColor = bg
+        showApp()
     }
-}
 
-@Composable
-private fun KyungheePrototype() {
-    var page by remember { mutableIntStateOf(0) }
-    var showBreak by remember { mutableStateOf(false) }
+    private fun showApp() {
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(bg)
+        }
+        root.addView(topBar())
 
-    MaterialTheme(colorScheme = darkColorScheme(primary = Purple, background = Bg, surface = Surface)) {
-        Box(Modifier.fillMaxSize().background(Bg)) {
-            Column(Modifier.fillMaxSize()) {
-                TopBar(page)
-                Box(Modifier.weight(1f)) {
-                    when (page) {
-                        0 -> HomeScreen(onBreakPreview = { showBreak = true })
-                        1 -> StatsScreen()
-                        else -> SettingsScreen()
-                    }
-                }
-                BottomNav(page = page, onChange = { page = it })
+        body = FrameLayout(this)
+        root.addView(body, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+        ))
+        root.addView(bottomNav())
+        setContentView(root)
+        showPage(0)
+    }
+
+    private fun topBar(): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(10))
+        }
+        row.addView(label("경희", 22, text, true))
+        row.addView(space(8))
+        row.addView(View(this).apply { background = rounded(good, 999f) }, LinearLayout.LayoutParams(dp(8), dp(8)))
+        row.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        statusText = label("집중 중", 13, muted, false)
+        row.addView(statusText)
+        return row
+    }
+
+    private fun bottomNav(): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(10), dp(8), dp(10), dp(10))
+            setBackgroundColor(Color.rgb(23, 20, 33))
+        }
+        listOf("타이머", "오늘 기록", "설정").forEachIndexed { index, title ->
+            val button = TextView(this).apply {
+                text = title
+                gravity = Gravity.CENTER
+                setTextColor(text)
+                textSize = 13f
+                setPadding(0, dp(13), 0, dp(13))
+                background = rounded(panel2, 14f)
+                setOnClickListener { showPage(index) }
             }
-            if (showBreak) BreakPreview(onDismiss = { showBreak = false })
+            val lp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            lp.setMargins(dp(4), 0, dp(4), 0)
+            row.addView(button, lp)
         }
+        return row
     }
-}
 
-@Composable
-private fun TopBar(page: Int) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text("경희", color = Text, fontWeight = FontWeight.ExtraBold, fontSize = 22.sp)
-        Spacer(Modifier.width(8.dp))
-        Box(Modifier.size(8.dp).clip(CircleShape).background(Good))
-        Spacer(Modifier.weight(1f))
-        Text(
-            when (page) { 0 -> "집중 중"; 1 -> "오늘 기록"; else -> "설정" },
-            color = Muted, fontSize = 13.sp
-        )
+    private fun showPage(index: Int) {
+        page = index
+        statusText.text = when (index) { 0 -> "집중 중"; 1 -> "오늘 기록"; else -> "설정" }
+        body.removeAllViews()
+        val content = when (index) { 0 -> home(); 1 -> stats(); else -> settings() }
+        body.addView(content)
     }
-}
 
-@Composable
-private fun HomeScreen(onBreakPreview: () -> Unit) {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 18.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        CardBox(Modifier.fillMaxWidth().height(420.dp)) {
-            Column(Modifier.fillMaxSize()) {
-                Row(Modifier.weight(1f).fillMaxWidth()) {
-                    Column(
-                        modifier = Modifier.weight(0.88f).fillMaxHeight().padding(start = 20.dp, top = 24.dp, bottom = 18.dp),
-                        verticalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column {
-                            Text("현재 연속 사용", color = Muted, fontSize = 13.sp)
-                            Text("47분", color = Text, fontSize = 54.sp, fontWeight = FontWeight.ExtraBold)
-                            Text("다음 휴식까지 13분", color = Purple, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                        }
-                        Column {
-                            Text("13분만 더 하면 한 시간이야.", color = Text, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                            Spacer(Modifier.height(5.dp))
-                            Text("끝까지 무리하진 말고, 딱 여기까지만 집중하자.", color = Muted, fontSize = 13.sp, lineHeight = 19.sp)
-                        }
-                    }
-                    Box(
-                        modifier = Modifier.weight(1.12f).fillMaxHeight().padding(top = 6.dp, end = 4.dp),
-                        contentAlignment = Alignment.BottomCenter
-                    ) {
-                        Image(
-                            painter = painterResource(R.drawable.cheer_full),
-                            contentDescription = "경희 전신 이미지",
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Fit
-                        )
-                    }
-                }
-                Box(Modifier.fillMaxWidth().height(7.dp).background(Line)) {
-                    Box(Modifier.fillMaxWidth(0.78f).fillMaxHeight().background(Purple))
-                }
-            }
+    private fun home(): View {
+        val scroll = ScrollView(this)
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(2), dp(16), dp(18))
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            MetricCard("오늘 실사용", "5시간 24분", Modifier.weight(1f))
-            MetricCard("자리비움", "48분", Modifier.weight(1f))
+        val hero = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = cardBg()
+            setPadding(dp(18), dp(18), dp(10), dp(12))
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            MetricCard("최장 집중", "1시간 18분", Modifier.weight(1f))
-            MetricCard("실사용률", "87%", Modifier.weight(1f), accent = true)
+        val words = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
         }
+        words.addView(label("현재 연속 사용", 13, muted, false))
+        words.addView(label("47분", 52, text, true))
+        words.addView(label("다음 휴식까지 13분", 15, purple, true))
+        words.addView(space(24))
+        words.addView(label("13분만 더 하면 한 시간이야.", 18, text, true))
+        words.addView(label("끝까지 무리하진 말고, 딱 여기까지만 집중하자.", 13, muted, false))
+        hero.addView(words, LinearLayout.LayoutParams(0, dp(350), 1f))
 
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            ActionButton("자리비움", Modifier.weight(1f)) { }
-            ActionButton("휴식 알림 보기", Modifier.weight(1f), primary = true) { onBreakPreview() }
+        val image = ImageView(this).apply {
+            setImageResource(R.drawable.cheer_full)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            adjustViewBounds = true
         }
-        Text("※ 안드로이드 버전은 화면 확인용 프로토타입입니다.", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 4.dp))
+        hero.addView(image, LinearLayout.LayoutParams(0, dp(350), 1f))
+        col.addView(hero, fullWrapMargins(0, 0, 0, 12))
+
+        val progress = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(line)
+        }
+        progress.addView(View(this).apply { setBackgroundColor(purple) }, LinearLayout.LayoutParams(0, dp(7), .78f))
+        progress.addView(View(this), LinearLayout.LayoutParams(0, dp(7), .22f))
+        col.addView(progress, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(7)))
+        col.addView(space(12))
+
+        col.addView(metricRow("오늘 실사용", "5시간 24분", "자리비움", "48분"))
+        col.addView(space(10))
+        col.addView(metricRow("최장 집중", "1시간 18분", "실사용률", "87%", true))
+        col.addView(space(12))
+
+        val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        actions.addView(action("자리비움", false) {}, LinearLayout.LayoutParams(0, dp(52), 1f).apply { marginEnd = dp(5) })
+        actions.addView(action("휴식 알림 보기", true) { showBreak() }, LinearLayout.LayoutParams(0, dp(52), 1f).apply { marginStart = dp(5) })
+        col.addView(actions)
+        col.addView(space(10))
+        col.addView(label("※ 안드로이드 버전은 화면 확인용 프로토타입입니다.", 11, muted, false))
+
+        scroll.addView(col)
+        return scroll
     }
-}
 
-@Composable
-private fun StatsScreen() {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 18.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        CardBox(Modifier.fillMaxWidth().height(290.dp)) {
-            Row(Modifier.fillMaxSize()) {
-                Column(
-                    Modifier.weight(1f).padding(22.dp),
-                    verticalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column {
-                        Text("오늘 기록", color = Muted, fontSize = 13.sp)
-                        Spacer(Modifier.height(6.dp))
-                        Text("5시간 24분", color = Text, fontSize = 38.sp, fontWeight = FontWeight.ExtraBold)
-                        Text("실사용", color = Purple, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                    }
-                    Text("오늘 꽤 많이 했어.\n이제 남은 건 정리 위주로 가자.", color = Text, fontSize = 16.sp, lineHeight = 23.sp, fontWeight = FontWeight.Bold)
-                }
-                Image(
-                    painter = painterResource(R.drawable.cheer_full),
-                    contentDescription = null,
-                    modifier = Modifier.weight(.9f).fillMaxHeight().padding(6.dp),
-                    contentScale = ContentScale.Fit
-                )
-            }
+    private fun stats(): View {
+        val scroll = ScrollView(this)
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(2), dp(16), dp(18))
         }
-        StatRow("실사용", "5시간 24분")
-        StatRow("자리비움", "48분")
-        StatRow("자리비움 횟수", "6회")
-        StatRow("최장 연속 사용", "1시간 18분")
-        StatRow("실사용률", "87%", highlight = true)
-    }
-}
-
-@Composable
-private fun SettingsScreen() {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 18.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        SettingsCard("집중 타이머", "60분 사용 후 휴식 알림", true)
-        SettingsCard("자리비움 감지", "5분 미입력 시 자리비움 처리", true)
-        SettingsCard("퇴근 모드", "17:30부터 새 업무 권장 중지", true)
-        SettingsCard("경희 멘트", "집중·휴식·퇴근 상황별 문구", true)
-        CardBox(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(20.dp)) {
-                Text("디자인 확인 포인트", color = Text, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                Spacer(Modifier.height(10.dp))
-                Text("• 경희 전신 크기와 다리 노출 범위\n• 타이머 숫자 크기\n• 카드 간격과 보라색 농도\n• 하단 메뉴 높이\n• 말풍선/문구 밀도", color = Muted, fontSize = 14.sp, lineHeight = 23.sp)
-            }
+        val hero = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = cardBg()
+            setPadding(dp(20), dp(16), dp(8), dp(12))
         }
-    }
-}
-
-@Composable
-private fun BottomNav(page: Int, onChange: (Int) -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().background(Color(0xFF171421)).padding(horizontal = 12.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        listOf("타이머", "오늘 기록", "설정").forEachIndexed { index, label ->
-            Box(
-                Modifier.weight(1f).clip(RoundedCornerShape(14.dp))
-                    .background(if (page == index) Surface2 else Color.Transparent)
-                    .clickable { onChange(index) }
-                    .padding(vertical = 13.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(label, color = if (page == index) Text else Muted, fontWeight = if (page == index) FontWeight.Bold else FontWeight.Normal, fontSize = 13.sp)
-            }
+        val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL }
+        left.addView(label("오늘 기록", 13, muted, false))
+        left.addView(label("5시간 24분", 36, text, true))
+        left.addView(label("실사용", 14, purple, true))
+        left.addView(space(22))
+        left.addView(label("오늘 꽤 많이 했어.\n이제 남은 건 정리 위주로 가자.", 16, text, true))
+        hero.addView(left, LinearLayout.LayoutParams(0, dp(260), 1.1f))
+        hero.addView(ImageView(this).apply {
+            setImageResource(R.drawable.cheer_full)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+        }, LinearLayout.LayoutParams(0, dp(260), .9f))
+        col.addView(hero, fullWrapMargins(0, 0, 0, 12))
+        listOf(
+            "실사용" to "5시간 24분",
+            "자리비움" to "48분",
+            "자리비움 횟수" to "6회",
+            "최장 연속 사용" to "1시간 18분",
+            "실사용률" to "87%"
+        ).forEachIndexed { i, item ->
+            col.addView(statRow(item.first, item.second, i == 4))
+            col.addView(space(8))
         }
+        scroll.addView(col)
+        return scroll
     }
-}
 
-@Composable
-private fun BreakPreview(onDismiss: () -> Unit) {
-    Box(Modifier.fillMaxSize().background(Color(0xB8000000)).clickable { onDismiss() }, contentAlignment = Alignment.Center) {
-        CardBox(Modifier.fillMaxWidth(.88f).height(390.dp).clickable(enabled = false) {}) {
-            Column(Modifier.fillMaxSize().padding(18.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Image(
-                    painter = painterResource(R.drawable.cheer_full), contentDescription = null,
-                    modifier = Modifier.height(205.dp).fillMaxWidth(), contentScale = ContentScale.Fit
-                )
-                Text("오빠, 이제 좀 쉬자.", color = Text, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
-                Spacer(Modifier.height(7.dp))
-                Text("한 시간 가까이 집중했어. 눈이랑 어깨 좀 풀고 와.", color = Muted, fontSize = 14.sp, textAlign = TextAlign.Center)
-                Spacer(Modifier.weight(1f))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    ActionButton("5분 더", Modifier.weight(1f)) { onDismiss() }
-                    ActionButton("알았어, 쉴게", Modifier.weight(1f), primary = true) { onDismiss() }
-                }
-            }
+    private fun settings(): View {
+        val scroll = ScrollView(this)
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(2), dp(16), dp(18))
         }
-    }
-}
-
-@Composable
-private fun CardBox(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
-    Box(modifier.clip(RoundedCornerShape(24.dp)).background(Surface).border(1.dp, Line, RoundedCornerShape(24.dp))) { content() }
-}
-
-@Composable
-private fun MetricCard(label: String, value: String, modifier: Modifier, accent: Boolean = false) {
-    CardBox(modifier.height(82.dp)) {
-        Column(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.Center) {
-            Text(label, color = Muted, fontSize = 12.sp)
-            Spacer(Modifier.height(3.dp))
-            Text(value, color = if (accent) Purple else Text, fontSize = 20.sp, fontWeight = FontWeight.ExtraBold)
+        listOf(
+            Triple("집중 타이머", "60분 사용 후 휴식 알림", true),
+            Triple("자리비움 감지", "5분 미입력 시 자리비움 처리", true),
+            Triple("퇴근 모드", "17:30부터 새 업무 권장 중지", true),
+            Triple("경희 멘트", "집중·휴식·퇴근 상황별 문구", true)
+        ).forEach { (a,b,c) ->
+            col.addView(settingRow(a,b,c)); col.addView(space(10))
         }
+        val info = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; background = cardBg(); setPadding(dp(18),dp(18),dp(18),dp(18)) }
+        info.addView(label("디자인 확인 포인트", 16, text, true))
+        info.addView(space(8))
+        info.addView(label("• 경희 전신 크기와 다리 노출 범위\n• 타이머 숫자 크기\n• 카드 간격과 보라색 농도\n• 하단 메뉴 높이\n• 말풍선/문구 밀도", 14, muted, false))
+        col.addView(info)
+        scroll.addView(col)
+        return scroll
     }
-}
 
-@Composable
-private fun ActionButton(label: String, modifier: Modifier, primary: Boolean = false, onClick: () -> Unit) {
-    Box(
-        modifier.clip(RoundedCornerShape(16.dp)).background(if (primary) Purple2 else Surface2)
-            .clickable { onClick() }.padding(vertical = 15.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(label, color = Text, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-    }
-}
-
-@Composable
-private fun StatRow(label: String, value: String, highlight: Boolean = false) {
-    CardBox(Modifier.fillMaxWidth().height(62.dp)) {
-        Row(Modifier.fillMaxSize().padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(label, color = Muted, fontSize = 13.sp)
-            Spacer(Modifier.weight(1f))
-            Text(value, color = if (highlight) Purple else Text, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+    private fun showBreak() {
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(18), dp(12), dp(18), dp(8))
         }
+        content.addView(ImageView(this).apply {
+            setImageResource(R.drawable.cheer_full)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(190)))
+        content.addView(label("오빠, 이제 좀 쉬자.", 22, Color.BLACK, true).apply { gravity = Gravity.CENTER })
+        content.addView(space(6))
+        content.addView(label("한 시간 가까이 집중했어. 눈이랑 어깨 좀 풀고 와.", 14, Color.DKGRAY, false).apply { gravity = Gravity.CENTER })
+        AlertDialog.Builder(this)
+            .setView(content)
+            .setNegativeButton("5분 더", null)
+            .setPositiveButton("알았어, 쉴게", null)
+            .show()
     }
-}
 
-@Composable
-private fun SettingsCard(title: String, subtitle: String, checked: Boolean) {
-    CardBox(Modifier.fillMaxWidth().height(82.dp)) {
-        Row(Modifier.fillMaxSize().padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(title, color = Text, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(3.dp))
-                Text(subtitle, color = Muted, fontSize = 12.sp)
-            }
-            Switch(checked = checked, onCheckedChange = null, colors = SwitchDefaults.colors(checkedThumbColor = Text, checkedTrackColor = Purple))
-        }
+    private fun metricRow(a: String, av: String, b: String, bv: String, accentB: Boolean = false): View {
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row.addView(metric(a, av, false), LinearLayout.LayoutParams(0, dp(82), 1f).apply { marginEnd = dp(5) })
+        row.addView(metric(b, bv, accentB), LinearLayout.LayoutParams(0, dp(82), 1f).apply { marginStart = dp(5) })
+        return row
     }
+
+    private fun metric(title: String, value: String, accent: Boolean): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER_VERTICAL
+        background = cardBg()
+        setPadding(dp(15), 0, dp(15), 0)
+        addView(label(title, 12, muted, false))
+        addView(label(value, 20, if (accent) purple else text, true))
+    }
+
+    private fun statRow(title: String, value: String, accent: Boolean): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        background = cardBg()
+        setPadding(dp(18), 0, dp(18), 0)
+        addView(label(title, 13, muted, false))
+        addView(View(this@MainActivity), LinearLayout.LayoutParams(0, 1, 1f))
+        addView(label(value, 16, if (accent) purple else text, true))
+        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(62))
+    }
+
+    private fun settingRow(title: String, subtitle: String, checked: Boolean): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        background = cardBg()
+        setPadding(dp(18), 0, dp(14), 0)
+        val words = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
+        words.addView(label(title, 15, text, true))
+        words.addView(label(subtitle, 12, muted, false))
+        addView(words, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        addView(Switch(this@MainActivity).apply { isChecked = checked; isEnabled = false })
+        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(82))
+    }
+
+    private fun action(title: String, primary: Boolean, click: () -> Unit): View = TextView(this).apply {
+        text = title
+        gravity = Gravity.CENTER
+        textSize = 14f
+        setTextColor(text)
+        setTypeface(typeface, Typeface.BOLD)
+        background = rounded(if (primary) purple2 else panel2, 16f)
+        setOnClickListener { click() }
+    }
+
+    private fun label(value: String, sp: Int, color: Int, bold: Boolean): TextView = TextView(this).apply {
+        text = value
+        textSize = sp.toFloat()
+        setTextColor(color)
+        if (bold) setTypeface(typeface, Typeface.BOLD)
+        includeFontPadding = false
+        setLineSpacing(dp(2).toFloat(), 1f)
+    }
+
+    private fun cardBg() = rounded(panel, 24f, line)
+
+    private fun rounded(fill: Int, radiusDp: Float, stroke: Int? = null) = GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
+        cornerRadius = dp(radiusDp.toInt()).toFloat()
+        setColor(fill)
+        if (stroke != null) setStroke(dp(1), stroke)
+    }
+
+    private fun space(height: Int) = Space(this).apply { layoutParams = LinearLayout.LayoutParams(1, dp(height)) }
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density + .5f).toInt()
+    private fun fullWrapMargins(l: Int, t: Int, r: Int, b: Int) = LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+    ).apply { setMargins(dp(l), dp(t), dp(r), dp(b)) }
 }
