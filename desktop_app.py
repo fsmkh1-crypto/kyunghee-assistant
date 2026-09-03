@@ -208,28 +208,12 @@ class DesktopApp(App):
         body = tk.Frame(page, bg=core.BG)
         body.pack(fill="both", expand=True, padx=20, pady=(4, 18))
 
-        nav = self._card(body, width=160)
-        nav.pack(side="left", fill="y", padx=(0, 8))
-        nav.pack_propagate(False)
-        for index, caption in enumerate(("일반 설정", "알림 설정", "시간 설정")):
-            self._label(
-                nav,
-                caption,
-                size=9,
-                weight="bold" if index == 0 else "normal",
-                fg=core.TEXT if index == 0 else core.MUTED,
-                bg="#2B2348" if index == 0 else core.PANEL,
-                anchor="w",
-                padx=14,
-                pady=11,
-            ).pack(fill="x", padx=8, pady=(8 if index == 0 else 0, 0))
-
         panel = self._card(body)
-        panel.pack(side="left", fill="both", expand=True, padx=(8, 0))
+        panel.pack(fill="both", expand=True)
 
         content = tk.Frame(panel, bg=core.PANEL)
         content.pack(side="left", fill="both", expand=True, padx=20, pady=18)
-        self._label(content, "일반 설정", size=11, weight="bold", bg=core.PANEL).pack(anchor="w", pady=(0, 10))
+        self._label(content, "앱 설정", size=11, weight="bold", bg=core.PANEL).pack(anchor="w", pady=(0, 10))
         self._label(content, "체크와 시간을 바꾼 뒤 저장해 주세요.", size=8, fg=core.MUTED, bg=core.PANEL).pack(anchor="w", pady=(0, 8))
 
         p = self.preferences

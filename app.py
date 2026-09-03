@@ -21,7 +21,7 @@ from messages import pick
 from settings import UserSettings, load_user_settings, save_user_settings
 from state import load_state, save_state, rollover_daily, prepare_startup_state
 from timer_engine import BREAK_INTERVAL_SEC, TimerEngine
-from workday import WorkdayState, classify_workday, should_encourage_more_work
+from workday import WorkdayState, apply_reminder_preference, classify_workday, should_encourage_more_work
 
 APP_NAME = "경희 타이머"
 DIALOGUE_INTERVAL_SEC = 60
@@ -126,12 +126,13 @@ class App:
         self.root.after(5000, self._save_periodic)
 
     def _current_workday_state(self) -> WorkdayState:
-        if not self.preferences.workday_reminders:
-            return WorkdayState("normal", None)
-        return classify_workday(
-            datetime.now(),
-            self.state.daily.active_seconds,
-            self.workday_policy,
+        return apply_reminder_preference(
+            classify_workday(
+                datetime.now(),
+                self.state.daily.active_seconds,
+                self.workday_policy,
+            ),
+            self.preferences.workday_reminders,
         )
 
     def apply_preferences(self, preferences: UserSettings) -> None:

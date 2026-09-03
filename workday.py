@@ -27,5 +27,12 @@ def classify_workday(now: datetime, active_seconds: float, policy=WORKDAY) -> Wo
     return WorkdayState("normal", None)
 
 
+def apply_reminder_preference(state: WorkdayState, enabled: bool) -> WorkdayState:
+    """Hide clock-based reminders while preserving the active-time safety stop."""
+    if enabled or state.mode == "hard_stop":
+        return state
+    return WorkdayState("normal", None)
+
+
 def should_encourage_more_work(mode: str) -> bool:
     return mode in {"normal", "wind_down"}
