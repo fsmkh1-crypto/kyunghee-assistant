@@ -12,21 +12,30 @@ class RuntimeAssetTests(unittest.TestCase):
                 self.assertTrue(path.is_file())
                 self.assertEqual(path.parent, ASSET_DIR)
 
-    def test_runtime_character_roles_prefer_webp(self):
-        roles = {"default", "playful", "cheer", "cute_cheer", "nag", "worry", "praise"}
-        for role in roles:
+    def test_canonical_png_names(self):
+        expected = {
+            "default": "main_kyunghee.png",
+            "cheer": "focus_cheer_kyunghee.png",
+            "rest": "rest_suggest_kyunghee.png",
+            "away": "away_kyunghee.png",
+            "worry": "warning_kyunghee.png",
+            "nag": "warning_kyunghee.png",
+            "praise": "leave_work_kyunghee.png",
+            "stats": "stats_kyunghee.png",
+            "settings": "settings_kyunghee.png",
+            "alert": "alert_kyunghee.png",
+            "master_face": "profile_kyunghee.png",
+        }
+        for role, filename in expected.items():
             with self.subTest(role=role):
-                self.assertEqual(resolve_asset(role).suffix.lower(), ".webp")
+                self.assertEqual(ROLE_FILES[role][0], filename)
 
-    def test_master_face_uses_valid_runtime_fallback(self):
-        # The alpha pack's master_face.png is known to be truncated, so the
-        # resolver intentionally prefers the valid playful portrait until the
-        # final lossless crop is committed.
+    def test_master_face_fallback(self):
         self.assertEqual(resolve_asset("master_face").name, "playful.webp")
 
     def test_workday_visual_policy(self):
         self.assertEqual(role_for_work_mode("normal"), "default")
-        self.assertEqual(role_for_work_mode("wind_down"), "worry")
+        self.assertEqual(role_for_work_mode("wind_down"), "rest")
         self.assertEqual(role_for_work_mode("leave"), "praise")
         self.assertEqual(role_for_work_mode("strong_leave"), "nag")
         self.assertEqual(role_for_work_mode("late_leave"), "nag")
@@ -34,8 +43,10 @@ class RuntimeAssetTests(unittest.TestCase):
 
     def test_dialogue_visual_policy(self):
         self.assertEqual(role_for_dialogue("return"), "cute_cheer")
-        self.assertEqual(role_for_dialogue("snooze1"), "worry")
+        self.assertEqual(role_for_dialogue("away_start"), "away")
+        self.assertEqual(role_for_dialogue("snooze1"), "rest")
         self.assertEqual(role_for_dialogue("snooze2"), "nag")
+        self.assertEqual(role_for_dialogue("stats"), "stats")
         self.assertEqual(role_for_dialogue("break", "leave"), "praise")
 
 
