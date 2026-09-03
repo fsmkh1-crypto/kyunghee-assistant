@@ -67,9 +67,8 @@ ROLE_FILES = {
     ),
     "master_face": (
         "profile_kyunghee.png",
-        # master_face.png in the legacy alpha pack is truncated. Keep the valid
-        # playful portrait ahead of legacy master-face names until the approved
-        # profile PNG has been installed.
+        # Keep the valid playful portrait ahead of the known-truncated legacy
+        # master_face.png when the approved profile PNG is unavailable.
         "playful.webp",
         "master_face.webp", "master_face.png", "master_face.jpg",
     ),
