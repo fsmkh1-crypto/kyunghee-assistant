@@ -20,6 +20,7 @@ on:
       - 'RUN_DEBUG.cmd'
       - 'INSTALL_ASSETS.cmd'
       - 'install_asset_pack.py'
+      - 'assets/**'
       - '.github/workflows/desktop-package.yml'
 
 jobs:
