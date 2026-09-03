@@ -1,0 +1,43 @@
+name: Desktop Package
+
+on:
+  push:
+    branches:
+      - ui/dark-kyunghee-redesign
+    paths:
+      - 'desktop_app.py'
+      - 'app.py'
+      - 'asset_manager.py'
+      - 'break_reminder.py'
+      - 'messages.py'
+      - 'settings.py'
+      - 'state.py'
+      - 'timer_engine.py'
+      - 'windows_idle.py'
+      - 'workday.py'
+      - 'requirements.txt'
+      - 'RUN.cmd'
+      - 'RUN_DEBUG.cmd'
+      - 'INSTALL_ASSETS.cmd'
+      - 'install_asset_pack.py'
+      - '.github/workflows/desktop-package.yml'
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist\kyunghee-timer-desktop | Out-Null
+          $files = @(
+            'desktop_app.py','app.py','asset_manager.py','break_reminder.py','messages.py','settings.py','state.py','timer_engine.py','windows_idle.py','workday.py','requirements.txt','RUN.cmd','RUN_DEBUG.cmd','INSTALL_ASSETS.cmd','install_asset_pack.py','README.md','LICENSE'
+          )
+          foreach ($f in $files) { Copy-Item $f dist\kyunghee-timer-desktop\ }
+          New-Item -ItemType Directory -Force -Path dist\kyunghee-timer-desktop\assets | Out-Null
+          Copy-Item assets\README.md dist\kyunghee-timer-desktop\assets\README.md -ErrorAction SilentlyContinue
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kyunghee-timer-desktop
+          path: dist/kyunghee-timer-desktop
