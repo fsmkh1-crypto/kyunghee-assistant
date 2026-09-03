@@ -14,6 +14,16 @@ Development is focused on the Windows desktop app. `RUN.cmd` launches the integr
 
 The earlier `android-prototype/` is retained only as inactive design history and is not a current development target.
 
+The settings page now persists and applies:
+
+- Windows sign-in startup
+- always-on-top mode
+- break reminder on/off
+- workday reminder on/off
+- wind-down, leave, strong-leave, and late-leave times
+
+User preferences are stored in `%APPDATA%\KyungheeAssistant\settings.json`.
+
 ### Core timer behavior
 
 - 60 minutes of continuous active use triggers a break reminder.

@@ -18,9 +18,10 @@ from pystray import MenuItem as item
 from asset_manager import resolve_asset, role_for_dialogue, role_for_work_mode
 from break_reminder import BreakReminderGate
 from messages import pick
+from settings import UserSettings, load_user_settings, save_user_settings
 from state import load_state, save_state, rollover_daily, prepare_startup_state
 from timer_engine import BREAK_INTERVAL_SEC, TimerEngine
-from workday import classify_workday, should_encourage_more_work
+from workday import WorkdayState, classify_workday, should_encourage_more_work
 
 APP_NAME = "경희 타이머"
 DIALOGUE_INTERVAL_SEC = 60
@@ -28,6 +29,7 @@ DIALOGUE_INTERVAL_SEC = 60
 DATA_DIR = Path(os.getenv("APPDATA", Path.home())) / "KyungheeAssistant"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 STATE_FILE = DATA_DIR / "state.json"
+SETTINGS_FILE = DATA_DIR / "settings.json"
 LOG_FILE = DATA_DIR / "kyunghee.log"
 
 BG = "#070B1B"
@@ -84,6 +86,8 @@ class SingleInstance:
 
 class App:
     def __init__(self):
+        self.preferences = load_user_settings(SETTINGS_FILE)
+        self.workday_policy = self.preferences.workday_policy()
         self.state = load_state(STATE_FILE)
         prepare_startup_state(self.state, time.time())
         self.engine = TimerEngine(self.state)
@@ -94,6 +98,7 @@ class App:
         self.root.geometry("760x520")
         self.root.minsize(720, 500)
         self.root.configure(bg=BG)
+        self.root.attributes("-topmost", self.preferences.always_on_top)
         self.root.protocol("WM_DELETE_WINDOW", self.root.withdraw)
 
         self.ui_commands: queue.Queue = queue.Queue()
@@ -109,7 +114,7 @@ class App:
         self.current_page = "timer"
 
         self._build_ui()
-        initial = classify_workday(datetime.now(), self.state.daily.active_seconds)
+        initial = self._current_workday_state()
         self.last_work_mode = initial.mode
         self._set_character(role_for_work_mode(initial.mode))
         if initial.mode != "normal":
@@ -119,6 +124,22 @@ class App:
         self.root.after(250, self._drain_ui_queue)
         self.root.after(1000, self._tick_safe)
         self.root.after(5000, self._save_periodic)
+
+    def _current_workday_state(self) -> WorkdayState:
+        if not self.preferences.workday_reminders:
+            return WorkdayState("normal", None)
+        return classify_workday(
+            datetime.now(),
+            self.state.daily.active_seconds,
+            self.workday_policy,
+        )
+
+    def apply_preferences(self, preferences: UserSettings) -> None:
+        preferences.workday_policy()
+        save_user_settings(SETTINGS_FILE, preferences)
+        self.preferences = preferences
+        self.workday_policy = preferences.workday_policy()
+        self.root.attributes("-topmost", preferences.always_on_top)
 
     def _label(self, parent, text="", size=10, weight="normal", fg=TEXT, bg=None, **kwargs):
         return tk.Label(
@@ -462,7 +483,7 @@ class App:
         self.show_toast(text)
 
     def snooze_break(self):
-        mode = classify_workday(datetime.now(), self.state.daily.active_seconds).mode
+        mode = self._current_workday_state().mode
         if not should_encourage_more_work(mode):
             # Do not re-arm the gate here: otherwise an already-due break alert
             # reappears one second later after the workday mode changes.
@@ -493,8 +514,10 @@ class App:
                 self.show_toast(text)
 
             now = time.monotonic()
-            if self.break_gate.should_show(result.break_due, now):
-                mode = classify_workday(datetime.now(), self.state.daily.active_seconds).mode
+            if not self.preferences.break_reminders:
+                self.break_gate.reset()
+            elif self.break_gate.should_show(result.break_due, now):
+                mode = self._current_workday_state().mode
                 can_snooze = should_encourage_more_work(mode)
                 text = pick("break") if can_snooze else pick(mode)
                 self._set_character(role_for_dialogue("break", mode))
@@ -511,7 +534,7 @@ class App:
                 self.root.after(1000, self._tick_safe)
 
     def _update_dialogue(self):
-        state = classify_workday(datetime.now(), self.state.daily.active_seconds)
+        state = self._current_workday_state()
         now = time.monotonic()
 
         if state.mode != self.last_work_mode:
@@ -714,7 +737,8 @@ class App:
         self.root.deiconify()
         self.root.lift()
         self.root.attributes("-topmost", True)
-        self.root.after(60, lambda: self.root.attributes("-topmost", False))
+        if not self.preferences.always_on_top:
+            self.root.after(60, lambda: self.root.attributes("-topmost", False))
 
     def quit(self):
         try:

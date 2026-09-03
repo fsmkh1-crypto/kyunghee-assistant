@@ -8,6 +8,7 @@ import app as core
 from app import App, SingleInstance
 from asset_manager import resolve_asset
 from messages import pick
+from settings import UserSettings, set_windows_startup
 
 
 class DesktopApp(App):
@@ -210,12 +211,18 @@ class DesktopApp(App):
         nav = self._card(body, width=160)
         nav.pack(side="left", fill="y", padx=(0, 8))
         nav.pack_propagate(False)
-        for caption in ("일반", "알림 설정", "시간 설정", "기타"):
-            active = caption == "일반"
-            self._label(nav, caption, size=9, weight="bold" if active else "normal",
-                        fg=core.TEXT if active else core.MUTED,
-                        bg="#2B2348" if active else core.PANEL,
-                        anchor="w", padx=14, pady=11).pack(fill="x", padx=8, pady=(8 if active else 0, 0))
+        for index, caption in enumerate(("일반 설정", "알림 설정", "시간 설정")):
+            self._label(
+                nav,
+                caption,
+                size=9,
+                weight="bold" if index == 0 else "normal",
+                fg=core.TEXT if index == 0 else core.MUTED,
+                bg="#2B2348" if index == 0 else core.PANEL,
+                anchor="w",
+                padx=14,
+                pady=11,
+            ).pack(fill="x", padx=8, pady=(8 if index == 0 else 0, 0))
 
         panel = self._card(body)
         panel.pack(side="left", fill="both", expand=True, padx=(8, 0))
@@ -223,27 +230,70 @@ class DesktopApp(App):
         content = tk.Frame(panel, bg=core.PANEL)
         content.pack(side="left", fill="both", expand=True, padx=20, pady=18)
         self._label(content, "일반 설정", size=11, weight="bold", bg=core.PANEL).pack(anchor="w", pady=(0, 10))
-        self._label(
-            content,
-            "현재 적용 중인 기본값 · 변경 기능은 다음 버전에서 연결됩니다.",
-            size=8,
-            fg=core.MUTED,
-            bg=core.PANEL,
-            wraplength=360,
-            justify="left",
-        ).pack(anchor="w", pady=(0, 8))
-        for text in ("Windows 시작 시 자동 실행", "메인 창 항상 위 표시", "휴식 알림 사용", "퇴근 시간 알림 사용"):
-            row = tk.Frame(content, bg=core.PANEL)
-            row.pack(fill="x", pady=6)
-            self._label(row, "✓", size=11, weight="bold", fg=core.PURPLE, bg=core.PANEL).pack(side="left")
-            self._label(row, text, size=9, bg=core.PANEL).pack(side="left", padx=8)
+        self._label(content, "체크와 시간을 바꾼 뒤 저장해 주세요.", size=8, fg=core.MUTED, bg=core.PANEL).pack(anchor="w", pady=(0, 8))
+
+        p = self.preferences
+        self.settings_bool_vars = {
+            "start_with_windows": tk.BooleanVar(value=p.start_with_windows),
+            "always_on_top": tk.BooleanVar(value=p.always_on_top),
+            "break_reminders": tk.BooleanVar(value=p.break_reminders),
+            "workday_reminders": tk.BooleanVar(value=p.workday_reminders),
+        }
+        for key, caption in (
+            ("start_with_windows", "Windows 시작 시 자동 실행"),
+            ("always_on_top", "메인 창 항상 위 표시"),
+            ("break_reminders", "휴식 알림 사용"),
+            ("workday_reminders", "퇴근 시간 알림 사용"),
+        ):
+            tk.Checkbutton(
+                content,
+                text=caption,
+                variable=self.settings_bool_vars[key],
+                font=("Malgun Gothic", 9),
+                fg=core.TEXT,
+                bg=core.PANEL,
+                activeforeground=core.TEXT,
+                activebackground=core.PANEL,
+                selectcolor=core.PANEL_2,
+                highlightthickness=0,
+                bd=0,
+                cursor="hand2",
+            ).pack(anchor="w", pady=3)
 
         self._label(content, "퇴근 시간 설정", size=10, weight="bold", bg=core.PANEL).pack(anchor="w", pady=(20, 8))
-        for caption, value in (("마무리 예고", "17:00"), ("퇴근 모드 시작", "17:30"), ("적극 퇴근 권고", "18:00"), ("야근 잔소리 시작", "18:30")):
+        self.settings_time_vars = {
+            "wind_down": tk.StringVar(value=p.wind_down),
+            "leave_mode": tk.StringVar(value=p.leave_mode),
+            "strong_leave": tk.StringVar(value=p.strong_leave),
+            "late_leave": tk.StringVar(value=p.late_leave),
+        }
+        for key, caption in (
+            ("wind_down", "마무리 예고"),
+            ("leave_mode", "퇴근 모드 시작"),
+            ("strong_leave", "적극 퇴근 권고"),
+            ("late_leave", "야근 잔소리 시작"),
+        ):
             row = tk.Frame(content, bg=core.PANEL)
             row.pack(fill="x", pady=4)
             self._label(row, caption, size=9, fg=core.MUTED, bg=core.PANEL).pack(side="left")
-            self._label(row, value, size=9, weight="bold", bg=core.PANEL).pack(side="right")
+            tk.Entry(
+                row,
+                textvariable=self.settings_time_vars[key],
+                width=7,
+                justify="center",
+                font=("Malgun Gothic", 9, "bold"),
+                fg=core.TEXT,
+                bg=core.PANEL_2,
+                insertbackground=core.TEXT,
+                relief="flat",
+                bd=0,
+            ).pack(side="right", ipady=4)
+
+        save_row = tk.Frame(content, bg=core.PANEL)
+        save_row.pack(fill="x", pady=(15, 0))
+        self.settings_status = self._label(save_row, "", size=8, fg=core.GREEN, bg=core.PANEL)
+        self.settings_status.pack(side="left")
+        self._button(save_row, "설정 저장", self._save_settings, primary=True).pack(side="right")
 
         image_holder = tk.Label(panel, bg=core.PANEL, bd=0, anchor="s")
         image_holder.pack(side="right", fill="y", padx=(4, 10), pady=(10, 0))
@@ -253,6 +303,37 @@ class DesktopApp(App):
             image_holder.configure(image=self.settings_photo)
         except Exception:
             core.log.exception("settings character asset failed")
+
+    def _save_settings(self):
+        candidate = UserSettings(
+            start_with_windows=self.settings_bool_vars["start_with_windows"].get(),
+            always_on_top=self.settings_bool_vars["always_on_top"].get(),
+            break_reminders=self.settings_bool_vars["break_reminders"].get(),
+            workday_reminders=self.settings_bool_vars["workday_reminders"].get(),
+            wind_down=self.settings_time_vars["wind_down"].get().strip(),
+            leave_mode=self.settings_time_vars["leave_mode"].get().strip(),
+            strong_leave=self.settings_time_vars["strong_leave"].get().strip(),
+            late_leave=self.settings_time_vars["late_leave"].get().strip(),
+        )
+        try:
+            candidate.workday_policy()
+            previous = self.preferences
+            startup_changed = candidate.start_with_windows != previous.start_with_windows
+            if startup_changed:
+                set_windows_startup(candidate.start_with_windows)
+            try:
+                self.apply_preferences(candidate)
+            except Exception:
+                if startup_changed:
+                    set_windows_startup(previous.start_with_windows)
+                raise
+        except Exception as exc:
+            core.log.exception("settings save failed")
+            self.settings_status.configure(text=str(exc), fg=core.AMBER)
+            return
+
+        self.last_work_mode = self._current_workday_state().mode
+        self.settings_status.configure(text="저장됨", fg=core.GREEN)
 
     def _update_ui(self):
         super()._update_ui()
