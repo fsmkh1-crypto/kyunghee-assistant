@@ -27,17 +27,28 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install build dependencies
+        run: python -m pip install -r requirements.txt pyinstaller
+      - name: Build standalone Windows app
+        run: >-
+          python -m PyInstaller
+          --noconfirm
+          --clean
+          --onedir
+          --windowed
+          --name KyungheeTimer
+          --add-data "assets;assets"
+          desktop_app.py
       - name: Prepare package
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist\kyunghee-timer-desktop | Out-Null
-          $files = @(
-            'desktop_app.py','app.py','asset_manager.py','break_reminder.py','messages.py','settings.py','state.py','timer_engine.py','windows_idle.py','workday.py','requirements.txt','RUN.cmd','RUN_DEBUG.cmd','INSTALL_ASSETS.cmd','install_asset_pack.py','README.md','LICENSE'
-          )
-          foreach ($f in $files) { Copy-Item $f dist\kyunghee-timer-desktop\ }
-          New-Item -ItemType Directory -Force -Path dist\kyunghee-timer-desktop\assets | Out-Null
-          Copy-Item assets\README.md dist\kyunghee-timer-desktop\assets\README.md -ErrorAction SilentlyContinue
+          $ErrorActionPreference = "Stop"
+          Copy-Item README.md dist\KyungheeTimer\README.md
+          Copy-Item LICENSE dist\KyungheeTimer\LICENSE
       - uses: actions/upload-artifact@v4
         with:
           name: kyunghee-timer-desktop
-          path: dist/kyunghee-timer-desktop
+          path: dist/KyungheeTimer

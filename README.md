@@ -8,21 +8,11 @@ Windows productivity timer and virtual secretary.
 
 The 0.4 line is focused on correctness before real-world testing.
 
-## Android UI prototype
+## Desktop app
 
-`android-prototype/` is a **screen-review-only Android prototype** used to settle the visual language before the same design is carried back to the Windows desktop app.
+Development is focused on the Windows desktop app. `RUN.cmd` launches the integrated desktop UI during development. The **Desktop Package** workflow builds a standalone `KyungheeTimer.exe` package that does not require Python on the user's PC.
 
-It intentionally uses fixed sample values and does not implement the Windows timer engine or background activity tracking.
-
-Prototype screens:
-
-- main timer dashboard
-- today's stats
-- settings
-- break reminder preview
-- full-body Kyunghee character presentation using `cheer_full.webp` with `ContentScale.Fit` so the legs are not cropped
-
-GitHub Actions workflow: `.github/workflows/android-prototype.yml` builds a debug APK artifact named `kyunghee-ui-prototype-apk`.
+The earlier `android-prototype/` is retained only as inactive design history and is not a current development target.
 
 ### Core timer behavior
 

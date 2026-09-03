@@ -19,7 +19,7 @@ from asset_manager import resolve_asset, role_for_dialogue, role_for_work_mode
 from break_reminder import BreakReminderGate
 from messages import pick
 from state import load_state, save_state, rollover_daily, prepare_startup_state
-from timer_engine import TimerEngine
+from timer_engine import BREAK_INTERVAL_SEC, TimerEngine
 from workday import classify_workday, should_encourage_more_work
 
 APP_NAME = "경희 타이머"
@@ -39,7 +39,6 @@ MUTED = "#9AA5BD"
 PURPLE = "#7C4DFF"
 PURPLE_2 = "#5D35D6"
 GREEN = "#4ADE80"
-RED = "#FB7185"
 AMBER = "#F59E0B"
 
 log = logging.getLogger("kyunghee")
@@ -177,8 +176,9 @@ class App:
             x = (32 - image.width) // 2
             y = (32 - image.height) // 2
             canvas.paste(image, (x, y))
-            self.avatar_photo = ImageTk.PhotoImage(canvas)
-            target.configure(image=self.avatar_photo)
+            photo = ImageTk.PhotoImage(canvas)
+            target.image = photo
+            target.configure(image=photo)
         except Exception:
             log.exception("avatar asset failed")
 
@@ -464,6 +464,8 @@ class App:
     def snooze_break(self):
         mode = classify_workday(datetime.now(), self.state.daily.active_seconds).mode
         if not should_encourage_more_work(mode):
+            # Do not re-arm the gate here: otherwise an already-due break alert
+            # reappears one second later after the workday mode changes.
             self._destroy_toast()
             text = pick(mode)
             self._say(mode, text, work_mode=mode)
@@ -541,7 +543,7 @@ class App:
             return
         width = max(1, self.progress_canvas.winfo_width())
         continuous = max(0.0, float(self.state.session.continuous_seconds))
-        progress = min(1.0, continuous / 3600.0)
+        progress = min(1.0, continuous / BREAK_INTERVAL_SEC)
         self.progress_canvas.coords(self.progress_bar, 0, 0, width * progress, 9)
 
     def _update_ui(self):

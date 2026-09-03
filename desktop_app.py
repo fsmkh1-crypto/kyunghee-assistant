@@ -34,8 +34,9 @@ class DesktopApp(App):
             image.thumbnail((34, 34), Image.Resampling.LANCZOS)
             canvas = Image.new("RGB", (34, 34), core.BG)
             canvas.paste(image, ((34 - image.width) // 2, (34 - image.height) // 2))
-            self.avatar_photo = ImageTk.PhotoImage(canvas)
-            target.configure(image=self.avatar_photo)
+            photo = ImageTk.PhotoImage(canvas)
+            target.image = photo
+            target.configure(image=photo)
         except Exception:
             core.log.exception("avatar asset failed")
 
@@ -222,6 +223,15 @@ class DesktopApp(App):
         content = tk.Frame(panel, bg=core.PANEL)
         content.pack(side="left", fill="both", expand=True, padx=20, pady=18)
         self._label(content, "일반 설정", size=11, weight="bold", bg=core.PANEL).pack(anchor="w", pady=(0, 10))
+        self._label(
+            content,
+            "현재 적용 중인 기본값 · 변경 기능은 다음 버전에서 연결됩니다.",
+            size=8,
+            fg=core.MUTED,
+            bg=core.PANEL,
+            wraplength=360,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 8))
         for text in ("Windows 시작 시 자동 실행", "메인 창 항상 위 표시", "휴식 알림 사용", "퇴근 시간 알림 사용"):
             row = tk.Frame(content, bg=core.PANEL)
             row.pack(fill="x", pady=6)

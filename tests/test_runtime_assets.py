@@ -30,8 +30,10 @@ class RuntimeAssetTests(unittest.TestCase):
             with self.subTest(role=role):
                 self.assertEqual(ROLE_FILES[role][0], filename)
 
-    def test_master_face_fallback(self):
-        self.assertEqual(resolve_asset("master_face").name, "playful.webp")
+    def test_canonical_assets_are_installed(self):
+        for role, filenames in ROLE_FILES.items():
+            with self.subTest(role=role):
+                self.assertEqual(resolve_asset(role).name, filenames[0])
 
     def test_workday_visual_policy(self):
         self.assertEqual(role_for_work_mode("normal"), "default")
