@@ -479,10 +479,40 @@ class CompactDesktopApp(DesktopApp):
         _clock_x, character_offset = self._cluster_horizontal_layout()
         return character_offset
 
+    def _message_render_height(self) -> int:
+        if not self._effective_display_flag("show_message"):
+            return 0
+        speech = getattr(self, "speech", None)
+        if speech is not None:
+            try:
+                req = int(speech.winfo_reqheight())
+                if req > 1:
+                    return req
+            except tk.TclError:
+                pass
+        return 36
+
     def _character_bottom_gap(self) -> int:
-        # Fixed relation to the message lane: scaling must not push the artwork
-        # farther away from the message.
-        return 72
+        # Keep Kyunghee's *visible* feet above the message even when narrower
+        # scales make the message wrap to extra lines. The message remains pinned
+        # near the bottom; only the artwork rises when more vertical clearance is
+        # actually required. Transparent padding below the visible silhouette is
+        # excluded so custom images and all widget scales behave consistently.
+        base_gap = 72
+        message_height = self._message_render_height()
+        if not message_height:
+            return base_gap
+        _image_width, image_height = self._character_render_size()
+        _visible_left, _visible_top, _visible_right, visible_bottom = self._character_visible_bounds()
+        transparent_bottom = max(0, image_height - visible_bottom)
+        visible_clearance = 6
+        needed_gap = (
+            self._message_bottom_gap()
+            + message_height
+            + visible_clearance
+            - transparent_bottom
+        )
+        return max(base_gap, round(needed_gap))
 
     def _message_x_offset(self) -> int:
         # Center the message directly under Kyunghee rather than under the canvas.
