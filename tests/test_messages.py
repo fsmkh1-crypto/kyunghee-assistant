@@ -1,11 +1,14 @@
 import unittest
 
 from messages import (
+    DAILY_TEMPERAMENT_POOLS,
     RARE_MIN_GAP,
     RARE_POOLS,
     custom_dialogue_lines,
+    daily_temperament,
     habit_dialogue_kind,
     maybe_pick_custom,
+    maybe_pick_daily_temperament,
     _reset_rare_state_for_tests,
     maybe_pick_rare,
     time_of_day_kind,
@@ -22,6 +25,17 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertEqual(time_of_day_kind(14), "afternoon")
         self.assertEqual(time_of_day_kind(17), "evening")
         self.assertEqual(time_of_day_kind(21), "late")
+
+    def test_daily_temperament_is_stable_for_same_date(self):
+        first = daily_temperament("2026-09-04")
+        self.assertEqual(first, daily_temperament("2026-09-04"))
+        self.assertIn(first, DAILY_TEMPERAMENT_POOLS)
+
+    def test_daily_temperament_respects_chance(self):
+        self.assertIsNone(maybe_pick_daily_temperament("2026-09-04", chance=0.18, roll=0.9))
+        selected = maybe_pick_daily_temperament("2026-09-04", chance=1.0, roll=0.0)
+        mood = daily_temperament("2026-09-04")
+        self.assertIn(selected, DAILY_TEMPERAMENT_POOLS[mood])
 
     def test_rare_dialogue_respects_minimum_gap(self):
         _reset_rare_state_for_tests(0)

@@ -169,6 +169,25 @@ RARE_POOLS = {
 RARE_CHANCE = 0.04
 RARE_MIN_GAP = 12
 
+DAILY_TEMPERAMENT_CHANCE = 0.18
+DAILY_TEMPERAMENT_POOLS = {
+    "calm": [
+        "오늘 경희는 좀 차분한 날이야. 서두르지 말고 하나씩 하자.",
+        "오늘은 조용히 옆에서 시간만 잘 챙겨줄게.",
+        "오늘 분위기는 차분하게. 속도보다 흐름 유지가 먼저야.",
+    ],
+    "bright": [
+        "오늘 경희는 기분이 좀 좋은가 봐. 오빠도 페이스 올려볼까?",
+        "오늘은 왠지 잘 풀릴 것 같은데? 하나씩 끝내보자.",
+        "오늘 경희 컨디션 좋음. 응원 서비스 조금 더 들어갑니다.",
+    ],
+    "focused": [
+        "오늘은 집중 모드야. 할 일 하나 잡고 깔끔하게 끝내자.",
+        "오늘 경희는 업무 모드가 강한 날. 딴짓은 짧게만.",
+        "오늘은 흐름 끊지 말고 정리정돈하듯 하나씩 처리하자.",
+    ],
+}
+
 PERSONALITY_POOLS = {
     "warm": {
         "playful": [
@@ -244,6 +263,28 @@ def habit_dialogue_kind(
     if continuous >= 50 * 60:
         return "worry"
     return None
+
+
+def daily_temperament(date_key: str) -> str:
+    """Return a stable lightweight temperament for one calendar date."""
+    key = str(date_key or "")
+    total = sum((index + 1) * ord(char) for index, char in enumerate(key))
+    names = tuple(DAILY_TEMPERAMENT_POOLS)
+    return names[total % len(names)]
+
+
+def maybe_pick_daily_temperament(
+    date_key: str,
+    *,
+    chance: float = DAILY_TEMPERAMENT_CHANCE,
+    roll: float | None = None,
+) -> str | None:
+    if roll is None:
+        roll = random.random()
+    if float(roll) >= float(chance):
+        return None
+    mood = daily_temperament(date_key)
+    return random.choice(DAILY_TEMPERAMENT_POOLS[mood])
 
 
 def time_of_day_kind(hour: int) -> str:

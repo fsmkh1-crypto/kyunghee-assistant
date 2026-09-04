@@ -19,7 +19,7 @@ from asset_manager import resolve_asset
 from desktop_app import DesktopApp
 from image_render import resize_rgba_alpha_safe, threshold_alpha
 from image_sets import ImageSetStore, normalize_alignment
-from messages import habit_dialogue_kind, maybe_pick_custom, maybe_pick_rare, pick, time_of_day_kind
+from messages import habit_dialogue_kind, maybe_pick_custom, maybe_pick_daily_temperament, maybe_pick_rare, pick, time_of_day_kind
 from settings import UserSettings, save_user_settings, set_windows_startup, validate_hex_color
 from windows_display import enable_per_monitor_dpi_awareness, should_suppress_overlay_notifications
 
@@ -988,6 +988,12 @@ class CompactDesktopApp(DesktopApp):
                 rare = maybe_pick_rare(getattr(self.preferences, "personality", "balanced"))
                 if rare:
                     self.speech.configure(text=rare)
+                    self.last_dialogue_at = __import__("time").monotonic()
+                    self._apply_widget_appearance()
+                    return
+                daily = maybe_pick_daily_temperament(datetime.now().date().isoformat())
+                if daily:
+                    self.speech.configure(text=daily)
                     self.last_dialogue_at = __import__("time").monotonic()
                     self._apply_widget_appearance()
                     return
