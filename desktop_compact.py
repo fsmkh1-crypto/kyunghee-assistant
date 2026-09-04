@@ -375,8 +375,23 @@ class CompactDesktopApp(DesktopApp):
     def _scale(self, value: int | float) -> int:
         return max(1, round(float(value) * self._effective_widget_scale() / 100.0))
 
+    def _layout_growth(self) -> int:
+        return max(0, self._effective_widget_scale() - 100)
+
+    def _character_x_offset(self) -> int:
+        # Shift Kyunghee gradually right as the transparent canvas grows.
+        return round(self._layout_growth() * 0.60)
+
+    def _message_gutter(self) -> int:
+        # Add transparent room below the character so the message can move
+        # downward without being clipped or covering the artwork.
+        return round(self._layout_growth() * 0.60)
+
     def _timer_size(self):
-        return self._scale(self.COMPACT_SIZE[0]), self._scale(self.COMPACT_SIZE[1])
+        growth = self._layout_growth()
+        width = self._scale(self.COMPACT_SIZE[0]) + round(growth * 0.30)
+        height = self._scale(self.COMPACT_SIZE[1]) + self._message_gutter()
+        return width, height
 
     def _resize_for_page(self, name: str):
         if name == "timer":
@@ -687,7 +702,10 @@ class CompactDesktopApp(DesktopApp):
         self._bind_drag_surface(self.drag_strip)
 
         self.character = tk.Label(hero, bg=self.TRANSPARENT_KEY, bd=0, cursor="hand2")
-        self.character.place(relx=0.5, rely=1.0, y=-self._scale(18), anchor="s")
+        self.character.place(
+            relx=0.5, x=self._character_x_offset(), rely=1.0,
+            y=-(self._scale(18) + self._message_gutter()), anchor="s",
+        )
 
         p = self.preferences
         clock = tk.Frame(hero, bg=self.TRANSPARENT_KEY, bd=0, highlightthickness=0, cursor="fleur")
@@ -784,7 +802,10 @@ class CompactDesktopApp(DesktopApp):
             self.speech.place_forget()
 
         self.clock.place(x=self._scale(6), y=self._scale(6))
-        self.character.place(relx=0.5, rely=1.0, y=-self._scale(18), anchor="s")
+        self.character.place(
+            relx=0.5, x=self._character_x_offset(), rely=1.0,
+            y=-(self._scale(18) + self._message_gutter()), anchor="s",
+        )
         self.escape_control.configure(font=(self.FONT_FAMILY, 12, "normal"))
         self.escape_control.place(relx=1.0, x=-self._scale(8), y=self._scale(5), anchor="ne")
 
