@@ -15,41 +15,49 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Download exact PNG assets set 02
+
+      - name: Download and verify manifest assets
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p assets/default assets/cheer assets/rest assets/away assets/warning assets/leave assets/stats assets/settings assets/alert assets/profile
-          curl -fL 'https://oaisdmntprjapaneast.blob.core.windows.net/files/00000000-8984-8209-87e1-300ec701efa0/raw?se=2026-09-04T15%3A35%3A53Z&sp=r&sv=2026-02-06&sr=b&scid=b337f068-185e-4ed1-a7f6-d6fd70f44729&skoid=b1bca990-dcac-4c31-8ca1-ac563cf24c54&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-04T02%3A47%3A42Z&ske=2026-09-05T02%3A47%3A42Z&sks=b&skv=2026-02-06&sig=6rr9%2BAfGR4tfdItVK4AlFaQovhu5WHfEMbV9foHeZ3k%3D' -o assets/default/default_02.png
-          curl -fL 'https://oaisdmntprkoreacentral.blob.core.windows.net/files/00000000-bc04-8206-be3a-49eee07fea29/raw?se=2026-09-04T15%3A35%3A53Z&sp=r&sv=2026-02-06&sr=b&scid=b337f068-185e-4ed1-a7f6-d6fd70f44729&skoid=b1bca990-dcac-4c31-8ca1-ac563cf24c54&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-04T02%3A19%3A33Z&ske=2026-09-05T02%3A19%3A33Z&sks=b&skv=2026-02-06&sig=YQV2YWHqn%2BylMdY1pfN%2BGWkEd0l5pvEnsta64hsPIG0%3D' -o assets/cheer/cheer_02.png
-          curl -fL 'https://oaisdmntprkoreacentral.blob.core.windows.net/files/00000000-6954-8206-9f22-b60d3c6d539b/raw?se=2026-09-04T15%3A35%3A53Z&sp=r&sv=2026-02-06&sr=b&scid=b337f068-185e-4ed1-a7f6-d6fd70f44729&skoid=b1bca990-dcac-4c31-8ca1-ac563cf24c54&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-04T08%3A02%3A34Z&ske=2026-09-05T08%3A02%3A34Z&sks=b&skv=2026-02-06&sig=pRzu%2BHrDgvubcqU/ahQlTejTNddcdqJMetRetyrUTvw%3D' -o assets/rest/rest_02.png
-          curl -fL 'https://oaisdmntprkoreacentral.blob.core.windows.net/files/00000000-1ef8-8206-a7e8-da2c1b42dcc0/raw?se=2026-09-04T15%3A35%3A53Z&sp=r&sv=2026-02-06&sr=b&scid=b337f068-185e-4ed1-a7f6-d6fd70f44729&skoid=b1bca990-dcac-4c31-8ca1-ac563cf24c54&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-04T02%3A45%3A43Z&ske=2026-09-05T02%3A45%3A43Z&sks=b&skv=2026-02-06&sig=FbXSk6Jv3B%2BUgxzuM9%2BZhlPLJSmLLoVj4KVT00vyoyA%3D' -o assets/away/away_02.png
-          curl -fL 'https://oaisdmntprkoreacentral.blob.core.windows.net/files/00000000-1c10-8206-a972-3c6bc342a75e/raw?se=2026-09-04T15%3A35%3A53Z&sp=r&sv=2026-02-06&sr=b&scid=b337f068-185e-4ed1-a7f6-d6fd70f44729&skoid=b1bca990-dcac-4c31-8ca1-ac563cf24c54&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-04T02%3A43%3A36Z&ske=2026-09-05T02%3A43%3A36Z&sks=b&skv=2026-02-06&sig=TR8/finlZ3pty3aUAeo3LASEzMnUKk4egVLj4Lq7lBw%3D' -o assets/warning/warning_02.png
-          curl -fL 'https://oaisdmntprkoreacentral.blob.core.windows.net/files/00000000-aecc-8206-a715-35e0dba22994/raw?se=2026-09-04T15%3A35%3A53Z&sp=r&sv=2026-02-06&sr=b&scid=b337f068-185e-4ed1-a7f6-d6fd70f44729&skoid=b1bca990-dcac-4c31-8ca1-ac563cf24c54&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-04T02%3A47%3A50Z&ske=2026-09-05T02%3A47%3A50Z&sks=b&skv=2026-02-06&sig=b21QcdphJQTvVtYuZSHfDVzI%2Bd%2B%2B/obL3Kr2vqKc2JY%3D' -o assets/leave/leave_02.png
-          curl -fL 'https://oaisdmntprkoreacentral.blob.core.windows.net/files/00000000-4a28-8206-99c8-d1d863dc5bd3/raw?se=2026-09-04T15%3A35%3A53Z&sp=r&sv=2026-02-06&sr=b&scid=b337f068-185e-4ed1-a7f6-d6fd70f44729&skoid=b1bca990-dcac-4c31-8ca1-ac563cf24c54&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-04T02%3A45%3A49Z&ske=2026-09-05T02%3A45%3A49Z&sks=b&skv=2026-02-06&sig=4Cj7kCslcGHtq5X5/GY6x1nyI4HnigMybaKki7Z6aOg%3D' -o assets/stats/stats_02.png
-          curl -fL 'https://oaisdmntprjapaneast.blob.core.windows.net/files/00000000-4cb0-8209-957d-f7a6f5e3f81b/raw?se=2026-09-04T15%3A35%3A53Z&sp=r&sv=2026-02-06&sr=b&scid=b337f068-185e-4ed1-a7f6-d6fd70f44729&skoid=b1bca990-dcac-4c31-8ca1-ac563cf24c54&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-04T02%3A49%3A56Z&ske=2026-09-05T02%3A49%3A56Z&sks=b&skv=2026-02-06&sig=p1DomvasJe3yzpva5D48qf8Q9vo8OZaxO/gUcAJ/3N8%3D' -o assets/settings/settings_02.png
-          curl -fL 'https://oaisdmntprjapaneast.blob.core.windows.net/files/00000000-6288-8209-8d09-f284054905cb/raw?se=2026-09-04T15%3A35%3A53Z&sp=r&sv=2026-02-06&sr=b&scid=b337f068-185e-4ed1-a7f6-d6fd70f44729&skoid=b1bca990-dcac-4c31-8ca1-ac563cf24c54&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-04T02%3A43%3A41Z&ske=2026-09-05T02%3A43%3A41Z&sks=b&skv=2026-02-06&sig=Zy1TwSaDpLeqWpawj%2B/0DoNAdVQoxWg7%2BwQ0V79ddu4%3D' -o assets/alert/alert_02.png
-          curl -fL 'https://oaisdmntprseasia.blob.core.windows.net/files/00000000-26d0-8207-902b-70cbe1921b7c/raw?se=2026-09-04T15%3A35%3A53Z&sp=r&sv=2026-02-06&sr=b&scid=b337f068-185e-4ed1-a7f6-d6fd70f44729&skoid=b1bca990-dcac-4c31-8ca1-ac563cf24c54&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-04T02%3A39%3A24Z&ske=2026-09-05T02%3A39%3A24Z&sks=b&skv=2026-02-06&sig=/gnU8oWT9iueU9kHxA7egKV%2BTjv55RGxPbziIKjLqVU%3D' -o assets/profile/profile_02.png
-      - name: Verify exact bytes
+          manifest='.github/asset-import-manifest.tsv'
+          test -s "$manifest"
+
+          count=0
+          while IFS=$'\t' read -r path expected url || [[ -n "${path:-}" ]]; do
+            [[ -z "${path:-}" || "${path:0:1}" == '#' ]] && continue
+
+            if ! [[ "$path" =~ ^assets/(default|cheer|rest|away|warning|leave|stats|settings|alert|profile)/(default|cheer|rest|away|warning|leave|stats|settings|alert|profile)_[0-9]{2}\.png$ ]]; then
+              echo "Unsafe or unexpected asset path: $path" >&2
+              exit 1
+            fi
+            [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || { echo "Invalid SHA-256 for $path" >&2; exit 1; }
+            [[ "$url" == https://* ]] || { echo "Invalid source URL for $path" >&2; exit 1; }
+
+            mkdir -p "$(dirname "$path")"
+            curl -fL --retry 3 --retry-delay 1 "$url" -o "$path"
+            echo "$expected  $path" | sha256sum -c -
+            count=$((count + 1))
+          done < "$manifest"
+
+          [[ "$count" -eq 10 ]] || { echo "Expected exactly 10 assets, got $count" >&2; exit 1; }
+
+      - name: Commit verified assets to transfer branch
         shell: bash
         run: |
           set -euo pipefail
-          echo 'cbf2fedfd8cd90891cba2d3577a283fe7adfc581327fb5194008fdd88b9ac271  assets/default/default_02.png' | sha256sum -c -
-          echo 'fd54cd95d852c4f6b85a380f9ce0164802e82afebf25fb588ccd06392a3749f4  assets/cheer/cheer_02.png' | sha256sum -c -
-          echo 'e8ff2a3618d78f261f0d054a776e5128d5a71d642b9a48aea7aefda1940b30e4  assets/rest/rest_02.png' | sha256sum -c -
-          echo 'aa35501a59d6f2861a328b9eb7fe5287c1c4cd00ea75f5e6809b7ee7eebf89e9  assets/away/away_02.png' | sha256sum -c -
-          echo '5da6e6dbf6359314f25f43c5e02a320c33f5561a410869af96d9359803142d92  assets/warning/warning_02.png' | sha256sum -c -
-          echo '98cc50424a3675701e3453175c0b55e7a7f2e501d94da56aaa04a0edb39f41ed  assets/leave/leave_02.png' | sha256sum -c -
-          echo '6caac6ab04fe13e8c768d753bec9b2705340d3af53bf5607972495058490f6a4  assets/stats/stats_02.png' | sha256sum -c -
-          echo '4e9b2eb72b1751b9fe4bb4261246318d10aebcb257c9f2d3b3d95fa9329cd4d6  assets/settings/settings_02.png' | sha256sum -c -
-          echo 'bf634a93f9d4770ca8fa5721a1fa4401b8cf99be6aac88b06680fea34fb9500b  assets/alert/alert_02.png' | sha256sum -c -
-          echo '1f03aec3f80ba6cef2575898c506aa71061c26f5943774b7a23eae11b9a7e680  assets/profile/profile_02.png' | sha256sum -c -
-      - name: Commit assets to transfer branch
-        shell: bash
-        run: |
-          set -euo pipefail
+          manifest='.github/asset-import-manifest.tsv'
+          mapfile -t paths < <(awk -F '\t' 'NF >= 3 && $1 !~ /^#/ && $1 != "" {print $1}' "$manifest")
+          [[ "${#paths[@]}" -eq 10 ]] || { echo "Expected exactly 10 manifest paths" >&2; exit 1; }
+
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add assets/default/default_02.png assets/cheer/cheer_02.png assets/rest/rest_02.png assets/away/away_02.png assets/warning/warning_02.png assets/leave/leave_02.png assets/stats/stats_02.png assets/settings/settings_02.png assets/alert/alert_02.png assets/profile/profile_02.png
-          git commit -m 'Stage character asset variant set 02'
+          git add -- "${paths[@]}"
+
+          mapfile -t staged < <(git diff --cached --name-only)
+          [[ "${#staged[@]}" -eq 10 ]] || { printf 'Expected exactly 10 staged files, got %s\n' "${#staged[@]}" >&2; printf '%s\n' "${staged[@]}"; exit 1; }
+
+          label="$(head -n 1 .github/asset-import-trigger | tr -cd '[:alnum:]_.-')"
+          [[ -n "$label" ]] || label='asset-set'
+          git commit -m "Stage character asset variant ${label}"
           git push
