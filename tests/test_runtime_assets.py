@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 from asset_manager import ASSET_DIR, ROLE_FILES, resolve_asset, role_for_dialogue, role_for_work_mode
 
@@ -10,30 +11,27 @@ class RuntimeAssetTests(unittest.TestCase):
                 path = resolve_asset(role)
                 self.assertIsNotNone(path)
                 self.assertTrue(path.is_file())
-                self.assertEqual(path.parent, ASSET_DIR)
+                self.assertTrue(path.is_relative_to(ASSET_DIR))
+                self.assertNotEqual(path.parent, ASSET_DIR)
 
-    def test_canonical_png_names(self):
+    def test_role_folders_are_used_for_canonical_assets(self):
         expected = {
-            "default": "main_kyunghee.png",
-            "cheer": "focus_cheer_kyunghee.png",
-            "rest": "rest_suggest_kyunghee.png",
-            "away": "away_kyunghee.png",
-            "worry": "warning_kyunghee.png",
-            "nag": "warning_kyunghee.png",
-            "praise": "leave_work_kyunghee.png",
-            "stats": "stats_kyunghee.png",
-            "settings": "settings_kyunghee.png",
-            "alert": "alert_kyunghee.png",
-            "master_face": "profile_kyunghee.png",
+            "default": "default/main_kyunghee.png",
+            "cheer": "cheer/focus_cheer_kyunghee.png",
+            "rest": "rest/rest_suggest_kyunghee.png",
+            "away": "away/away_kyunghee.png",
+            "worry": "warning/warning_kyunghee.png",
+            "nag": "warning/warning_kyunghee.png",
+            "praise": "leave/leave_work_kyunghee.png",
+            "stats": "stats/stats_kyunghee.png",
+            "settings": "settings/settings_kyunghee.png",
+            "alert": "alert/alert_kyunghee.png",
+            "master_face": "profile/profile_kyunghee.png",
         }
-        for role, filename in expected.items():
+        for role, relative in expected.items():
             with self.subTest(role=role):
-                self.assertEqual(ROLE_FILES[role][0], filename)
-
-    def test_canonical_assets_are_installed(self):
-        for role, filenames in ROLE_FILES.items():
-            with self.subTest(role=role):
-                self.assertEqual(resolve_asset(role).name, filenames[0])
+                self.assertEqual(ROLE_FILES[role][0], relative)
+                self.assertEqual(resolve_asset(role), ASSET_DIR / relative)
 
     def test_workday_visual_policy(self):
         self.assertEqual(role_for_work_mode("normal"), "default")

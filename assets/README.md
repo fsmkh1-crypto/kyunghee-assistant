@@ -1,51 +1,39 @@
 # Character asset contract
 
-The UI uses the finalized Kyunghee character set through `asset_manager.py`.
+The approved Kyunghee assets are organized by user-facing role. Do not regenerate or replace approved masters without explicit instruction.
 
-## Approved desktop PNG files
+## Folder layout
 
-The ten approved PNG masters are committed and are the first-choice assets for the integrated desktop UI:
+- `default/` — normal / playful
+- `cheer/` — focus encouragement / cute cheer
+- `rest/` — break suggestion
+- `away/` — away state
+- `warning/` — worry / nag / late-work warnings
+- `leave/` — leave-work / praise
+- `stats/` — stats screen
+- `settings/` — settings screen
+- `alert/` — alert/toast artwork
+- `profile/` — profile / identity face
 
-- `main_kyunghee.png`
-- `stats_kyunghee.png`
-- `settings_kyunghee.png`
-- `alert_kyunghee.png`
-- `away_kyunghee.png`
-- `focus_cheer_kyunghee.png`
-- `rest_suggest_kyunghee.png`
-- `leave_work_kyunghee.png`
-- `warning_kyunghee.png`
-- `profile_kyunghee.png`
+Root-level `README.md`, `atlas_manifest.json`, and compatibility metadata stay in `assets/`.
 
-Full-body artwork is displayed with aspect-ratio-preserving containment so the legs are not cropped.
+## Approved masters
 
-## Legacy fallback files
+- `default/main_kyunghee.png`
+- `cheer/focus_cheer_kyunghee.png`
+- `rest/rest_suggest_kyunghee.png`
+- `away/away_kyunghee.png`
+- `warning/warning_kyunghee.png`
+- `leave/leave_work_kyunghee.png`
+- `stats/stats_kyunghee.png`
+- `settings/settings_kyunghee.png`
+- `alert/alert_kyunghee.png`
+- `profile/profile_kyunghee.png`
 
-The repository now contains the full runtime set:
+Legacy compatibility files are kept in the closest matching role folder. `asset_manager.py` resolves the role-folder path first and still accepts the old flat layout as a fallback for older external packs.
 
-- `default_full.webp` — normal main pose
-- `playful.webp` — compact playful/default dialogue
-- `cheer_full.webp` — stats / fighting pose
-- `cheer.webp` — compact cheer
-- `cute_cheer.webp` — return / light praise
-- `nag.webp` — repeated snooze / late-work / hard-stop
-- `worry.webp` — first snooze / wind-down / break reminder
-- `praise.webp` — leave-mode close-out
-- `master_face.png` — tray icon / canonical face
+## Naming rule for future additions
 
-The compact WebP files remain as safe compatibility fallbacks. Missing assets use a generated placeholder rather than crashing the application.
+Prefer `<role>_01.png`, `<role>_02.png`, etc. Add a short semantic suffix only when useful, e.g. `cheer_thumbsup_01.png`.
 
-## Workday mapping
-
-- normal: default/playful
-- 17:00 wind-down: worry
-- 17:30 leave mode: praise
-- 18:00 strong leave: nag
-- 18:30 late leave: nag
-- 9h active hard stop: nag
-
-After 17:30 no visual/dialogue path may encourage extending work.
-
-## Identity rule
-
-All future poses should preserve the same canonical face, hair, pale-pink top, and ivory-white skirt direction. `master_face.png` is the identity reference for compact UI and future asset work.
+Full-body artwork must preserve aspect ratio and visible legs. Future poses should preserve the same canonical identity direction as the approved profile/master assets.

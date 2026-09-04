@@ -5,72 +5,64 @@ from typing import Iterable
 
 ASSET_DIR = Path(__file__).resolve().parent / "assets"
 
-# Canonical desktop asset pack.
-#
-# New UI work uses explicit PNG masters so the same approved images are reused
-# across screens instead of being regenerated or depending on fragile WebP
-# placeholders. Legacy names remain as fallbacks until the PNG pack is copied
-# into the repository/runtime bundle.
 ROLE_FILES = {
     "default": (
-        "main_kyunghee.png",
-        "default_full.webp", "default_full.png", "default_full.jpg",
+        "default/main_kyunghee.png",
+        "default/default_full.webp", "default/default_full.png", "default/default_full.jpg",
     ),
     "playful": (
-        "main_kyunghee.png",
-        "playful.webp", "playful.png", "playful.jpg",
+        "default/main_kyunghee.png",
+        "default/playful.webp", "default/playful.png", "default/playful.jpg",
     ),
     "cheer": (
-        "focus_cheer_kyunghee.png",
-        "cheer_full.webp", "cheer.webp",
-        "cheer_full.png", "cheer.png",
-        "cheer_full.jpg", "cheer.jpg",
+        "cheer/focus_cheer_kyunghee.png",
+        "cheer/cheer_full.webp", "cheer/cheer.webp",
+        "cheer/cheer_full.png", "cheer/cheer.png",
+        "cheer/cheer_full.jpg", "cheer/cheer.jpg",
     ),
     "cute_cheer": (
-        "focus_cheer_kyunghee.png",
-        "cute_cheer.webp", "cute_cheer.png", "cute_cheer.jpg",
+        "cheer/focus_cheer_kyunghee.png",
+        "cheer/cute_cheer.webp", "cheer/cute_cheer.png", "cheer/cute_cheer.jpg",
     ),
     "rest": (
-        "rest_suggest_kyunghee.png",
-        "worry.webp", "worry.png", "worry.jpg",
+        "rest/rest_suggest_kyunghee.png",
+        "warning/worry.webp", "warning/worry.png", "warning/worry.jpg",
     ),
     "away": (
-        "away_kyunghee.png",
-        "worry.webp", "worry.png", "worry.jpg",
+        "away/away_kyunghee.png",
+        "warning/worry.webp", "warning/worry.png", "warning/worry.jpg",
     ),
     "worry": (
-        "warning_kyunghee.png",
-        "worry.webp", "worry.png", "worry.jpg",
+        "warning/warning_kyunghee.png",
+        "warning/worry.webp", "warning/worry.png", "warning/worry.jpg",
     ),
     "nag": (
-        "warning_kyunghee.png",
-        "nag.webp", "nag.png", "nag.jpg",
+        "warning/warning_kyunghee.png",
+        "warning/nag.webp", "warning/nag.png", "warning/nag.jpg",
     ),
     "praise": (
-        "leave_work_kyunghee.png",
-        "praise.webp", "praise.png", "praise.jpg",
+        "leave/leave_work_kyunghee.png",
+        "leave/praise.webp", "leave/praise.png", "leave/praise.jpg",
     ),
     "stats": (
-        "stats_kyunghee.png",
-        "focus_cheer_kyunghee.png",
-        "cheer_full.webp", "cheer.webp",
+        "stats/stats_kyunghee.png",
+        "cheer/focus_cheer_kyunghee.png",
+        "cheer/cheer_full.webp", "cheer/cheer.webp",
     ),
     "settings": (
-        "settings_kyunghee.png",
-        "main_kyunghee.png",
-        "default_full.webp",
+        "settings/settings_kyunghee.png",
+        "default/main_kyunghee.png",
+        "default/default_full.webp",
     ),
     "alert": (
-        "alert_kyunghee.png",
-        "focus_cheer_kyunghee.png",
-        "cheer_full.webp",
+        "alert/alert_kyunghee.png",
+        "cheer/focus_cheer_kyunghee.png",
+        "cheer/cheer_full.webp",
     ),
     "master_face": (
-        "profile_kyunghee.png",
-        # Keep the valid playful portrait ahead of the known-truncated legacy
-        # master_face.png when the approved profile PNG is unavailable.
-        "playful.webp",
-        "master_face.webp", "master_face.png", "master_face.jpg",
+        "profile/profile_kyunghee.png",
+        "default/playful.webp",
+        "profile/master_face.webp", "profile/master_face.png", "profile/master_face.jpg",
     ),
 }
 
@@ -104,6 +96,9 @@ def first_existing(names: Iterable[str], asset_dir: Path = ASSET_DIR) -> Path | 
         path = asset_dir / name
         if path.is_file():
             return path
+        legacy = asset_dir / Path(name).name
+        if legacy.is_file():
+            return legacy
     return None
 
 

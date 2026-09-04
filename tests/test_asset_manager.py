@@ -26,8 +26,9 @@ class AssetManagerTests(unittest.TestCase):
             root = Path(td)
             (root / "nag.jpg").write_bytes(b"x")
             self.assertEqual(resolve_asset("nag", root), root / "nag.jpg")
-            (root / "warning_kyunghee.png").write_bytes(b"x")
-            self.assertEqual(resolve_asset("nag", root), root / "warning_kyunghee.png")
+            (root / "warning").mkdir()
+            (root / "warning" / "warning_kyunghee.png").write_bytes(b"x")
+            self.assertEqual(resolve_asset("nag", root), root / "warning" / "warning_kyunghee.png")
 
     def test_missing_asset_is_safe(self):
         with tempfile.TemporaryDirectory() as td:
