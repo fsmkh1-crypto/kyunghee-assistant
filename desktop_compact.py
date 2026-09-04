@@ -30,6 +30,7 @@ WM_HOTKEY = 0x0312
 PM_REMOVE = 0x0001
 SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
+GA_ROOT = 2
 
 
 class OutlinedText(tk.Canvas):
@@ -295,13 +296,28 @@ class CompactDesktopApp(DesktopApp):
             ) ** 2,
         )
 
+    def _native_toplevel_handle(self):
+        """Return Tk's real wrapper HWND, not the embedded client child HWND."""
+        client = int(self.root.winfo_id())
+        if os.name != "nt":
+            return client
+        try:
+            user32 = ctypes.windll.user32
+            user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+            user32.GetAncestor.restype = wintypes.HWND
+            wrapper = user32.GetAncestor(client, GA_ROOT)
+            return int(wrapper or client)
+        except Exception:
+            core.log.exception("native top-level handle lookup failed")
+            return client
+
     def _set_window_rect(self, x, y, width, height):
         self.root.geometry(f"{max(1, int(width))}x{max(1, int(height))}")
         self.root.update_idletasks()
         if os.name == "nt":
             try:
                 ctypes.windll.user32.SetWindowPos(
-                    int(self.root.winfo_id()),
+                    self._native_toplevel_handle(),
                     0,
                     int(x),
                     int(y),
@@ -450,7 +466,6 @@ class CompactDesktopApp(DesktopApp):
             msg = wintypes.MSG()
             registered = False
             try:
-                # Peek once so Windows creates this worker thread's message queue.
                 user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, PM_REMOVE)
                 registered = bool(
                     user32.RegisterHotKey(
