@@ -428,7 +428,7 @@ class CompactDesktopApp(DesktopApp):
         character_width, _character_height = self._character_render_size()
         visible_left, _visible_top, visible_right, _visible_bottom = self._character_visible_bounds()
         clock_width = self._clock_render_width()
-        visible_gap = 12
+        visible_gap = 6
         visible_character_width = max(1, visible_right - visible_left)
         visible_cluster_width = clock_width + visible_gap + visible_character_width
         cluster_left = max(18, round((timer_width - visible_cluster_width) / 2))
@@ -451,7 +451,7 @@ class CompactDesktopApp(DesktopApp):
         return self._character_x_offset()
 
     def _message_bottom_gap(self) -> int:
-        return 16
+        return 10
 
     def _clock_offset(self) -> tuple[int, int]:
         # Follow the rendered artwork both horizontally and vertically. This
