@@ -203,6 +203,7 @@ class CompactDesktopApp(DesktopApp):
     """Narrow frameless desktop widget using the approved Kyunghee artwork."""
 
     COMPACT_SIZE = (300, 430)
+    MIN_TIMER_SIZE = (460, 610)
     DETAIL_SIZE = (410, 430)
     SETTINGS_SIZE = (650, 700)
     CHARACTER_MAX = (346, 384)
@@ -379,18 +380,35 @@ class CompactDesktopApp(DesktopApp):
         return max(0, self._effective_widget_scale() - 100)
 
     def _character_x_offset(self) -> int:
-        # Shift Kyunghee gradually right as the transparent canvas grows.
-        return round(self._layout_growth() * 0.60)
+        # The transparent canvas is deliberately generous even at low scale, so
+        # Kyunghee can sit clear of the clock. At high scale the artwork moves
+        # right only gradually; the canvas grows much faster than the spacing.
+        return 95 + round(self._layout_growth() * 0.20)
 
-    def _message_gutter(self) -> int:
-        # Add transparent room below the character so the message can move
-        # downward without being clipped or covering the artwork.
-        return round(self._layout_growth() * 0.60)
+    def _character_bottom_gap(self) -> int:
+        # Reserve a message lane below the artwork without letting the two drift
+        # too far apart as the widget grows.
+        return 78 + round(self._layout_growth() * 0.38)
+
+    def _message_x_offset(self) -> int:
+        # Keep the message visually related to Kyunghee rather than centered on
+        # the much wider transparent canvas.
+        return round(self._character_x_offset() * 0.36)
+
+    def _message_bottom_gap(self) -> int:
+        return 18 + round(self._layout_growth() * 0.05)
+
+    def _clock_offset(self) -> tuple[int, int]:
+        growth = self._layout_growth()
+        return 18 + round(growth * 0.08), 18 + round(growth * 0.04)
 
     def _timer_size(self):
+        # Keep a roomy transparent canvas even at 80-100%. Above 100%, expand
+        # the canvas much faster than the UI spacing so 200% artwork still fits
+        # while the clock, character and message remain visually grouped.
         growth = self._layout_growth()
-        width = self._scale(self.COMPACT_SIZE[0]) + round(growth * 0.30)
-        height = self._scale(self.COMPACT_SIZE[1]) + self._message_gutter()
+        width = self.MIN_TIMER_SIZE[0] + round(growth * 3.60)
+        height = self.MIN_TIMER_SIZE[1] + round(growth * 3.40)
         return width, height
 
     def _resize_for_page(self, name: str):
@@ -704,13 +722,14 @@ class CompactDesktopApp(DesktopApp):
         self.character = tk.Label(hero, bg=self.TRANSPARENT_KEY, bd=0, cursor="hand2")
         self.character.place(
             relx=0.5, x=self._character_x_offset(), rely=1.0,
-            y=-(self._scale(18) + self._message_gutter()), anchor="s",
+            y=-self._character_bottom_gap(), anchor="s",
         )
 
         p = self.preferences
         clock = tk.Frame(hero, bg=self.TRANSPARENT_KEY, bd=0, highlightthickness=0, cursor="fleur")
         self.clock = clock
-        clock.place(x=self._scale(6), y=self._scale(6))
+        clock_x, clock_y = self._clock_offset()
+        clock.place(x=clock_x, y=clock_y)
         self.cont = OutlinedText(
             clock, "00:00:00", family=self.FONT_FAMILY, size=p.time_text_size,
             fg=p.time_text_color, outline=_outline_for(p.time_text_color),
@@ -737,10 +756,13 @@ class CompactDesktopApp(DesktopApp):
         self.speech = OutlinedText(
             hero, pick("playful"), family=self.FONT_FAMILY, size=p.message_text_size,
             fg=p.message_text_color, outline=_outline_for(p.message_text_color),
-            bg=self.TRANSPARENT_KEY, wraplength=self._scale(self.BUBBLE_WRAP),
+            bg=self.TRANSPARENT_KEY, wraplength=min(360, max(250, self._scale(self.BUBBLE_WRAP))),
             justify="center", cursor="hand2",
         )
-        self.speech.place(relx=0.5, rely=1.0, y=-self._scale(3), anchor="s")
+        self.speech.place(
+            relx=0.5, x=self._message_x_offset(), rely=1.0,
+            y=-self._message_bottom_gap(), anchor="s",
+        )
 
         self.character.bind("<ButtonPress-1>", self._start_character_drag)
         self.character.bind("<B1-Motion>", self._drag_character)
@@ -797,17 +819,21 @@ class CompactDesktopApp(DesktopApp):
         else:
             self.main_status.pack_forget()
         if self._effective_display_flag("show_message"):
-            self.speech.place(relx=0.5, rely=1.0, y=-self._scale(3), anchor="s")
+            self.speech.place(
+                relx=0.5, x=self._message_x_offset(), rely=1.0,
+                y=-self._message_bottom_gap(), anchor="s",
+            )
         else:
             self.speech.place_forget()
 
-        self.clock.place(x=self._scale(6), y=self._scale(6))
+        clock_x, clock_y = self._clock_offset()
+        self.clock.place(x=clock_x, y=clock_y)
         self.character.place(
             relx=0.5, x=self._character_x_offset(), rely=1.0,
-            y=-(self._scale(18) + self._message_gutter()), anchor="s",
+            y=-self._character_bottom_gap(), anchor="s",
         )
         self.escape_control.configure(font=(self.FONT_FAMILY, 12, "normal"))
-        self.escape_control.place(relx=1.0, x=-self._scale(8), y=self._scale(5), anchor="ne")
+        self.escape_control.place(relx=1.0, x=-18, y=14, anchor="ne")
 
     def _choose_color(self, key):
         var = self.style_color_vars[key]
