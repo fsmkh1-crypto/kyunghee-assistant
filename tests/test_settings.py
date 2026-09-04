@@ -107,6 +107,14 @@ class UserSettingsTests(unittest.TestCase):
         parsed = settings_from_dict({"widget_scale": 500})
         self.assertEqual(parsed.widget_scale, UserSettings().widget_scale)
 
+    def test_custom_dialogue_normalizes_and_round_trips(self):
+        parsed = settings_from_dict({"custom_dialogue": " 첫 문장  \n\n둘째 문장 "})
+        self.assertEqual(parsed.custom_dialogue, "첫 문장\n둘째 문장")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            save_user_settings(path, parsed)
+            self.assertEqual(load_user_settings(path).custom_dialogue, parsed.custom_dialogue)
+
     def test_personality_loads_and_invalid_value_falls_back(self):
         self.assertEqual(settings_from_dict({"personality": "playful"}).personality, "playful")
         self.assertEqual(settings_from_dict({"personality": "unknown"}).personality, "balanced")

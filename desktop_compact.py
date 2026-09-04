@@ -19,7 +19,7 @@ from asset_manager import resolve_asset
 from desktop_app import DesktopApp
 from image_render import resize_rgba_alpha_safe, threshold_alpha
 from image_sets import ImageSetStore, normalize_alignment
-from messages import habit_dialogue_kind, maybe_pick_rare, pick, time_of_day_kind
+from messages import habit_dialogue_kind, maybe_pick_custom, maybe_pick_rare, pick, time_of_day_kind
 from settings import UserSettings, save_user_settings, set_windows_startup, validate_hex_color
 from windows_display import enable_per_monitor_dpi_awareness, should_suppress_overlay_notifications
 
@@ -978,6 +978,12 @@ class CompactDesktopApp(DesktopApp):
             if habit_kind:
                 kind = habit_kind
             else:
+                custom = maybe_pick_custom(getattr(self.preferences, "custom_dialogue", ""))
+                if custom:
+                    self.speech.configure(text=custom)
+                    self.last_dialogue_at = __import__("time").monotonic()
+                    self._apply_widget_appearance()
+                    return
                 kind = "cheer" if remaining <= 15 * 60 else time_of_day_kind(datetime.now().hour)
                 rare = maybe_pick_rare(getattr(self.preferences, "personality", "balanced"))
                 if rare:
@@ -1373,6 +1379,21 @@ class CompactDesktopApp(DesktopApp):
             size=8, fg=core.MUTED, bg=core.PANEL, wraplength=590, justify="left",
         ).pack(anchor="w", pady=(0, 4), **pad)
 
+        self._label(content, "내 대사", size=9, bg=core.PANEL).pack(anchor="w", pady=(6, 2), **pad)
+        self._label(
+            content,
+            "한 줄에 한 문장씩 입력하면 평상시 대사에 가끔 섞입니다. 중요한 휴식·퇴근 알림에는 사용되지 않습니다.",
+            size=8, fg=core.MUTED, bg=core.PANEL, wraplength=590, justify="left",
+        ).pack(anchor="w", pady=(0, 3), **pad)
+        self.custom_dialogue_text = tk.Text(
+            content, height=5, wrap="word",
+            font=(self.FONT_FAMILY, 9, "normal"), fg=core.TEXT, bg=core.PANEL_2,
+            insertbackground=core.TEXT, relief="flat", bd=0, padx=7, pady=6,
+        )
+        self.custom_dialogue_text.pack(fill="x", pady=(0, 4), **pad)
+        if p.custom_dialogue:
+            self.custom_dialogue_text.insert("1.0", p.custom_dialogue)
+
         self._label(content, "위젯 표시", size=11, bg=core.PANEL).pack(anchor="w", pady=(14, 4), **pad)
         scale_row = tk.Frame(content, bg=core.PANEL)
         scale_row.pack(fill="x", pady=(0, 5), **pad)
@@ -1591,6 +1612,7 @@ class CompactDesktopApp(DesktopApp):
                 show_status=self.display_bool_vars["show_status"].get(),
                 show_message=self.display_bool_vars["show_message"].get(),
                 personality=self._personality_values.get(self.personality_var.get(), "balanced"),
+                custom_dialogue=self.custom_dialogue_text.get("1.0", "end").strip(),
                 time_text_size=int(self.style_size_vars["time"].get()),
                 status_text_size=int(self.style_size_vars["status"].get()),
                 message_text_size=int(self.style_size_vars["message"].get()),

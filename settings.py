@@ -60,11 +60,28 @@ def _position_int(value: object, default: int = -1) -> int:
 
 
 PERSONALITIES = {"balanced", "warm", "playful", "strict"}
+MAX_CUSTOM_DIALOGUE_LINES = 30
+MAX_CUSTOM_DIALOGUE_LINE_LENGTH = 120
 
 
 def _personality(value: object) -> str:
     value = str(value)
     return value if value in PERSONALITIES else "balanced"
+
+
+def normalize_custom_dialogue(value: object) -> str:
+    lines = [line.strip() for line in str(value or "").splitlines() if line.strip()]
+    if len(lines) > MAX_CUSTOM_DIALOGUE_LINES:
+        lines = lines[:MAX_CUSTOM_DIALOGUE_LINES]
+    return "\n".join(line[:MAX_CUSTOM_DIALOGUE_LINE_LENGTH] for line in lines)
+
+
+def validate_custom_dialogue(value: str) -> None:
+    lines = [line for line in str(value).splitlines() if line.strip()]
+    if len(lines) > MAX_CUSTOM_DIALOGUE_LINES:
+        raise ValueError(f"커스텀 대사는 최대 {MAX_CUSTOM_DIALOGUE_LINES}줄까지 사용할 수 있습니다.")
+    if any(len(line) > MAX_CUSTOM_DIALOGUE_LINE_LENGTH for line in lines):
+        raise ValueError(f"커스텀 대사는 한 줄 {MAX_CUSTOM_DIALOGUE_LINE_LENGTH}자까지 사용할 수 있습니다.")
 
 
 def _fit_mode(value: object) -> str:
@@ -107,6 +124,7 @@ class UserSettings:
     show_status: bool = True
     show_message: bool = True
     personality: str = "balanced"
+    custom_dialogue: str = ""
 
     time_text_size: int = 16
     status_text_size: int = 9
@@ -164,6 +182,7 @@ class UserSettings:
             raise ValueError("메시지 글자 크기는 9~16 사이로 설정해 주세요.")
         if self.personality not in PERSONALITIES:
             raise ValueError("경희 말투 설정이 올바르지 않습니다.")
+        validate_custom_dialogue(self.custom_dialogue)
         validate_hex_color(self.time_text_color)
         validate_hex_color(self.status_text_color)
         validate_hex_color(self.message_text_color)
@@ -204,6 +223,7 @@ def settings_from_dict(raw: object) -> UserSettings:
         show_status=_coerce_bool(raw.get("show_status"), d.show_status),
         show_message=_coerce_bool(raw.get("show_message"), d.show_message),
         personality=_personality(raw.get("personality", d.personality)),
+        custom_dialogue=normalize_custom_dialogue(raw.get("custom_dialogue", d.custom_dialogue)),
         time_text_size=_bounded_int(raw.get("time_text_size"), d.time_text_size, 14, 24),
         status_text_size=_bounded_int(raw.get("status_text_size"), d.status_text_size, 7, 12),
         message_text_size=_bounded_int(raw.get("message_text_size"), d.message_text_size, 9, 16),

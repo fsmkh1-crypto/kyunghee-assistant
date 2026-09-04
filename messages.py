@@ -277,6 +277,25 @@ def pick(kind: str, personality: str = "balanced", **fmt) -> str:
         return msg
 
 
+def custom_dialogue_lines(value: str) -> list[str]:
+    return [line.strip() for line in str(value or "").splitlines() if line.strip()]
+
+
+def maybe_pick_custom(value: str, *, chance: float = 0.25, roll: float | None = None) -> str | None:
+    lines = custom_dialogue_lines(value)
+    if not lines:
+        return None
+    sample = random.random() if roll is None else float(roll)
+    if sample >= max(0.0, min(1.0, float(chance))):
+        return None
+    candidates = [line for line in lines if line not in _recent[-10:]] or lines
+    msg = random.choice(candidates)
+    _recent.append(msg)
+    if len(_recent) > 40:
+        del _recent[:-25]
+    return msg
+
+
 def maybe_pick_rare(
     personality: str = "balanced",
     *,
