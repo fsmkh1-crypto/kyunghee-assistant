@@ -5,6 +5,7 @@ on:
     branches:
       - ui/dark-kyunghee-redesign
     paths:
+      - 'desktop_compact.py'
       - 'desktop_app.py'
       - 'app.py'
       - 'asset_manager.py'
@@ -42,7 +43,7 @@ jobs:
           --windowed
           --name KyungheeTimer
           --add-data "assets;assets"
-          desktop_app.py
+          desktop_compact.py
       - name: Smoke-test packaged app
         shell: pwsh
         run: |
