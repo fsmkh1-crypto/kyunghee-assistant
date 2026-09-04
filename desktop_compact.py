@@ -362,9 +362,15 @@ class CompactDesktopApp(DesktopApp):
         y = min(max(y, area[1]), area[3] - height)
         return int(x), int(y), int(width), int(height)
 
+    def _scale(self, value: int | float) -> int:
+        return max(1, round(float(value) * self.preferences.widget_scale / 100.0))
+
+    def _timer_size(self):
+        return self._scale(self.COMPACT_SIZE[0]), self._scale(self.COMPACT_SIZE[1])
+
     def _resize_for_page(self, name: str):
         if name == "timer":
-            width, height = self.COMPACT_SIZE
+            width, height = self._timer_size()
         elif name == "settings":
             width, height = self.SETTINGS_SIZE
         else:
@@ -580,6 +586,7 @@ class CompactDesktopApp(DesktopApp):
         self._apply_widget_appearance()
         self.character_role = None
         self._set_character("default")
+        self._resize_for_page(self.current_page)
 
     def _sync_presentation_state(self):
         try:
@@ -630,7 +637,8 @@ class CompactDesktopApp(DesktopApp):
         if role == self.character_role:
             return
         try:
-            image = self._load_character_image(role, self.CHARACTER_MAX, preserve_alpha=True)
+            max_size = (self._scale(self.CHARACTER_MAX[0]), self._scale(self.CHARACTER_MAX[1]))
+            image = self._load_character_image(role, max_size, preserve_alpha=True)
             image = self._clean_character_alpha(image)
             self.character_photo = ImageTk.PhotoImage(image)
             self.character.configure(image=self.character_photo)
@@ -643,21 +651,28 @@ class CompactDesktopApp(DesktopApp):
         page.configure(bg=self.TRANSPARENT_KEY)
         hero = tk.Frame(page, bg=self.TRANSPARENT_KEY, bd=0, highlightthickness=0)
         hero.pack(fill="both", expand=True)
+        self.hero = hero
+
+        # Always keep a small invisible drag surface, even when time/status are hidden.
+        self.drag_strip = tk.Frame(hero, bg=self.TRANSPARENT_KEY, bd=0, highlightthickness=0, cursor="fleur")
+        self.drag_strip.place(x=0, y=0, relwidth=1.0, height=18)
+        self._bind_drag_surface(self.drag_strip)
 
         self.character = tk.Label(hero, bg=self.TRANSPARENT_KEY, bd=0, cursor="hand2")
-        self.character.place(relx=0.5, rely=1.0, y=-18, anchor="s")
+        self.character.place(relx=0.5, rely=1.0, y=-self._scale(18), anchor="s")
 
         p = self.preferences
         clock = tk.Frame(hero, bg=self.TRANSPARENT_KEY, bd=0, highlightthickness=0, cursor="fleur")
-        clock.place(x=6, y=6)
+        self.clock = clock
+        clock.place(x=self._scale(6), y=self._scale(6))
         self.cont = OutlinedText(
-            clock, "00:00:00", family=self.FONT_FAMILY, size=p.time_text_size,
+            clock, "00:00:00", family=self.FONT_FAMILY, size=self._scale(p.time_text_size),
             fg=p.time_text_color, outline=_outline_for(p.time_text_color),
             bg=self.TRANSPARENT_KEY, cursor="fleur",
         )
         self.cont.pack(anchor="w")
         self.main_status = OutlinedText(
-            clock, "집중 중", family=self.FONT_FAMILY, size=p.status_text_size,
+            clock, "집중 중", family=self.FONT_FAMILY, size=self._scale(p.status_text_size),
             fg=p.status_text_color, outline=_outline_for(p.status_text_color),
             bg=self.TRANSPARENT_KEY, cursor="fleur",
         )
@@ -666,40 +681,61 @@ class CompactDesktopApp(DesktopApp):
             self._bind_drag_surface(widget)
 
         self.escape_control = tk.Label(
-            hero, text="×", font=(self.FONT_FAMILY, 12, "normal"),
+            hero, text="×", font=(self.FONT_FAMILY, self._scale(12), "normal"),
             fg=self.ESCAPE_TEXT, bg=self.TRANSPARENT_KEY, bd=0,
             highlightthickness=0, cursor="hand2",
         )
-        self.escape_control.place(relx=1.0, x=-8, y=5, anchor="ne")
+        self.escape_control.place(relx=1.0, x=-self._scale(8), y=self._scale(5), anchor="ne")
         self.escape_control.bind("<Button-1>", self._emergency_hide)
 
         self.speech = OutlinedText(
-            hero, pick("playful"), family=self.FONT_FAMILY, size=p.message_text_size,
+            hero, pick("playful"), family=self.FONT_FAMILY, size=self._scale(p.message_text_size),
             fg=p.message_text_color, outline=_outline_for(p.message_text_color),
-            bg=self.TRANSPARENT_KEY, wraplength=self.BUBBLE_WRAP,
+            bg=self.TRANSPARENT_KEY, wraplength=self._scale(self.BUBBLE_WRAP),
             justify="center", cursor="hand2",
         )
-        self.speech.place(relx=0.5, rely=1.0, y=-3, anchor="s")
+        self.speech.place(relx=0.5, rely=1.0, y=-self._scale(3), anchor="s")
 
         self.character.bind("<Button-1>", lambda _event: self.show_stats())
         self.speech.bind("<Button-1>", self._cycle_message)
+        self._apply_widget_appearance()
 
     def _apply_widget_appearance(self):
         if not hasattr(self, "cont"):
             return
         p = self.preferences
         self.cont.set_style(
-            size=p.time_text_size, fg=p.time_text_color,
+            size=self._scale(p.time_text_size), fg=p.time_text_color,
             outline=_outline_for(p.time_text_color),
         )
         self.main_status.set_style(
-            size=p.status_text_size, fg=p.status_text_color,
+            size=self._scale(p.status_text_size), fg=p.status_text_color,
             outline=_outline_for(p.status_text_color),
         )
         self.speech.set_style(
-            size=p.message_text_size, fg=p.message_text_color,
+            size=self._scale(p.message_text_size), fg=p.message_text_color,
             outline=_outline_for(p.message_text_color),
         )
+
+        if p.show_time:
+            if not self.cont.winfo_manager():
+                self.cont.pack(anchor="w")
+        else:
+            self.cont.pack_forget()
+        if p.show_status:
+            if not self.main_status.winfo_manager():
+                self.main_status.pack(anchor="w", pady=(0, 1))
+        else:
+            self.main_status.pack_forget()
+        if p.show_message:
+            self.speech.place(relx=0.5, rely=1.0, y=-self._scale(3), anchor="s")
+        else:
+            self.speech.place_forget()
+
+        self.clock.place(x=self._scale(6), y=self._scale(6))
+        self.character.place(relx=0.5, rely=1.0, y=-self._scale(18), anchor="s")
+        self.escape_control.configure(font=(self.FONT_FAMILY, self._scale(12), "normal"))
+        self.escape_control.place(relx=1.0, x=-self._scale(8), y=self._scale(5), anchor="ne")
 
     def _choose_color(self, key):
         var = self.style_color_vars[key]
@@ -804,6 +840,43 @@ class CompactDesktopApp(DesktopApp):
         self._label(content, "긴급 숨기기 단축키: Ctrl+Shift+H", size=8, fg=core.MUTED, bg=core.PANEL).pack(
             anchor="w", pady=(2, 2), **pad
         )
+
+        self._label(content, "위젯 표시", size=11, bg=core.PANEL).pack(anchor="w", pady=(14, 4), **pad)
+        scale_row = tk.Frame(content, bg=core.PANEL)
+        scale_row.pack(fill="x", pady=(0, 5), **pad)
+        self._label(scale_row, "전체 크기", size=9, bg=core.PANEL).pack(side="left")
+        self.widget_scale_var = tk.IntVar(value=p.widget_scale)
+        self.widget_scale_value = self._label(scale_row, f"{p.widget_scale}%", size=9, fg=core.MUTED, bg=core.PANEL)
+        self.widget_scale_value.pack(side="right")
+        scale = tk.Scale(
+            content, from_=80, to=140, orient="horizontal", resolution=5,
+            variable=self.widget_scale_var, showvalue=False, length=360,
+            fg=core.TEXT, bg=core.PANEL, troughcolor=core.PANEL_2,
+            highlightthickness=0, bd=0,
+            command=lambda value: self.widget_scale_value.configure(text=f"{int(float(value))}%"),
+        )
+        scale.pack(anchor="w", pady=(0, 4), **pad)
+        self.display_bool_vars = {
+            "show_time": tk.BooleanVar(value=p.show_time),
+            "show_status": tk.BooleanVar(value=p.show_status),
+            "show_message": tk.BooleanVar(value=p.show_message),
+        }
+        for key, caption in (
+            ("show_time", "시간 표시"),
+            ("show_status", "상태 표시"),
+            ("show_message", "메시지 표시"),
+        ):
+            tk.Checkbutton(
+                content, text=caption, variable=self.display_bool_vars[key],
+                font=(self.FONT_FAMILY, 9, "normal"), fg=core.TEXT, bg=core.PANEL,
+                activeforeground=core.TEXT, activebackground=core.PANEL,
+                selectcolor=core.PANEL_2, highlightthickness=0, bd=0, cursor="hand2",
+            ).pack(anchor="w", pady=1, **pad)
+        self._label(
+            content,
+            "시간과 상태를 모두 꺼도 위쪽 투명 드래그 영역으로 창을 이동할 수 있습니다.",
+            size=8, fg=core.MUTED, bg=core.PANEL,
+        ).pack(anchor="w", pady=(2, 4), **pad)
 
         self._label(content, "위젯 글자", size=11, bg=core.PANEL).pack(anchor="w", pady=(14, 4), **pad)
         self._label(
@@ -920,6 +993,10 @@ class CompactDesktopApp(DesktopApp):
                 late_leave=self.settings_time_vars["late_leave"].get().strip(),
                 window_x=self.preferences.window_x,
                 window_y=self.preferences.window_y,
+                widget_scale=int(self.widget_scale_var.get()),
+                show_time=self.display_bool_vars["show_time"].get(),
+                show_status=self.display_bool_vars["show_status"].get(),
+                show_message=self.display_bool_vars["show_message"].get(),
                 time_text_size=int(self.style_size_vars["time"].get()),
                 status_text_size=int(self.style_size_vars["status"].get()),
                 message_text_size=int(self.style_size_vars["message"].get()),

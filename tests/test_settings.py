@@ -90,6 +90,22 @@ class UserSettingsTests(unittest.TestCase):
             data = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(data["schema_version"], UserSettings().schema_version)
 
+    def test_widget_display_preferences_round_trip(self):
+        parsed = settings_from_dict({
+            "widget_scale": 125,
+            "show_time": False,
+            "show_status": True,
+            "show_message": False,
+        })
+        self.assertEqual(parsed.widget_scale, 125)
+        self.assertFalse(parsed.show_time)
+        self.assertTrue(parsed.show_status)
+        self.assertFalse(parsed.show_message)
+
+    def test_bad_widget_scale_falls_back(self):
+        parsed = settings_from_dict({"widget_scale": 500})
+        self.assertEqual(parsed.widget_scale, UserSettings().widget_scale)
+
 
 if __name__ == "__main__":
     unittest.main()
