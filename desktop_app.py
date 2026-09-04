@@ -16,8 +16,8 @@ class DesktopApp(App):
 
     def __init__(self):
         super().__init__()
-        self.root.geometry("940x610")
-        self.root.minsize(900, 580)
+        self.root.geometry("560x430")
+        self.root.minsize(520, 400)
 
     def _image_on(self, path, max_size, bg):
         if not path:
@@ -31,35 +31,51 @@ class DesktopApp(App):
 
     def _set_small_avatar(self, target):
         try:
-            image = self._image_on(resolve_asset("master_face"), (34, 34), core.BG)
-            image.thumbnail((34, 34), Image.Resampling.LANCZOS)
-            canvas = Image.new("RGB", (34, 34), core.BG)
-            canvas.paste(image, ((34 - image.width) // 2, (34 - image.height) // 2))
+            image = self._image_on(resolve_asset("master_face"), (26, 26), core.BG)
+            image.thumbnail((26, 26), Image.Resampling.LANCZOS)
+            canvas = Image.new("RGB", (26, 26), core.BG)
+            canvas.paste(image, ((26 - image.width) // 2, (26 - image.height) // 2))
             photo = ImageTk.PhotoImage(canvas)
             target.image = photo
             target.configure(image=photo)
         except Exception:
             core.log.exception("avatar asset failed")
 
-    def _load_character_image(self, role: str, max_size=(430, 455)):
+    def _load_character_image(self, role: str, max_size=(470, 300)):
         return self._image_on(resolve_asset(role), max_size, core.PANEL)
 
+    def _set_character(self, role: str):
+        if role == self.character_role:
+            return
+        try:
+            image = self._load_character_image(role, (470, 300))
+            self.character_photo = ImageTk.PhotoImage(image)
+            self.character.configure(image=self.character_photo)
+            self.character_role = role
+        except Exception:
+            core.log.exception("character asset failed: %s", role)
+
+    def _button(self, parent, text, command, primary=False, width=None):
+        button = super()._button(parent, text, command, primary=primary, width=width)
+        button.configure(font=("Malgun Gothic", 9, "bold"), padx=9, pady=5)
+        return button
+
     def _build_header(self, parent, title, back_command=None, settings_command=None):
-        row = tk.Frame(parent, bg=core.BG, height=58)
-        row.pack(fill="x", padx=20, pady=(14, 4))
+        row = tk.Frame(parent, bg=core.BG, height=38)
+        row.pack(fill="x", padx=7, pady=(5, 2))
         row.pack_propagate(False)
 
         if back_command:
-            self._button(row, "‹", back_command, width=2).pack(side="left", padx=(0, 8))
+            self._button(row, "‹", back_command, width=2).pack(side="left", padx=(0, 5))
 
         avatar = tk.Label(row, bg=core.BG, bd=0)
-        avatar.pack(side="left", padx=(0, 9))
+        avatar.pack(side="left", padx=(0, 6))
         self._set_small_avatar(avatar)
 
-        self._label(row, title, size=12, weight="bold").pack(side="left")
+        self._label(row, title, size=10, weight="bold").pack(side="left")
         if title == "경희 타이머":
-            self._label(row, "●", size=9, fg=core.GREEN).pack(side="left", padx=(10, 4))
-            self.header_status = self._label(row, "집중 중", size=9, fg=core.MUTED)
+            self._label(row, "●", size=7, fg=core.GREEN).pack(side="left", padx=(7, 3))
+            self.header_status = self._label(row, "집중 중", size=8, fg=core.MUTED)
             self.header_status.pack(side="left")
 
         if settings_command:
@@ -67,154 +83,139 @@ class DesktopApp(App):
 
     def _build_timer_page(self):
         page = self.timer_page
-        self._build_header(page, "경희 타이머", settings_command=lambda: self._show_page("settings"))
+        hero = self._card(page)
+        hero.pack(fill="both", expand=True, padx=6, pady=6)
+
+        self.character = tk.Label(hero, bg=core.PANEL, bd=0, anchor="s", cursor="hand2")
+        self.character.pack(fill="both", expand=True, padx=2, pady=(2, 0))
+
+        clock = tk.Frame(hero, bg=core.PANEL_2, highlightthickness=1, highlightbackground=core.BORDER, cursor="hand2")
+        clock.place(x=8, y=8)
+        self.cont = self._label(clock, "00:00:00", size=18, weight="bold", bg=core.PANEL_2, cursor="hand2")
+        self.cont.pack(padx=9, pady=(4, 0))
+        self.main_status = self._label(clock, "집중 중 · 상세 보기", size=7, fg=core.GREEN, bg=core.PANEL_2, cursor="hand2")
+        self.main_status.pack(pady=(0, 4))
+
+        bubble = tk.Frame(hero, bg="#211644", highlightthickness=1, highlightbackground="#523A8E", cursor="hand2")
+        bubble.pack(fill="x", padx=6, pady=(0, 6))
+        self.speech = tk.Label(
+            bubble,
+            text=pick("playful"),
+            wraplength=500,
+            justify="center",
+            font=("Malgun Gothic", 9, "bold"),
+            fg=core.TEXT,
+            bg="#211644",
+            padx=8,
+            pady=7,
+            cursor="hand2",
+        )
+        self.speech.pack(fill="x")
+
+        for widget in (clock, self.cont, self.main_status):
+            widget.bind("<Button-1>", lambda _event: self.show_stats())
+        for widget in (hero, self.character, bubble, self.speech):
+            widget.bind("<Button-1>", self._cycle_message)
+
+    def _cycle_message(self, _event=None):
+        mode = self._current_workday_state().mode
+        if mode != "normal":
+            self._say(mode, work_mode=mode)
+        elif self.state.session.is_away:
+            self._say("away_start")
+        else:
+            remaining = self.engine.remaining_to_break()
+            kind = "cheer" if remaining <= 15 * 60 else "playful"
+            self._say(kind)
+
+    def _build_stats_page(self):
+        page = self.stats_page
+        self._build_header(
+            page,
+            "상세 정보",
+            back_command=lambda: self._show_page("timer"),
+            settings_command=lambda: self._show_page("settings"),
+        )
 
         body = tk.Frame(page, bg=core.BG)
-        body.pack(fill="both", expand=True, padx=20, pady=(4, 18))
-        body.grid_columnconfigure(0, weight=10, uniform="main")
-        body.grid_columnconfigure(1, weight=11, uniform="main")
+        body.pack(fill="both", expand=True, padx=7, pady=(2, 7))
+        body.grid_columnconfigure(0, weight=1)
         body.grid_rowconfigure(0, weight=1)
 
-        left = self._card(body)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        left.grid_columnconfigure(0, weight=1)
+        panel = self._card(body)
+        panel.grid(row=0, column=0, sticky="nsew")
 
-        top = tk.Frame(left, bg=core.PANEL)
-        top.pack(fill="x", padx=22, pady=(20, 8))
-        self._label(top, "연속 집중 시간", size=10, weight="bold", fg=core.MUTED, bg=core.PANEL).pack(anchor="w")
-        self.cont = self._label(top, "00:00:00", size=32, weight="bold", bg=core.PANEL)
-        self.cont.pack(anchor="w", pady=(5, 0))
-        self._label(top, "오늘 목표: 09:00:00", size=9, fg=core.MUTED, bg=core.PANEL).pack(anchor="w", pady=(2, 0))
-        self.status = self._label(top, "현재 사용 중", size=9, weight="bold", fg=core.GREEN, bg=core.PANEL)
-        self.status.pack(anchor="w", pady=(5, 0))
+        summary = tk.Frame(panel, bg=core.PANEL)
+        summary.pack(fill="x", padx=12, pady=(10, 5))
+        self.detail_cont = self._label(summary, "00:00:00", size=20, weight="bold", bg=core.PANEL)
+        self.detail_cont.pack(side="left")
+        self.status = self._label(summary, "현재 사용 중", size=8, weight="bold", fg=core.GREEN, bg=core.PANEL)
+        self.status.pack(side="right")
 
-        progress_wrap = tk.Frame(left, bg=core.PANEL)
-        progress_wrap.pack(fill="x", padx=22, pady=(10, 14))
-        self.progress_canvas = tk.Canvas(progress_wrap, height=9, bg=core.PANEL_2, highlightthickness=0, bd=0)
-        self.progress_canvas.pack(fill="x")
-        self.progress_bar = self.progress_canvas.create_rectangle(0, 0, 0, 9, fill=core.PURPLE, outline="")
-        self.progress_canvas.bind("<Configure>", lambda _e: self._update_progress())
+        progress_wrap = tk.Frame(panel, bg=core.PANEL)
+        progress_wrap.pack(fill="x", padx=12, pady=(2, 7))
         progress_text = tk.Frame(progress_wrap, bg=core.PANEL)
-        progress_text.pack(fill="x", pady=(5, 0))
-        self._label(progress_text, "다음 휴식까지", size=9, fg=core.MUTED, bg=core.PANEL).pack(side="left")
-        self.remain = self._label(progress_text, "60분", size=9, weight="bold", fg=core.TEXT, bg=core.PANEL)
+        progress_text.pack(fill="x")
+        self._label(progress_text, "다음 휴식까지", size=8, fg=core.MUTED, bg=core.PANEL).pack(side="left")
+        self.remain = self._label(progress_text, "60분", size=8, weight="bold", bg=core.PANEL)
         self.remain.pack(side="right")
+        self.progress_canvas = tk.Canvas(progress_wrap, height=6, bg=core.PANEL_2, highlightthickness=0, bd=0)
+        self.progress_canvas.pack(fill="x", pady=(4, 0))
+        self.progress_bar = self.progress_canvas.create_rectangle(0, 0, 0, 6, fill=core.PURPLE, outline="")
+        self.progress_canvas.bind("<Configure>", lambda _e: self._update_progress())
 
-        metrics = tk.Frame(left, bg=core.PANEL)
-        metrics.pack(fill="x", padx=22, pady=(0, 14))
+        metrics = tk.Frame(panel, bg=core.PANEL)
+        metrics.pack(fill="x", padx=12, pady=(2, 7))
         for i in range(3):
             metrics.grid_columnconfigure(i, weight=1)
         self.today_active = self._metric(metrics, 0, "오늘 실사용")
         self.today_away = self._metric(metrics, 1, "자리비움")
         self.today_ratio = self._metric(metrics, 2, "실사용률")
 
-        actions = tk.Frame(left, bg=core.PANEL)
-        actions.pack(fill="x", padx=22, pady=(0, 12))
-        self.away_btn = self._button(actions, "자리비움 시작", self.toggle_manual_away, primary=True)
-        self.away_btn.pack(side="left", fill="x", expand=True, padx=(0, 5))
-        self._button(actions, "오늘 기록", self.show_stats).pack(side="left", fill="x", expand=True, padx=(5, 0))
-
-        footer = self._card(left, bg=core.PANEL_2)
-        footer.pack(fill="x", padx=22, pady=(0, 20))
-        self.next_break = self._label(footer, "다음 휴식 알림: 60분 후", size=9, fg=core.MUTED, bg=core.PANEL_2)
-        self.next_break.pack(side="left", padx=12, pady=10)
-
-        right = self._card(body)
-        right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
-        right.grid_rowconfigure(0, weight=1)
-        right.grid_columnconfigure(0, weight=1)
-
-        self.character = tk.Label(right, bg=core.PANEL, bd=0, anchor="s")
-        self.character.grid(row=0, column=0, sticky="nsew", padx=6, pady=(4, 0))
-
-        bubble = tk.Frame(right, bg="#211644", highlightthickness=1, highlightbackground="#523A8E")
-        bubble.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 16))
-        self.speech = tk.Label(
-            bubble,
-            text=pick("playful"),
-            wraplength=390,
-            justify="left",
-            font=("Malgun Gothic", 11, "bold"),
-            fg=core.TEXT,
-            bg="#211644",
-            padx=14,
-            pady=11,
-        )
-        self.speech.pack(fill="x")
-
-    def _build_stats_page(self):
-        page = self.stats_page
-        self._build_header(page, "오늘 기록", back_command=lambda: self._show_page("timer"))
-
-        body = tk.Frame(page, bg=core.BG)
-        body.pack(fill="both", expand=True, padx=20, pady=(4, 18))
-        body.grid_columnconfigure(0, weight=7, uniform="stats")
-        body.grid_columnconfigure(1, weight=13, uniform="stats")
-        body.grid_rowconfigure(0, weight=1)
-
-        left = self._card(body)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        self._label(left, "오늘 집중 요약", size=11, weight="bold", fg=core.MUTED, bg=core.PANEL).pack(anchor="w", padx=20, pady=(20, 8))
-
         self.stats_values = {}
         rows = [
-            ("active", "실사용 시간"),
-            ("away", "자리비움 시간"),
             ("count", "휴식 횟수"),
             ("longest", "최장 연속 사용"),
-            ("ratio", "실사용률"),
         ]
         for key, caption in rows:
-            row = tk.Frame(left, bg=core.PANEL)
-            row.pack(fill="x", padx=20, pady=9)
-            self._label(row, caption, size=9, fg=core.MUTED, bg=core.PANEL).pack(side="left")
-            value = self._label(row, "-", size=13, weight="bold", bg=core.PANEL)
+            row = tk.Frame(panel, bg=core.PANEL)
+            row.pack(fill="x", padx=12, pady=2)
+            self._label(row, caption, size=8, fg=core.MUTED, bg=core.PANEL).pack(side="left")
+            value = self._label(row, "-", size=9, weight="bold", bg=core.PANEL)
             value.pack(side="right")
             self.stats_values[key] = value
 
-        self._button(left, "타이머로 돌아가기", lambda: self._show_page("timer")).pack(side="bottom", fill="x", padx=20, pady=20)
-
-        right = self._card(body)
-        right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
-        right.grid_rowconfigure(0, weight=1)
-        right.grid_columnconfigure(0, weight=1)
-        self.stats_character = tk.Label(right, bg=core.PANEL, bd=0, anchor="s")
-        self.stats_character.grid(row=0, column=0, sticky="nsew", padx=6, pady=(4, 0))
-        self.stats_speech = tk.Label(
-            right,
-            text=pick("stats"),
-            wraplength=440,
-            justify="left",
-            font=("Malgun Gothic", 11, "bold"),
-            fg=core.TEXT,
-            bg="#211644",
-            padx=16,
-            pady=12,
+        actions = tk.Frame(panel, bg=core.PANEL)
+        actions.pack(fill="x", padx=12, pady=(7, 5))
+        self.away_btn = self._button(actions, "자리비움 시작", self.toggle_manual_away, primary=True)
+        self.away_btn.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        self._button(actions, "기본 화면", lambda: self._show_page("timer")).pack(
+            side="left", fill="x", expand=True, padx=(4, 0)
         )
-        self.stats_speech.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 16))
 
-    def _set_stats_character(self):
-        try:
-            image = self._load_character_image("stats", (500, 455))
-            self.stats_photo = ImageTk.PhotoImage(image)
-            self.stats_character.configure(image=self.stats_photo)
-        except Exception:
-            core.log.exception("stats character asset failed")
+        footer = self._card(panel, bg=core.PANEL_2)
+        footer.pack(fill="x", padx=12, pady=(0, 10))
+        self.next_break = self._label(footer, "다음 휴식 알림: 60분 후", size=8, fg=core.MUTED, bg=core.PANEL_2)
+        self.next_break.pack(side="left", padx=8, pady=5)
+
+    def _update_stats_page(self, refresh_image=True):
+        d = self.state.daily
+        self.stats_values["count"].configure(text=f"{d.away_count}회")
+        self.stats_values["longest"].configure(text=core.fmt(d.longest_continuous_today))
 
     def _build_settings_page(self):
         page = self.settings_page
         self._build_header(page, "설정", back_command=lambda: self._show_page("timer"))
 
         body = tk.Frame(page, bg=core.BG)
-        body.pack(fill="both", expand=True, padx=20, pady=(4, 18))
+        body.pack(fill="both", expand=True, padx=7, pady=(2, 7))
 
         panel = self._card(body)
         panel.pack(fill="both", expand=True)
 
         content = tk.Frame(panel, bg=core.PANEL)
-        content.pack(side="left", fill="both", expand=True, padx=20, pady=18)
-        self._label(content, "앱 설정", size=11, weight="bold", bg=core.PANEL).pack(anchor="w", pady=(0, 10))
-        self._label(content, "체크와 시간을 바꾼 뒤 저장해 주세요.", size=8, fg=core.MUTED, bg=core.PANEL).pack(anchor="w", pady=(0, 8))
+        content.pack(side="left", fill="both", expand=True, padx=12, pady=9)
+        self._label(content, "앱 설정", size=10, weight="bold", bg=core.PANEL).pack(anchor="w", pady=(0, 3))
 
         p = self.preferences
         self.settings_bool_vars = {
@@ -242,9 +243,9 @@ class DesktopApp(App):
                 highlightthickness=0,
                 bd=0,
                 cursor="hand2",
-            ).pack(anchor="w", pady=3)
+            ).pack(anchor="w", pady=0)
 
-        self._label(content, "퇴근 시간 설정", size=10, weight="bold", bg=core.PANEL).pack(anchor="w", pady=(20, 8))
+        self._label(content, "퇴근 시간 설정", size=9, weight="bold", bg=core.PANEL).pack(anchor="w", pady=(6, 3))
         self.settings_time_vars = {
             "wind_down": tk.StringVar(value=p.wind_down),
             "leave_mode": tk.StringVar(value=p.leave_mode),
@@ -258,8 +259,8 @@ class DesktopApp(App):
             ("late_leave", "야근 잔소리 시작"),
         ):
             row = tk.Frame(content, bg=core.PANEL)
-            row.pack(fill="x", pady=4)
-            self._label(row, caption, size=9, fg=core.MUTED, bg=core.PANEL).pack(side="left")
+            row.pack(fill="x", pady=1)
+            self._label(row, caption, size=8, fg=core.MUTED, bg=core.PANEL).pack(side="left")
             tk.Entry(
                 row,
                 textvariable=self.settings_time_vars[key],
@@ -271,18 +272,18 @@ class DesktopApp(App):
                 insertbackground=core.TEXT,
                 relief="flat",
                 bd=0,
-            ).pack(side="right", ipady=4)
+            ).pack(side="right", ipady=1)
 
         save_row = tk.Frame(content, bg=core.PANEL)
-        save_row.pack(fill="x", pady=(15, 0))
+        save_row.pack(fill="x", pady=(5, 0))
         self.settings_status = self._label(save_row, "", size=8, fg=core.GREEN, bg=core.PANEL)
         self.settings_status.pack(side="left")
         self._button(save_row, "설정 저장", self._save_settings, primary=True).pack(side="right")
 
         image_holder = tk.Label(panel, bg=core.PANEL, bd=0, anchor="s")
-        image_holder.pack(side="right", fill="y", padx=(4, 10), pady=(10, 0))
+        image_holder.pack(side="right", fill="y", padx=(2, 5), pady=(5, 0))
         try:
-            image = self._load_character_image("settings", (270, 420))
+            image = self._load_character_image("settings", (150, 300))
             self.settings_photo = ImageTk.PhotoImage(image)
             image_holder.configure(image=self.settings_photo)
         except Exception:
@@ -321,6 +322,11 @@ class DesktopApp(App):
 
     def _update_ui(self):
         super()._update_ui()
+        self.detail_cont.configure(text=self.cont.cget("text"))
+        self.main_status.configure(
+            text=("자리비움 중" if self.state.session.is_away else "집중 중") + " · 상세 보기",
+            fg=core.AMBER if self.state.session.is_away else core.GREEN,
+        )
         if hasattr(self, "header_status"):
             self.header_status.configure(
                 text="자리비움 중" if self.state.session.is_away else "집중 중",
@@ -329,13 +335,13 @@ class DesktopApp(App):
 
     def show_break_toast(self, text, allow_snooze=True):
         self._destroy_toast()
-        win = self._toast_window(500, 184)
+        win = self._toast_window(420, 158)
         self._toast_character(win, "rest")
 
         text_wrap = tk.Frame(win, bg=core.PANEL)
         text_wrap.pack(side="left", fill="both", expand=True, padx=(0, 12), pady=12)
         self._label(text_wrap, "휴식할 시간이에요", size=10, weight="bold", fg=core.GREEN, bg=core.PANEL).pack(anchor="w")
-        self._label(text_wrap, text, size=9, bg=core.PANEL, wraplength=320, justify="left").pack(anchor="w", pady=(3, 8))
+        self._label(text_wrap, text, size=9, bg=core.PANEL, wraplength=250, justify="left").pack(anchor="w", pady=(3, 8))
         row = tk.Frame(text_wrap, bg=core.PANEL)
         row.pack(anchor="w")
         self._button(row, "알았어, 쉴게", self.accept_break, primary=True).pack(side="left", padx=(0, 6))
