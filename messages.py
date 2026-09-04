@@ -227,6 +227,25 @@ PERSONALITY_POOLS = {
 }
 
 
+def habit_dialogue_kind(
+    *,
+    away_count: int,
+    longest_continuous: float,
+    continuous_seconds: float,
+) -> str | None:
+    """Choose a lightweight habit reaction from already-recorded timer stats."""
+    continuous = max(0.0, float(continuous_seconds))
+    longest = max(0.0, float(longest_continuous))
+    breaks = max(0, int(away_count))
+    if continuous >= 75 * 60:
+        return "nag"
+    if breaks >= 3 and longest <= 75 * 60:
+        return "praise"
+    if continuous >= 50 * 60:
+        return "worry"
+    return None
+
+
 def time_of_day_kind(hour: int) -> str:
     hour = int(hour) % 24
     if 6 <= hour < 11:

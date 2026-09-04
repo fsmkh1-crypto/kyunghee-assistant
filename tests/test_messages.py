@@ -3,6 +3,7 @@ import unittest
 from messages import (
     RARE_MIN_GAP,
     RARE_POOLS,
+    habit_dialogue_kind,
     _reset_rare_state_for_tests,
     maybe_pick_rare,
     time_of_day_kind,
@@ -34,6 +35,23 @@ class MessageBehaviorTests(unittest.TestCase):
     def test_unknown_personality_falls_back_to_balanced(self):
         _reset_rare_state_for_tests()
         self.assertIn(maybe_pick_rare("unknown", chance=1.0, roll=0.0), RARE_POOLS["balanced"])
+
+    def test_habit_dialogue_priorities(self):
+        self.assertEqual(
+            habit_dialogue_kind(away_count=5, longest_continuous=2000, continuous_seconds=4600),
+            "nag",
+        )
+        self.assertEqual(
+            habit_dialogue_kind(away_count=3, longest_continuous=4000, continuous_seconds=1200),
+            "praise",
+        )
+        self.assertEqual(
+            habit_dialogue_kind(away_count=1, longest_continuous=5000, continuous_seconds=3100),
+            "worry",
+        )
+        self.assertIsNone(
+            habit_dialogue_kind(away_count=1, longest_continuous=1800, continuous_seconds=1200)
+        )
 
 
 if __name__ == "__main__":
