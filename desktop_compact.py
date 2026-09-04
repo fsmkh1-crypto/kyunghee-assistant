@@ -17,8 +17,8 @@ class CompactDesktopApp(DesktopApp):
     CHARACTER_MAX = (288, 320)
     BUBBLE_WRAP = 258
 
+    FONT_FAMILY = "Pretendard"
     MESSAGE_TEXT = "#F29AB7"
-    MOVE_TEXT = "#AEB7C8"
 
     def __init__(self):
         super().__init__()
@@ -27,6 +27,21 @@ class CompactDesktopApp(DesktopApp):
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
         self._drag_origin = None
+
+    def _label(self, parent, text="", size=10, weight="normal", fg=core.TEXT, bg=None, **kwargs):
+        return tk.Label(
+            parent,
+            text=text,
+            font=(self.FONT_FAMILY, size, weight),
+            fg=fg,
+            bg=bg or parent.cget("bg"),
+            **kwargs,
+        )
+
+    def _button(self, parent, text, command, primary=False, width=None):
+        button = super()._button(parent, text, command, primary=primary, width=width)
+        button.configure(font=(self.FONT_FAMILY, 9, "bold"))
+        return button
 
     @staticmethod
     def _clean_character_alpha(image):
@@ -83,30 +98,12 @@ class CompactDesktopApp(DesktopApp):
         hero = tk.Frame(page, bg=self.TRANSPARENT_KEY, bd=0, highlightthickness=0)
         hero.pack(fill="both", expand=True)
 
-        # Visible move handle. A colour-key transparent background means the
-        # empty widget surface itself is not a reliable drag target on Windows,
-        # so this text-only handle owns window dragging.
-        move_handle = tk.Label(
-            hero,
-            text="↕ 이동",
-            font=("Malgun Gothic", 8, "bold"),
-            fg=self.MOVE_TEXT,
-            bg=self.TRANSPARENT_KEY,
-            bd=0,
-            highlightthickness=0,
-            cursor="fleur",
-            padx=2,
-            pady=1,
-        )
-        move_handle.place(relx=1.0, x=-6, y=6, anchor="ne")
-        self._bind_drag_surface(move_handle)
-
-        # Approved artwork only; no visible panel around it.
+        # Approved artwork only; clicking Kyunghee is the only way to open details.
         self.character = tk.Label(hero, bg=self.TRANSPARENT_KEY, bd=0, cursor="hand2")
         self.character.place(relx=0.5, rely=1.0, y=-48, anchor="s")
 
-        # Time/status are text-only on the colour-key transparent surface.
-        clock = tk.Frame(hero, bg=self.TRANSPARENT_KEY, bd=0, highlightthickness=0, cursor="hand2")
+        # The time itself doubles as the move handle. No extra move button is shown.
+        clock = tk.Frame(hero, bg=self.TRANSPARENT_KEY, bd=0, highlightthickness=0, cursor="fleur")
         clock.place(x=6, y=6)
         self.cont = self._label(
             clock,
@@ -115,26 +112,28 @@ class CompactDesktopApp(DesktopApp):
             weight="bold",
             fg=core.GREEN,
             bg=self.TRANSPARENT_KEY,
-            cursor="hand2",
+            cursor="fleur",
         )
         self.cont.pack(anchor="w")
         self.main_status = self._label(
             clock,
-            "집중 중 · 상세 보기",
+            "집중 중",
             size=7,
             fg=core.GREEN,
             bg=self.TRANSPARENT_KEY,
-            cursor="hand2",
+            cursor="fleur",
         )
         self.main_status.pack(anchor="w", pady=(0, 2))
+        for widget in (clock, self.cont, self.main_status):
+            self._bind_drag_surface(widget)
 
-        # Dialogue is also text-only: no bubble fill, border, or surrounding card.
+        # Dialogue is text-only: no bubble fill, border, or surrounding card.
         self.speech = tk.Label(
             hero,
             text=pick("playful"),
             wraplength=self.BUBBLE_WRAP,
             justify="center",
-            font=("Malgun Gothic", 9, "bold"),
+            font=(self.FONT_FAMILY, 9, "bold"),
             fg=self.MESSAGE_TEXT,
             bg=self.TRANSPARENT_KEY,
             bd=0,
@@ -145,10 +144,15 @@ class CompactDesktopApp(DesktopApp):
         )
         self.speech.place(relx=0.5, rely=1.0, y=-6, anchor="s")
 
-        for widget in (clock, self.cont, self.main_status):
-            widget.bind("<Button-1>", lambda _event: self.show_stats())
         self.character.bind("<Button-1>", lambda _event: self.show_stats())
         self.speech.bind("<Button-1>", self._cycle_message)
+
+    def _update_ui(self):
+        super()._update_ui()
+        self.main_status.configure(
+            text="자리비움 중" if self.state.session.is_away else "집중 중",
+            fg=core.AMBER if self.state.session.is_away else core.GREEN,
+        )
 
 
 if __name__ == "__main__":
