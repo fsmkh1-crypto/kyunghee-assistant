@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 import tkinter as tk
 from PIL import Image, ImageTk
 
@@ -14,10 +15,32 @@ from settings import UserSettings, set_windows_startup
 class DesktopApp(App):
     """Desktop-first UI shell wired to the existing timer engine and state."""
 
+    TRANSPARENT_KEY = "#010203"
+    COMPACT_SIZE = (460, 430)
+    DETAIL_SIZE = (560, 430)
+
     def __init__(self):
         super().__init__()
-        self.root.geometry("560x430")
-        self.root.minsize(520, 400)
+        self._enable_compact_transparency()
+        self._resize_for_page(self.current_page)
+
+    def _enable_compact_transparency(self):
+        try:
+            self.root.configure(bg=self.TRANSPARENT_KEY)
+            self.root.wm_attributes("-transparentcolor", self.TRANSPARENT_KEY)
+        except tk.TclError:
+            # The packaged app is Windows-only, but keep the UI usable if a
+            # particular Tk build does not expose colour-key transparency.
+            core.log.exception("window transparency is unavailable")
+
+    def _resize_for_page(self, name: str):
+        width, height = self.COMPACT_SIZE if name == "timer" else self.DETAIL_SIZE
+        self.root.minsize(width, height)
+        self.root.geometry(f"{width}x{height}")
+
+    def _show_page(self, name: str):
+        super()._show_page(name)
+        self._resize_for_page(name)
 
     def _image_on(self, path, max_size, bg):
         if not path:
@@ -41,14 +64,21 @@ class DesktopApp(App):
         except Exception:
             core.log.exception("avatar asset failed")
 
-    def _load_character_image(self, role: str, max_size=(470, 300)):
+    def _load_character_image(self, role: str, max_size=(470, 300), preserve_alpha=False):
+        if preserve_alpha:
+            path = resolve_asset(role)
+            if path:
+                with Image.open(path) as src:
+                    image = src.convert("RGBA")
+                    image.thumbnail(max_size, Image.Resampling.LANCZOS)
+                    return image
         return self._image_on(resolve_asset(role), max_size, core.PANEL)
 
     def _set_character(self, role: str):
         if role == self.character_role:
             return
         try:
-            image = self._load_character_image(role, (470, 300))
+            image = self._load_character_image(role, (470, 300), preserve_alpha=True)
             self.character_photo = ImageTk.PhotoImage(image)
             self.character.configure(image=self.character_photo)
             self.character_role = role
@@ -83,11 +113,14 @@ class DesktopApp(App):
 
     def _build_timer_page(self):
         page = self.timer_page
-        hero = self._card(page)
-        hero.pack(fill="both", expand=True, padx=6, pady=6)
+        page.configure(bg=self.TRANSPARENT_KEY)
+        hero = tk.Frame(page, bg=self.TRANSPARENT_KEY, bd=0, highlightthickness=0)
+        hero.pack(fill="both", expand=True)
 
-        self.character = tk.Label(hero, bg=core.PANEL, bd=0, anchor="s", cursor="hand2")
-        self.character.pack(fill="both", expand=True, padx=2, pady=(2, 0))
+        # Keep the label at the image's requested size.  Expanding it to fill
+        # the page would turn the surrounding empty area into a click target.
+        self.character = tk.Label(hero, bg=self.TRANSPARENT_KEY, bd=0, cursor="hand2")
+        self.character.place(relx=0.5, rely=1.0, y=-54, anchor="s")
 
         clock = tk.Frame(hero, bg=core.PANEL_2, highlightthickness=1, highlightbackground=core.BORDER, cursor="hand2")
         clock.place(x=8, y=8)
@@ -97,11 +130,11 @@ class DesktopApp(App):
         self.main_status.pack(pady=(0, 4))
 
         bubble = tk.Frame(hero, bg="#211644", highlightthickness=1, highlightbackground="#523A8E", cursor="hand2")
-        bubble.pack(fill="x", padx=6, pady=(0, 6))
+        bubble.place(relx=0.5, rely=1.0, y=-7, anchor="s", width=430)
         self.speech = tk.Label(
             bubble,
             text=pick("playful"),
-            wraplength=500,
+            wraplength=400,
             justify="center",
             font=("Malgun Gothic", 9, "bold"),
             fg=core.TEXT,
@@ -114,19 +147,21 @@ class DesktopApp(App):
 
         for widget in (clock, self.cont, self.main_status):
             widget.bind("<Button-1>", lambda _event: self.show_stats())
-        for widget in (hero, self.character, bubble, self.speech):
+        self.character.bind("<Button-1>", lambda _event: self.show_stats())
+        for widget in (bubble, self.speech):
             widget.bind("<Button-1>", self._cycle_message)
 
     def _cycle_message(self, _event=None):
         mode = self._current_workday_state().mode
         if mode != "normal":
-            self._say(mode, work_mode=mode)
+            kind = mode
         elif self.state.session.is_away:
-            self._say("away_start")
+            kind = "away_start"
         else:
             remaining = self.engine.remaining_to_break()
             kind = "cheer" if remaining <= 15 * 60 else "playful"
-            self._say(kind)
+        self.speech.configure(text=pick(kind))
+        self.last_dialogue_at = time.monotonic()
 
     def _build_stats_page(self):
         page = self.stats_page
