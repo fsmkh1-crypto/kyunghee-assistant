@@ -1,0 +1,40 @@
+name: Apply Phase 6 suppress today
+
+on:
+  push:
+    paths:
+      - 'tools/apply_phase6_suppress_today.py'
+      - '.github/workflows/apply-phase6-suppress-today.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ui/dark-kyunghee-redesign
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Apply patch
+        run: python tools/apply_phase6_suppress_today.py
+      - name: Compile and test
+        run: |
+          python -m py_compile state.py app.py desktop_compact.py
+          python -m unittest discover -s tests -v
+      - name: Commit implementation
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add state.py app.py tests/test_state.py PHASE6_HANDOFF.md
+          if git diff --cached --quiet; then
+            echo 'No changes to commit.'
+          else
+            git commit -m 'Add daily break reminder suppression'
+            git push origin HEAD:ui/dark-kyunghee-redesign
+          fi
