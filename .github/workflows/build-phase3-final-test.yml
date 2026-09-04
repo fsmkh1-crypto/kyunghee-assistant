@@ -6,7 +6,7 @@ on:
       - '.github/workflows/build-phase3-final-test.yml'
   workflow_dispatch:
 
-# Trigger build for the fixed-cluster-spacing Phase 3 test package.
+# Trigger build for the visible-alpha-cluster Phase 3 test package.
 jobs:
   build:
     runs-on: windows-latest
