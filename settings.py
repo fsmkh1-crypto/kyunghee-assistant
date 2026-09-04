@@ -52,13 +52,38 @@ def _bounded_int(value: object, default: int, low: int, high: int) -> int:
     return parsed if low <= parsed <= high else default
 
 
+def _optional_int(value: object) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _fit_mode(value: object) -> str:
     return str(value) if str(value) in {"fit", "crop"} else "fit"
 
 
+def _color_or(value: object, default: str) -> str:
+    try:
+        return validate_hex_color(str(value))
+    except ValueError:
+        return default
+
+
+def _clock_or(value: object, default: str) -> str:
+    candidate = str(value)
+    try:
+        parse_clock(candidate)
+        return candidate
+    except ValueError:
+        return default
+
+
 @dataclass(frozen=True)
 class UserSettings:
-    schema_version: int = 2
+    schema_version: int = 3
     start_with_windows: bool = False
     always_on_top: bool = False
     break_reminders: bool = True
@@ -97,6 +122,9 @@ class UserSettings:
     image_alert_mode: str = "fit"
     image_profile_mode: str = "fit"
 
+    window_x: int | None = None
+    window_y: int | None = None
+
     def workday_policy(self) -> WorkdayPolicy:
         times = [
             parse_clock(self.wind_down),
@@ -129,21 +157,35 @@ def settings_from_dict(raw: object) -> UserSettings:
     if not isinstance(raw, dict):
         return UserSettings()
     d = UserSettings()
-    result = UserSettings(
+
+    wind_down = _clock_or(raw.get("wind_down", d.wind_down), d.wind_down)
+    leave_mode = _clock_or(raw.get("leave_mode", d.leave_mode), d.leave_mode)
+    strong_leave = _clock_or(raw.get("strong_leave", d.strong_leave), d.strong_leave)
+    late_leave = _clock_or(raw.get("late_leave", d.late_leave), d.late_leave)
+    parsed_times = list(map(parse_clock, (wind_down, leave_mode, strong_leave, late_leave)))
+    if parsed_times != sorted(parsed_times):
+        wind_down, leave_mode, strong_leave, late_leave = (
+            d.wind_down,
+            d.leave_mode,
+            d.strong_leave,
+            d.late_leave,
+        )
+
+    return UserSettings(
         start_with_windows=_coerce_bool(raw.get("start_with_windows"), d.start_with_windows),
         always_on_top=_coerce_bool(raw.get("always_on_top"), d.always_on_top),
         break_reminders=_coerce_bool(raw.get("break_reminders"), d.break_reminders),
         workday_reminders=_coerce_bool(raw.get("workday_reminders"), d.workday_reminders),
-        wind_down=str(raw.get("wind_down", d.wind_down)),
-        leave_mode=str(raw.get("leave_mode", d.leave_mode)),
-        strong_leave=str(raw.get("strong_leave", d.strong_leave)),
-        late_leave=str(raw.get("late_leave", d.late_leave)),
+        wind_down=wind_down,
+        leave_mode=leave_mode,
+        strong_leave=strong_leave,
+        late_leave=late_leave,
         time_text_size=_bounded_int(raw.get("time_text_size"), d.time_text_size, 14, 24),
         status_text_size=_bounded_int(raw.get("status_text_size"), d.status_text_size, 7, 12),
         message_text_size=_bounded_int(raw.get("message_text_size"), d.message_text_size, 9, 16),
-        time_text_color=str(raw.get("time_text_color", d.time_text_color)),
-        status_text_color=str(raw.get("status_text_color", d.status_text_color)),
-        message_text_color=str(raw.get("message_text_color", d.message_text_color)),
+        time_text_color=_color_or(raw.get("time_text_color", d.time_text_color), d.time_text_color),
+        status_text_color=_color_or(raw.get("status_text_color", d.status_text_color), d.status_text_color),
+        message_text_color=_color_or(raw.get("message_text_color", d.message_text_color), d.message_text_color),
         image_default=str(raw.get("image_default", "")),
         image_cheer=str(raw.get("image_cheer", "")),
         image_rest=str(raw.get("image_rest", "")),
@@ -164,13 +206,9 @@ def settings_from_dict(raw: object) -> UserSettings:
         image_settings_mode=_fit_mode(raw.get("image_settings_mode", "fit")),
         image_alert_mode=_fit_mode(raw.get("image_alert_mode", "fit")),
         image_profile_mode=_fit_mode(raw.get("image_profile_mode", "fit")),
+        window_x=_optional_int(raw.get("window_x")),
+        window_y=_optional_int(raw.get("window_y")),
     )
-    try:
-        result.workday_policy()
-        result.validate_widget_style()
-    except ValueError:
-        return d
-    return result
 
 
 def load_user_settings(path: Path) -> UserSettings:
@@ -203,7 +241,7 @@ def startup_command() -> str:
         return f'"{executable}"'
     pythonw = executable.with_name("pythonw.exe")
     launcher = pythonw if pythonw.is_file() else executable
-    script = Path(__file__).resolve().parent / "desktop_app.py"
+    script = Path(__file__).resolve().parent / "desktop_compact.py"
     return f'"{launcher}" "{script}"'
 
 
