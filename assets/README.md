@@ -15,7 +15,7 @@ The approved Kyunghee assets are organized by user-facing role. Do not regenerat
 - `alert/` — alert/toast artwork
 - `profile/` — profile / identity face
 
-Root-level `README.md`, `atlas_manifest.json`, and compatibility metadata stay in `assets/`.
+Root-level `README.md`, `atlas_manifest.json`, `asset_index.json`, and compatibility metadata stay in `assets/`.
 
 ## Approved masters
 
@@ -30,10 +30,28 @@ Root-level `README.md`, `atlas_manifest.json`, and compatibility metadata stay i
 - `alert/alert_kyunghee.png`
 - `profile/profile_kyunghee.png`
 
-Legacy compatibility files are kept in the closest matching role folder. `asset_manager.py` resolves the role-folder path first and still accepts the old flat layout as a fallback for older external packs.
+Legacy compatibility files are kept in the closest matching role folder.
+
+## Numbered built-in sets
+
+Numbered files such as `default_01.png`, `cheer_01.png`, ... `profile_01.png` are not independent random variants. Files with the same number form one complete visual set.
+
+At runtime `asset_manager.py` scans for set numbers that exist for all ten folders, chooses one complete set once per process, and resolves every role from that same set number. This prevents mixed outfits such as `default_05` with `rest_03`.
+
+Runtime priority is:
+
+1. user-imported/custom image set handled by the desktop UI,
+2. one coherent built-in numbered set,
+3. approved canonical/legacy master fallback.
+
+A numbered set is ignored as a runtime choice if any of the ten role files is missing.
 
 ## Naming rule for future additions
 
-Prefer `<role>_01.png`, `<role>_02.png`, etc. Add a short semantic suffix only when useful, e.g. `cheer_thumbsup_01.png`.
+Use `<role>_01.png`, `<role>_02.png`, etc. Keep the same number across all ten roles. Add a semantic suffix only for non-standard compatibility assets.
 
 Full-body artwork must preserve aspect ratio and visible legs. Future poses should preserve the same canonical identity direction as the approved profile/master assets.
+
+## Duplicate semantics
+
+`assets/asset_index.json` tracks installed numbered assets. Identical source bytes or identical output bytes are duplicates. A similar pose is **not** a duplicate when clothing, colour, pattern, or other visible appearance differs. Near-duplicate warnings therefore require both pose similarity and close normalized appearance.

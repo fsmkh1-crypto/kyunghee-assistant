@@ -1,7 +1,16 @@
 import unittest
 from pathlib import Path
 
-from asset_manager import ASSET_DIR, ROLE_FILES, resolve_asset, role_for_dialogue, role_for_work_mode
+from asset_manager import (
+    ASSET_DIR,
+    ROLE_FILES,
+    VARIANT_ROLE,
+    available_complete_sets,
+    resolve_asset,
+    role_for_dialogue,
+    role_for_work_mode,
+    select_session_set,
+)
 
 
 class RuntimeAssetTests(unittest.TestCase):
@@ -14,7 +23,7 @@ class RuntimeAssetTests(unittest.TestCase):
                 self.assertTrue(path.is_relative_to(ASSET_DIR))
                 self.assertNotEqual(path.parent, ASSET_DIR)
 
-    def test_role_folders_are_used_for_canonical_assets(self):
+    def test_role_folders_keep_canonical_fallback_assets(self):
         expected = {
             "default": "default/main_kyunghee.png",
             "cheer": "cheer/focus_cheer_kyunghee.png",
@@ -31,7 +40,18 @@ class RuntimeAssetTests(unittest.TestCase):
         for role, relative in expected.items():
             with self.subTest(role=role):
                 self.assertEqual(ROLE_FILES[role][0], relative)
-                self.assertEqual(resolve_asset(role), ASSET_DIR / relative)
+                self.assertTrue((ASSET_DIR / relative).is_file())
+
+    def test_numbered_runtime_assets_use_one_complete_set(self):
+        complete = available_complete_sets()
+        self.assertTrue(complete)
+        selected = select_session_set()
+        self.assertIn(selected, complete)
+        for role in ROLE_FILES:
+            with self.subTest(role=role):
+                variant_role = VARIANT_ROLE[role]
+                expected = ASSET_DIR / variant_role / f"{variant_role}_{selected:02d}.png"
+                self.assertEqual(resolve_asset(role), expected)
 
     def test_workday_visual_policy(self):
         self.assertEqual(role_for_work_mode("normal"), "default")
