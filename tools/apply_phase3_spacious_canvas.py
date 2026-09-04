@@ -39,7 +39,7 @@ text = replace_once(
     "initial clock placement",
 )
 
-text = replace_once(
+text = replace_first(
     text,
     '        self.speech.place(relx=0.5, rely=1.0, y=-self._scale(3), anchor="s")',
     '        self.speech.place(\n            relx=0.5, x=self._message_x_offset(), rely=1.0,\n            y=-self._message_bottom_gap(), anchor="s",\n        )',
