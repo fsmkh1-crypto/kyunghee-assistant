@@ -424,18 +424,52 @@ class CompactDesktopApp(DesktopApp):
                 pass
         return width
 
+    def _clock_layout_width(self) -> int:
+        if not (self._effective_display_flag("show_time") or self._effective_display_flag("show_status")):
+            return 0
+        return self._clock_render_width()
+
+    def _message_render_width(self) -> int:
+        if not self._effective_display_flag("show_message"):
+            return 0
+        speech = getattr(self, "speech", None)
+        if speech is not None:
+            try:
+                req = int(speech.winfo_reqwidth())
+                if req > 1:
+                    return req
+            except tk.TclError:
+                pass
+        wrap = min(360, max(250, self._scale(self.BUBBLE_WRAP)))
+        return wrap + 8
+
+    def _horizontal_union_bounds(self) -> tuple[float, float, int, int]:
+        visible_left, _visible_top, visible_right, _visible_bottom = self._character_visible_bounds()
+        visible_character_width = max(1, visible_right - visible_left)
+        clock_width = self._clock_layout_width()
+        visible_gap = 6 if clock_width else 0
+        character_visible_left = clock_width + visible_gap
+        character_visible_right = character_visible_left + visible_character_width
+        character_visible_center = character_visible_left + visible_character_width / 2
+        union_left = 0.0
+        union_right = float(character_visible_right)
+        message_width = self._message_render_width()
+        if message_width:
+            union_left = min(union_left, character_visible_center - message_width / 2)
+            union_right = max(union_right, character_visible_center + message_width / 2)
+        return union_left, union_right, clock_width, visible_gap
+
     def _cluster_horizontal_layout(self) -> tuple[int, int]:
-        # Treat the clock/status + visible Kyunghee silhouette as one cluster.
-        # Keep a fixed *visible* edge-to-edge gap at every scale; transparent PNG
-        # padding is deliberately excluded from the gap calculation.
+        # Right-pack the complete visible union (clock/status, Kyunghee silhouette,
+        # and message) instead of centering it inside a generously oversized canvas.
         timer_width, _timer_height = self._timer_size()
         character_width, _character_height = self._character_render_size()
-        visible_left, _visible_top, visible_right, _visible_bottom = self._character_visible_bounds()
-        clock_width = self._clock_render_width()
-        visible_gap = 6
-        visible_character_width = max(1, visible_right - visible_left)
-        visible_cluster_width = clock_width + visible_gap + visible_character_width
-        cluster_left = max(18, round((timer_width - visible_cluster_width) / 2))
+        visible_left, _visible_top, _visible_right, _visible_bottom = self._character_visible_bounds()
+        union_left, union_right, clock_width, visible_gap = self._horizontal_union_bounds()
+        right_margin = 8
+        cluster_left = round(timer_width - right_margin - union_right)
+        # _timer_size guarantees at least 24 px on the union's left side.
+        cluster_left = max(cluster_left, round(24 - union_left))
         visible_character_left = cluster_left + clock_width + visible_gap
         image_left = visible_character_left - visible_left
         character_center = image_left + character_width / 2
@@ -468,18 +502,18 @@ class CompactDesktopApp(DesktopApp):
         return clock_x, max(18, round(character_top + visible_top + 4))
 
     def _timer_size(self):
-        # Keep a generous click-through transparent canvas, but guarantee enough
-        # width for the whole visible cluster at every scale. The visible UI
-        # spacing itself stays fixed while only the artwork and canvas grow.
+        # Size from the actual visible horizontal union. Transparent PNG padding
+        # is excluded, so large widget scales no longer reserve invisible width.
         growth = self._layout_growth()
-        width = self.MIN_TIMER_SIZE[0] + round(growth * 3.60)
         height = self.MIN_TIMER_SIZE[1] + round(growth * 3.40)
-        fixed_side_margins = 48
-        clock_reserve = 150
-        cluster_gap = 30
-        required_width = fixed_side_margins + clock_reserve + cluster_gap + self._scale(self.CHARACTER_MAX[0])
+        union_left, union_right, _clock_width, _visible_gap = self._horizontal_union_bounds()
+        union_width = max(1.0, union_right - union_left)
+        left_margin = 24
+        right_margin = 8
+        required_width = round(union_width + left_margin + right_margin)
+        width = max(360, required_width)
         required_height = self._scale(self.CHARACTER_MAX[1]) + 130
-        return max(width, required_width), max(height, required_height)
+        return width, max(height, required_height)
 
     def _resize_for_page(self, name: str):
         if name == "timer":
