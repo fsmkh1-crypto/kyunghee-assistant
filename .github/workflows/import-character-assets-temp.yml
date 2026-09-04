@@ -1,0 +1,55 @@
+name: Import character assets
+
+on:
+  push:
+    branches:
+      - asset-import-transfer-20260904
+    paths:
+      - .github/asset-import-trigger
+
+permissions:
+  contents: write
+
+jobs:
+  import-assets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download exact PNG assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p assets/default assets/cheer assets/rest assets/away assets/warning assets/leave assets/stats assets/settings assets/alert assets/profile
+          curl -fL 'https://oaisdmntprkoreacentral.blob.core.windows.net/files/00000000-5470-8206-8ae6-6cf610cc6fed/raw?se=2026-09-04T15%3A13%3A23Z&sp=r&sv=2026-02-06&sr=b&scid=76501350-7e81-48cd-ac62-839f004dd91f&skoid=b1bca990-dcac-4c31-8ca1-ac563cf24c54&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-04T08%3A02%3A30Z&ske=2026-09-05T08%3A02%3A30Z&sks=b&skv=2026-02-06&sig=4Y5/KhAt1MvXfcjNmDIrgGQ1gXRs5aodAb/8AAe5R1k%3D' -o assets/default/default_01.png
+          curl -fL 'https://oaisdmntprjapaneast.blob.core.windows.net/files/00000000-5f88-8209-9ced-e30c1482815f/raw?se=2026-09-04T15%3A15%3A06Z&sp=r&sv=2026-02-06&sr=b&scid=76501350-7e81-48cd-ac62-839f004dd91f&skoid=b1bca990-dcac-4c31-8ca1-ac563cf24c54&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-04T02%3A49%3A59Z&ske=2026-09-05T02%3A49%3A59Z&sks=b&skv=2026-02-06&sig=vuQNUJYGxKd/2TylSnJtiWseW8ia15ezrOCp8ic73v4%3D' -o assets/cheer/cheer_01.png
+          curl -fL 'https://oaisdmntprkoreacentral.blob.core.windows.net/files/00000000-8f70-8206-a3cb-8c2c750e35c5/raw?se=2026-09-04T15%3A15%3A06Z&sp=r&sv=2026-02-06&sr=b&scid=76501350-7e81-48cd-ac62-839f004dd91f&skoid=b1bca990-dcac-4c31-8ca1-ac563cf24c54&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-04T02%3A41%3A33Z&ske=2026-09-05T02%3A41%3A33Z&sks=b&skv=2026-02-06&sig=1gLJMT4qwfyW8uI7/CBwC8yIN2BFirUoR/j4q7SCZAk%3D' -o assets/rest/rest_01.png
+          curl -fL 'https://oaisdmntprkoreacentral.blob.core.windows.net/files/00000000-50dc-8206-a584-47dbae3091db/raw?se=2026-09-04T15%3A15%3A06Z&sp=r&sv=2026-02-06&sr=b&scid=76501350-7e81-48cd-ac62-839f004dd91f&skoid=b1bca990-dcac-4c31-8ca1-ac563cf24c54&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-04T02%3A19%3A33Z&ske=2026-09-05T02%3A19%3A33Z&sks=b&skv=2026-02-06&sig=Lubb6oO7zwKCC3OqatYUaVZ89Pnh9SSU/J1tWR%2BBSls%3D' -o assets/away/away_01.png
+          curl -fL 'https://oaisdmntprseasia.blob.core.windows.net/files/00000000-5368-8207-ab5e-7cab924d06d5/raw?se=2026-09-04T15%3A15%3A06Z&sp=r&sv=2026-02-06&sr=b&scid=76501350-7e81-48cd-ac62-839f004dd91f&skoid=b1bca990-dcac-4c31-8ca1-ac563cf24c54&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-04T08%3A01%3A28Z&ske=2026-09-05T08%3A01%3A28Z&sks=b&skv=2026-02-06&sig=anghBaeaT0bjjvt%2Bs2rvECYtmhvTzhbLaKro1ii1oqM%3D' -o assets/warning/warning_01.png
+          curl -fL 'https://oaisdmntprjapaneast.blob.core.windows.net/files/00000000-f090-8209-aed7-68c149e4029b/raw?se=2026-09-04T15%3A15%3A06Z&sp=r&sv=2026-02-06&sr=b&scid=76501350-7e81-48cd-ac62-839f004dd91f&skoid=b1bca990-dcac-4c31-8ca1-ac563cf24c54&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-04T07%3A55%3A39Z&ske=2026-09-05T07%3A55%3A39Z&sks=b&skv=2026-02-06&sig=blX90%2BwZhnEEuOfSFnaWD9NCqaAq/iI1mlKJRHoSDZk%3D' -o assets/leave/leave_01.png
+          curl -fL 'https://oaisdmntprindiasocentral.blob.core.windows.net/files/00000000-d0f4-8211-b399-a4972d072a03/raw?se=2026-09-04T15%3A15%3A06Z&sp=r&sv=2026-02-06&sr=b&scid=76501350-7e81-48cd-ac62-839f004dd91f&skoid=b1bca990-dcac-4c31-8ca1-ac563cf24c54&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-04T02%3A37%3A15Z&ske=2026-09-05T02%3A37%3A15Z&sks=b&skv=2026-02-06&sig=LSq%2BFW%2BR533G1U03eswlswtwe53F%2BFvBy%2BuKIBTBlk0%3D' -o assets/stats/stats_01.png
+          curl -fL 'https://oaisdmntprkoreacentral.blob.core.windows.net/files/00000000-c17c-8206-a6cc-71c04edd8ff3/raw?se=2026-09-04T15%3A15%3A06Z&sp=r&sv=2026-02-06&sr=b&scid=76501350-7e81-48cd-ac62-839f004dd91f&skoid=b1bca990-dcac-4c31-8ca1-ac563cf24c54&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-04T02%3A39%3A21Z&ske=2026-09-05T02%3A39%3A21Z&sks=b&skv=2026-02-06&sig=vRdrpkVwnKO0FdbRcrD0lDt0QSLpG83ntQE1OcHYJGE%3D' -o assets/settings/settings_01.png
+          curl -fL 'https://oaisdmntprkoreacentral.blob.core.windows.net/files/00000000-c7a0-8206-9edf-0bf856280d18/raw?se=2026-09-04T15%3A15%3A06Z&sp=r&sv=2026-02-06&sr=b&scid=76501350-7e81-48cd-ac62-839f004dd91f&skoid=b1bca990-dcac-4c31-8ca1-ac563cf24c54&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-04T02%3A39%3A22Z&ske=2026-09-05T02%3A39%3A22Z&sks=b&skv=2026-02-06&sig=244tX1ygHo2usXNxQpNcwGVu6dcAzgb1EmoPCyyYLVU%3D' -o assets/alert/alert_01.png
+          curl -fL 'https://oaisdmntprkoreacentral.blob.core.windows.net/files/00000000-c334-8206-b26f-051ace2aaa51/raw?se=2026-09-04T15%3A15%3A06Z&sp=r&sv=2026-02-06&sr=b&scid=76501350-7e81-48cd-ac62-839f004dd91f&skoid=b1bca990-dcac-4c31-8ca1-ac563cf24c54&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-04T08%3A02%3A34Z&ske=2026-09-05T08%3A02%3A34Z&sks=b&skv=2026-02-06&sig=Dls%2BAf2xx6qhmzMgVCEJ5I4mrnDgXBIt/FVnAmm/p2I%3D' -o assets/profile/profile_01.png
+      - name: Verify exact bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '8bd156c140f30443c3561708f7f89e48ca2dc1b6613557992fb9f67db8726bf6  assets/default/default_01.png' | sha256sum -c -
+          echo '54d1e88e044c3adb4fd33c3fd3d2e3f0e3c983b4ab958920b37bbceec87e1869  assets/cheer/cheer_01.png' | sha256sum -c -
+          echo '9f0d0ace0c4f89a6c151a2b933f1c670fc4534c8b10f01b4eebf3cbbf86da6e9  assets/rest/rest_01.png' | sha256sum -c -
+          echo '4519bec7ada712df88e9d6c75b60d4778d0ec7558f2335b8c2e636851d72f6fb  assets/away/away_01.png' | sha256sum -c -
+          echo '71ebb601f90bed855f913d4e6a39a7fe7c1a1343b2d148730219aa10e3ba058a  assets/warning/warning_01.png' | sha256sum -c -
+          echo '5515c62960cfa49d3b6152e8cbab4143295fca5ce81b9a9c3745d41f3a785ccf  assets/leave/leave_01.png' | sha256sum -c -
+          echo 'e340675f36fa7027788b202de088396c44e19b1be477f44ee5ec9d75ae0e414c  assets/stats/stats_01.png' | sha256sum -c -
+          echo '69be1ddf4291f4ac75ce031b88c7142b42a481bbc7d679de7a5b9e06b01dfb7b  assets/settings/settings_01.png' | sha256sum -c -
+          echo '0e968ada1d04c0a162a9ccdaef4b72f5deac3d883ef16024026b5f9f63563ca6  assets/alert/alert_01.png' | sha256sum -c -
+          echo '0206d3108c91486a4ad62e1487889937529a79955f56251065c3034e90b1efce  assets/profile/profile_01.png' | sha256sum -c -
+      - name: Commit assets to transfer branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add assets/default/default_01.png assets/cheer/cheer_01.png assets/rest/rest_01.png assets/away/away_01.png assets/warning/warning_01.png assets/leave/leave_01.png assets/stats/stats_01.png assets/settings/settings_01.png assets/alert/alert_01.png assets/profile/profile_01.png
+          git commit -m 'Stage character asset variant set 01'
+          git push
