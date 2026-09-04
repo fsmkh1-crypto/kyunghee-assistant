@@ -37,7 +37,7 @@ class CompactDesktopApp(DesktopApp):
         hero = tk.Frame(page, bg=self.TRANSPARENT_KEY, bd=0, highlightthickness=0)
         hero.pack(fill="both", expand=True)
 
-        # Keep the approved artwork fully contained.  The label stays at the
+        # Keep the approved artwork fully contained. The label stays at the
         # rendered image size so transparent empty space is not a click target.
         self.character = tk.Label(hero, bg=self.TRANSPARENT_KEY, bd=0, cursor="hand2")
         self.character.place(relx=0.5, rely=1.0, y=-54, anchor="s")
