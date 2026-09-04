@@ -1,0 +1,37 @@
+name: Apply visible-alpha cluster fix
+
+on:
+  push:
+    paths:
+      - '.github/workflows/apply-visible-alpha-cluster-fix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ui/dark-kyunghee-redesign
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply patch
+        run: python tools/apply_visible_alpha_cluster_fix.py
+      - name: Compile and test
+        run: |
+          python -m py_compile desktop_compact.py settings.py
+          python -m unittest discover -s tests -v
+      - name: Commit patch
+        run: |
+          if git diff --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add desktop_compact.py
+          git commit -m "Align clock to visible character silhouette"
+          git push origin HEAD:ui/dark-kyunghee-redesign
