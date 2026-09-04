@@ -392,6 +392,21 @@ class CompactDesktopApp(DesktopApp):
                 pass
         return self._scale(self.CHARACTER_MAX[0]), self._scale(self.CHARACTER_MAX[1])
 
+    def _character_visible_bounds(self) -> tuple[int, int, int, int]:
+        # Layout against the actually visible alpha silhouette, not the full PNG
+        # rectangle. Transparent padding otherwise makes a nominal 30 px gap look
+        # much larger and the visual gap grows with widget scale.
+        image_width, image_height = self._character_render_size()
+        bounds = getattr(self, "_character_alpha_bbox", None)
+        if bounds:
+            left, top, right, bottom = (int(v) for v in bounds)
+            left = min(max(0, left), image_width)
+            top = min(max(0, top), image_height)
+            right = min(max(left + 1, right), image_width)
+            bottom = min(max(top + 1, bottom), image_height)
+            return left, top, right, bottom
+        return 0, 0, image_width, image_height
+
     def _clock_render_width(self) -> int:
         # 150 px is a conservative reserve for the default clock/status group.
         width = 150
@@ -406,15 +421,20 @@ class CompactDesktopApp(DesktopApp):
         return width
 
     def _cluster_horizontal_layout(self) -> tuple[int, int]:
-        # Clock/status + Kyunghee are one visible cluster. Their edge-to-edge
-        # horizontal gap is always 30 px at every widget scale.
+        # Treat the clock/status + visible Kyunghee silhouette as one cluster.
+        # Keep a fixed *visible* edge-to-edge gap at every scale; transparent PNG
+        # padding is deliberately excluded from the gap calculation.
         timer_width, _timer_height = self._timer_size()
         character_width, _character_height = self._character_render_size()
+        visible_left, _visible_top, visible_right, _visible_bottom = self._character_visible_bounds()
         clock_width = self._clock_render_width()
-        gap = 30
-        cluster_width = clock_width + gap + character_width
-        cluster_left = max(24, round((timer_width - cluster_width) / 2))
-        character_center = cluster_left + clock_width + gap + character_width / 2
+        visible_gap = 12
+        visible_character_width = max(1, visible_right - visible_left)
+        visible_cluster_width = clock_width + visible_gap + visible_character_width
+        cluster_left = max(18, round((timer_width - visible_cluster_width) / 2))
+        visible_character_left = cluster_left + clock_width + visible_gap
+        image_left = visible_character_left - visible_left
+        character_center = image_left + character_width / 2
         return cluster_left, round(character_center - timer_width / 2)
 
     def _character_x_offset(self) -> int:
@@ -439,8 +459,9 @@ class CompactDesktopApp(DesktopApp):
         _timer_width, timer_height = self._timer_size()
         clock_x, _character_offset = self._cluster_horizontal_layout()
         _character_width, character_height = self._character_render_size()
+        _visible_left, visible_top, _visible_right, _visible_bottom = self._character_visible_bounds()
         character_top = timer_height - self._character_bottom_gap() - character_height
-        return clock_x, max(18, round(character_top + 4))
+        return clock_x, max(18, round(character_top + visible_top + 4))
 
     def _timer_size(self):
         # Keep a generous click-through transparent canvas, but guarantee enough
@@ -746,6 +767,8 @@ class CompactDesktopApp(DesktopApp):
             max_size = (self._scale(self.CHARACTER_MAX[0]), self._scale(self.CHARACTER_MAX[1]))
             image = self._load_character_image(role, max_size, preserve_alpha=True)
             image = self._clean_character_alpha(image)
+            alpha_bbox = image.getchannel("A").getbbox()
+            self._character_alpha_bbox = alpha_bbox or (0, 0, image.width, image.height)
             self.character_photo = ImageTk.PhotoImage(image)
             self.character.configure(image=self.character_photo)
             self.character_role = role
