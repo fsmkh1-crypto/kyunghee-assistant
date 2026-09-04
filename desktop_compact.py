@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import ctypes
+from ctypes import wintypes
+from dataclasses import replace
+import os
 from pathlib import Path
+import shutil
+import threading
 import tkinter as tk
 from tkinter import colorchooser, filedialog
 import tkinter.font as tkfont
@@ -11,7 +17,19 @@ from app import SingleInstance
 from asset_manager import resolve_asset
 from desktop_app import DesktopApp
 from messages import pick
-from settings import UserSettings, set_windows_startup, validate_hex_color
+from settings import UserSettings, save_user_settings, set_windows_startup, validate_hex_color
+
+
+USER_IMAGE_DIR = core.DATA_DIR / "images"
+MAX_CUSTOM_IMAGE_DIMENSION = 4000
+GLOBAL_HOTKEY_ID = 0x4B48
+MOD_CONTROL = 0x0002
+MOD_SHIFT = 0x0004
+VK_H = 0x48
+WM_HOTKEY = 0x0312
+PM_REMOVE = 0x0001
+SWP_NOZORDER = 0x0004
+SWP_NOACTIVATE = 0x0010
 
 
 class OutlinedText(tk.Canvas):
@@ -153,6 +171,14 @@ def _outline_for(color: str) -> str:
     return "#" + "".join(f"{v:02X}" for v in values)
 
 
+def _intersection_area(rect, area):
+    left = max(rect[0], area[0])
+    top = max(rect[1], area[1])
+    right = min(rect[2], area[2])
+    bottom = min(rect[3], area[3])
+    return max(0, right - left) * max(0, bottom - top)
+
+
 class CompactDesktopApp(DesktopApp):
     """Narrow frameless desktop widget using the approved Kyunghee artwork."""
 
@@ -188,11 +214,115 @@ class CompactDesktopApp(DesktopApp):
     }
 
     def __init__(self):
+        self._drag_origin = None
+        self._hotkey_stop = threading.Event()
+        self._hotkey_thread = None
         super().__init__()
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", self.preferences.always_on_top)
         self.root.bind("<Escape>", self._emergency_hide)
-        self._drag_origin = None
+        self._enable_detail_drag_surfaces()
+        self._restore_window_position()
+        self._start_global_hotkey()
+        self._check_font_available()
+
+    def _check_font_available(self):
+        try:
+            if self.FONT_FAMILY not in tkfont.families(self.root):
+                core.log.warning("Pretendard not installed; Tk will use a system fallback font")
+        except tk.TclError:
+            core.log.warning("font availability check failed")
+
+    @staticmethod
+    def _monitor_work_areas():
+        if os.name != "nt":
+            return []
+        user32 = ctypes.windll.user32
+        areas = []
+
+        class MONITORINFO(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", wintypes.DWORD),
+                ("rcMonitor", wintypes.RECT),
+                ("rcWork", wintypes.RECT),
+                ("dwFlags", wintypes.DWORD),
+            ]
+
+        callback_type = ctypes.WINFUNCTYPE(
+            wintypes.BOOL,
+            wintypes.HANDLE,
+            wintypes.HDC,
+            ctypes.POINTER(wintypes.RECT),
+            ctypes.c_ssize_t,
+        )
+
+        @callback_type
+        def enum_proc(hmonitor, _hdc, _rect, _data):
+            info = MONITORINFO()
+            info.cbSize = ctypes.sizeof(MONITORINFO)
+            if user32.GetMonitorInfoW(hmonitor, ctypes.byref(info)):
+                r = info.rcWork
+                areas.append((int(r.left), int(r.top), int(r.right), int(r.bottom)))
+            return True
+
+        try:
+            user32.EnumDisplayMonitors(None, None, enum_proc, 0)
+        except Exception:
+            core.log.exception("monitor enumeration failed")
+        return areas
+
+    def _work_areas(self):
+        areas = self._monitor_work_areas()
+        if areas:
+            return areas
+        return [(0, 0, self.root.winfo_screenwidth(), self.root.winfo_screenheight())]
+
+    def _best_work_area(self, x, y, width, height):
+        areas = self._work_areas()
+        rect = (x, y, x + width, y + height)
+        scored = [(_intersection_area(rect, area), area) for area in areas]
+        best_score, best = max(scored, key=lambda item: item[0])
+        if best_score:
+            return best
+        cx = x + width / 2
+        cy = y + height / 2
+        return min(
+            areas,
+            key=lambda area: (
+                cx - (area[0] + area[2]) / 2
+            ) ** 2 + (
+                cy - (area[1] + area[3]) / 2
+            ) ** 2,
+        )
+
+    def _set_window_rect(self, x, y, width, height):
+        self.root.geometry(f"{max(1, int(width))}x{max(1, int(height))}")
+        self.root.update_idletasks()
+        if os.name == "nt":
+            try:
+                ctypes.windll.user32.SetWindowPos(
+                    int(self.root.winfo_id()),
+                    0,
+                    int(x),
+                    int(y),
+                    int(width),
+                    int(height),
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                )
+                return
+            except Exception:
+                core.log.exception("SetWindowPos failed")
+        self.root.geometry(f"{int(width)}x{int(height)}+{max(0, int(x))}+{max(0, int(y))}")
+
+    def _clamp_rect(self, x, y, width, height):
+        area = self._best_work_area(x, y, width, height)
+        aw = max(1, area[2] - area[0])
+        ah = max(1, area[3] - area[1])
+        width = min(width, max(260, aw - 12))
+        height = min(height, max(260, ah - 12))
+        x = min(max(x, area[0]), area[2] - width)
+        y = min(max(y, area[1]), area[3] - height)
+        return int(x), int(y), int(width), int(height)
 
     def _resize_for_page(self, name: str):
         if name == "timer":
@@ -201,8 +331,50 @@ class CompactDesktopApp(DesktopApp):
             width, height = self.SETTINGS_SIZE
         else:
             width, height = self.DETAIL_SIZE
+
+        try:
+            x, y = self.root.winfo_x(), self.root.winfo_y()
+        except tk.TclError:
+            x, y = 0, 0
+        x, y, width, height = self._clamp_rect(x, y, width, height)
         self.root.minsize(width, height)
-        self.root.geometry(f"{width}x{height}")
+        self._set_window_rect(x, y, width, height)
+
+    def _restore_window_position(self):
+        self.root.update_idletasks()
+        width = max(1, self.root.winfo_width())
+        height = max(1, self.root.winfo_height())
+        if not (self.preferences.window_x == -1 and self.preferences.window_y == -1):
+            x, y = self.preferences.window_x, self.preferences.window_y
+        else:
+            area = self._work_areas()[0]
+            x = area[2] - width - 24
+            y = area[1] + 48
+        x, y, width, height = self._clamp_rect(x, y, width, height)
+        self._set_window_rect(x, y, width, height)
+
+    def _save_window_position(self):
+        try:
+            updated = replace(
+                self.preferences,
+                window_x=int(self.root.winfo_x()),
+                window_y=int(self.root.winfo_y()),
+            )
+            save_user_settings(core.SETTINGS_FILE, updated)
+            self.preferences = updated
+        except Exception:
+            core.log.exception("window position save failed")
+
+    def _enable_detail_drag_surfaces(self):
+        for page in (self.stats_page, self.settings_page):
+            children = page.winfo_children()
+            if not children:
+                continue
+            header = children[0]
+            self._bind_drag_surface(header)
+            for child in header.winfo_children():
+                if isinstance(child, tk.Label):
+                    self._bind_drag_surface(child)
 
     def _label(self, parent, text="", size=10, weight="normal", fg=core.TEXT, bg=None, **kwargs):
         return tk.Label(
@@ -233,10 +405,23 @@ class CompactDesktopApp(DesktopApp):
         if not self._drag_origin:
             return
         start_x, start_y, win_x, win_y = self._drag_origin
-        self.root.geometry(f"+{win_x + event.x_root - start_x}+{win_y + event.y_root - start_y}")
+        x = win_x + event.x_root - start_x
+        y = win_y + event.y_root - start_y
+        self._set_window_rect(x, y, self.root.winfo_width(), self.root.winfo_height())
 
     def _stop_drag(self, _event=None):
         self._drag_origin = None
+        try:
+            x, y, width, height = self._clamp_rect(
+                self.root.winfo_x(),
+                self.root.winfo_y(),
+                self.root.winfo_width(),
+                self.root.winfo_height(),
+            )
+            self._set_window_rect(x, y, width, height)
+            self._save_window_position()
+        except Exception:
+            core.log.exception("drag completion failed")
 
     def _bind_drag_surface(self, widget):
         widget.bind("<ButtonPress-1>", self._start_drag)
@@ -247,12 +432,70 @@ class CompactDesktopApp(DesktopApp):
         self.root.attributes("-topmost", False)
         self.root.withdraw()
 
+    def _toggle_hidden(self):
+        try:
+            if self.root.state() == "withdrawn" or not self.root.winfo_viewable():
+                self.show()
+            else:
+                self._emergency_hide()
+        except tk.TclError:
+            return
+
+    def _start_global_hotkey(self):
+        if os.name != "nt" or self._hotkey_thread is not None:
+            return
+
+        def hotkey_loop():
+            user32 = ctypes.windll.user32
+            msg = wintypes.MSG()
+            registered = False
+            try:
+                # Peek once so Windows creates this worker thread's message queue.
+                user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, PM_REMOVE)
+                registered = bool(
+                    user32.RegisterHotKey(
+                        None,
+                        GLOBAL_HOTKEY_ID,
+                        MOD_CONTROL | MOD_SHIFT,
+                        VK_H,
+                    )
+                )
+                if not registered:
+                    core.log.warning("global hotkey Ctrl+Shift+H could not be registered")
+                    return
+                while not self._hotkey_stop.wait(0.05):
+                    while user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, PM_REMOVE):
+                        if msg.message == WM_HOTKEY and int(msg.wParam) == GLOBAL_HOTKEY_ID:
+                            self._tray_call(self._toggle_hidden)
+            except Exception:
+                core.log.exception("global hotkey loop failed")
+            finally:
+                if registered:
+                    try:
+                        user32.UnregisterHotKey(None, GLOBAL_HOTKEY_ID)
+                    except Exception:
+                        pass
+
+        self._hotkey_thread = threading.Thread(target=hotkey_loop, daemon=True, name="KyungheeHotkey")
+        self._hotkey_thread.start()
+
+    def _stored_image_path(self, value: str):
+        if not value:
+            return None
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            path = USER_IMAGE_DIR / path
+        return path
+
     def _custom_image(self, role: str):
         key = self.ROLE_TO_SETTING.get(role, "default")
         value = getattr(self.preferences, f"image_{key}", "")
-        path = Path(value).expanduser() if value else None
+        path = self._stored_image_path(value)
         mode = getattr(self.preferences, f"image_{key}_mode", "fit")
-        return (path if path and path.is_file() else None), mode
+        if path and not path.is_file():
+            core.log.warning("custom image missing for %s: %s", key, path)
+            return None, mode
+        return path, mode
 
     def _load_character_image(self, role: str, max_size=(470, 300), preserve_alpha=False):
         custom, mode = self._custom_image(role)
@@ -260,6 +503,8 @@ class CompactDesktopApp(DesktopApp):
         if not path:
             return super()._load_character_image(role, max_size, preserve_alpha)
         with Image.open(path) as src:
+            if src.width > MAX_CUSTOM_IMAGE_DIMENSION or src.height > MAX_CUSTOM_IMAGE_DIMENSION:
+                raise ValueError(f"이미지가 너무 큽니다. 최대 {MAX_CUSTOM_IMAGE_DIMENSION}px까지 사용할 수 있습니다.")
             image = src.convert("RGBA")
             if mode == "crop" and custom:
                 image = ImageOps.fit(image, max_size, method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
@@ -287,10 +532,18 @@ class CompactDesktopApp(DesktopApp):
         super().apply_preferences(preferences)
         self._apply_widget_appearance()
         self.character_role = None
-        self._set_character(self.ROLE_TO_SETTING.get("default", "default"))
+        self._set_character("default")
 
     def show(self):
         self.root.deiconify()
+        self.root.update_idletasks()
+        x, y, width, height = self._clamp_rect(
+            self.root.winfo_x(),
+            self.root.winfo_y(),
+            self.root.winfo_width(),
+            self.root.winfo_height(),
+        )
+        self._set_window_rect(x, y, width, height)
         self.root.lift()
         self.root.attributes("-topmost", self.preferences.always_on_top)
 
@@ -382,14 +635,52 @@ class CompactDesktopApp(DesktopApp):
             title=f"{dict(self.IMAGE_ROWS)[key]} 이미지 선택",
             filetypes=[("이미지", "*.png *.jpg *.jpeg *.webp"), ("모든 파일", "*.*")],
         )
-        if path:
-            self.image_path_vars[key].set(path)
-            self.image_name_vars[key].set(Path(path).name)
+        if not path:
+            return
+
+        source = Path(path)
+        try:
+            with Image.open(source) as probe:
+                if probe.width > MAX_CUSTOM_IMAGE_DIMENSION or probe.height > MAX_CUSTOM_IMAGE_DIMENSION:
+                    raise ValueError(
+                        f"이미지가 너무 큽니다. 가로·세로 각각 {MAX_CUSTOM_IMAGE_DIMENSION}px 이하를 사용해 주세요."
+                    )
+                probe.verify()
+            USER_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+            for old in USER_IMAGE_DIR.glob(f"{key}.*"):
+                try:
+                    old.unlink()
+                except OSError:
+                    core.log.warning("old custom image could not be removed: %s", old)
+            suffix = source.suffix.lower()
+            if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+                raise ValueError("PNG, JPG, JPEG, WebP 이미지만 사용할 수 있습니다.")
+            destination = USER_IMAGE_DIR / f"{key}{suffix}"
+            shutil.copy2(source, destination)
+            self.image_path_vars[key].set(destination.name)
+            self.image_name_vars[key].set(destination.name)
+        except Exception as exc:
+            core.log.exception("custom image import failed: %s", source)
+            self.settings_status.configure(text=f"이미지 선택 실패: {exc}", fg=core.AMBER)
 
     def _reset_image(self, key):
         self.image_path_vars[key].set("")
         self.image_name_vars[key].set("기본 이미지")
         self.image_mode_vars[key].set("자동 맞춤")
+        if USER_IMAGE_DIR.is_dir():
+            for old in USER_IMAGE_DIR.glob(f"{key}.*"):
+                try:
+                    old.unlink()
+                except OSError:
+                    core.log.warning("custom image reset could not remove: %s", old)
+
+    def _image_display_name(self, value):
+        if not value:
+            return "기본 이미지"
+        path = self._stored_image_path(value)
+        if path and path.is_file():
+            return path.name
+        return f"⚠ 파일 없음: {Path(value).name}"
 
     def _build_settings_page(self):
         page = self.settings_page
@@ -428,6 +719,10 @@ class CompactDesktopApp(DesktopApp):
                 activeforeground=core.TEXT, activebackground=core.PANEL,
                 selectcolor=core.PANEL_2, highlightthickness=0, bd=0, cursor="hand2",
             ).pack(anchor="w", pady=1, **pad)
+
+        self._label(content, "긴급 숨기기 단축키: Ctrl+Shift+H", size=8, fg=core.MUTED, bg=core.PANEL).pack(
+            anchor="w", pady=(2, 2), **pad
+        )
 
         self._label(content, "위젯 글자", size=11, bg=core.PANEL).pack(anchor="w", pady=(14, 4), **pad)
         self._label(
@@ -477,7 +772,7 @@ class CompactDesktopApp(DesktopApp):
         ).pack(anchor="w", pady=(0, 3), **pad)
         self._label(
             content,
-            "자동 맞춤 = 전체 이미지를 비율 유지해 표시 / 가운데 크롭 = 화면 비율에 맞춰 중앙 기준으로 잘라 표시",
+            "선택한 이미지는 앱 전용 폴더로 복사됩니다. 자동 맞춤 = 전체 표시 / 가운데 크롭 = 중앙 기준 자르기",
             size=8, fg=core.MUTED, bg=core.PANEL, wraplength=590, justify="left",
         ).pack(anchor="w", pady=(0, 7), **pad)
 
@@ -488,13 +783,12 @@ class CompactDesktopApp(DesktopApp):
             path_value = getattr(p, f"image_{key}")
             mode_value = getattr(p, f"image_{key}_mode")
             self.image_path_vars[key] = tk.StringVar(value=path_value)
-            self.image_name_vars[key] = tk.StringVar(value=Path(path_value).name if path_value else "기본 이미지")
+            self.image_name_vars[key] = tk.StringVar(value=self._image_display_name(path_value))
             self.image_mode_vars[key] = tk.StringVar(value="가운데 크롭" if mode_value == "crop" else "자동 맞춤")
 
             row = tk.Frame(content, bg=core.PANEL)
             row.pack(fill="x", pady=2, **pad)
             self._label(row, caption, size=9, bg=core.PANEL).pack(side="left")
-            self._label(row, textvariable=self.image_name_vars[key], size=8, fg=core.MUTED, bg=core.PANEL) if False else None
             name_label = tk.Label(
                 row, textvariable=self.image_name_vars[key], width=22, anchor="w",
                 font=(self.FONT_FAMILY, 8, "normal"), fg=core.MUTED, bg=core.PANEL,
@@ -543,6 +837,8 @@ class CompactDesktopApp(DesktopApp):
                 leave_mode=self.settings_time_vars["leave_mode"].get().strip(),
                 strong_leave=self.settings_time_vars["strong_leave"].get().strip(),
                 late_leave=self.settings_time_vars["late_leave"].get().strip(),
+                window_x=self.preferences.window_x,
+                window_y=self.preferences.window_y,
                 time_text_size=int(self.style_size_vars["time"].get()),
                 status_text_size=int(self.style_size_vars["status"].get()),
                 message_text_size=int(self.style_size_vars["message"].get()),
@@ -585,8 +881,18 @@ class CompactDesktopApp(DesktopApp):
             outline=_outline_for(status_color),
         )
 
+    def quit(self):
+        self._hotkey_stop.set()
+        try:
+            self._save_window_position()
+        except Exception:
+            pass
+        super().quit()
+
 
 if __name__ == "__main__":
+    if os.name != "nt":
+        raise SystemExit("Windows only")
     singleton = SingleInstance()
     if not singleton.acquire():
         raise SystemExit(0)
