@@ -17,25 +17,25 @@ This document is the single handoff/status reference for the current desktop tim
 - Frameless transparent Windows desktop widget.
 - No outer panel, titlebar, timer background, or message bubble on the compact screen.
 - Main compact view shows Kyunghee art plus optional time/status/message and a tiny emergency `×`.
+- Time/status/message backgrounds stay transparent.
 - Time is green; message is rose/pink; Pretendard Regular only.
 - Kyunghee image click opens detail.
 - Message click changes dialogue.
-- Timer/status are drag surfaces when visible.
+- Kyunghee image drag moves the window; short click still opens detail.
+- Timer/status remain drag surfaces when visible.
 - Emergency global hide/show hotkey: `Ctrl+Shift+H`.
 - Do not use global Esc. Local Esc and `×` may hide the app.
 - User-controlled always-on-top.
+- Empty transparent areas currently allow clicks to pass through to the window behind on Windows. This emerged from the transparent color-key behavior and is now a desirable behavior. Preserve it unless a regression forces reconsideration.
 
 ---
 
 ## Phase 1 — Stability
 
-### Goal
-Make the current Tkinter app safe and reliable enough for everyday Windows use.
-
 ### Status: COMPLETE / REAL-WORLD TEST PASSED
 
-Implemented:
-- Startup command fixed to use the compact entrypoint.
+Implemented and validated:
+- Compact startup entrypoint.
 - Detail/settings drag support.
 - Multi-monitor-aware position clamping and off-screen recovery.
 - Window position persistence, including negative monitor coordinates.
@@ -43,79 +43,81 @@ Implemented:
 - Custom image import into the app-owned data folder.
 - Missing custom image fallback.
 - Custom image dimension guard.
-- Field-level settings recovery instead of resetting the whole settings file.
-- Windows-only guard for compact entrypoint.
+- Field-level settings recovery.
+- Windows-only compact entrypoint guard.
 - Pretendard availability logging.
-- Fixed Win32 drag regression caused by using the child HWND instead of the real top-level wrapper HWND.
+- Correct top-level HWND use for Win32 drag.
 
-Validation:
-- Ubuntu tests passed.
-- Windows tests/build/smoke tests passed.
-- User tested drag and said all Phase 1 behavior worked correctly.
-
-No further Phase 1 action unless a regression appears.
+Ubuntu tests, Windows tests/build/smoke tests, and real Windows drag/window testing passed.
 
 ---
 
 ## Phase 2 — Display quality / Windows display behavior
 
-### Goal
-Improve character edge quality, DPI behavior, and fullscreen/presentation coexistence.
-
-### Status: CODE INTEGRATED; VISUAL BASELINE ACCEPTED ENOUGH TO CONTINUE
+### Status: CODE INTEGRATED; VISUAL BASELINE ACCEPTED
 
 Implemented:
-- Alpha-safe image resize path using premultiplied-alpha handling.
-- Binary alpha threshold helper, current threshold around 112.
-- Character image cache and invalidation.
+- Premultiplied-alpha-safe image resize path.
+- Alpha threshold helper, current threshold around 112.
+- Character image cache/invalidation.
 - Reduced unnecessary OutlinedText geometry recalculation.
-- Per-monitor DPI-awareness helper, enabled before Tk creation.
-- Fullscreen/presentation detection with `SHQueryUserNotificationState`.
-- During suppressed state: topmost disabled and toast/break notifications suppressed.
-- Topmost restored afterward according to user preference.
+- Per-monitor DPI awareness before Tk creation.
+- Fullscreen/presentation detection with notification suppression.
+- Topmost restoration after fullscreen/presentation state ends.
 
-Observed during real-world test:
-- App appeared smaller after DPI-awareness changes. This is not treated as a Phase 2 rendering failure; user requested a user-controlled widget scale instead.
-
-Remaining Phase 2 checks that can be revisited later if needed:
-- Fine-tune alpha threshold on multiple backgrounds (96/112/128 comparison).
-- Reduce 8-way text outline to 4 cardinal offsets if text still looks too heavy.
+Deferred tuning only if visual artifacts reappear:
+- Compare alpha threshold 96/112/128.
+- Reduce 8-way text outline if still too heavy.
 - Mixed-DPI dual-monitor visual comparison.
-
-Do not block later phases on these unless visual artifacts reappear.
 
 ---
 
-## Phase 3 — Settings structure / scale / visibility controls
+## Phase 3 — Scale / visibility / compact layout
 
 ### Goal
-Let the user control compact-widget size and selectively hide time/status/message while keeping the widget movable.
+Let the user resize the compact widget from 80–200%, selectively hide time/status/message, and keep the visible UI visually grouped without overlap.
 
-### Status: IN PROGRESS — CURRENT ACTIVE BUGFIX AREA
+### Status: FUNCTIONALLY IMPLEMENTED; FINAL SPACING VISUAL CONFIRMATION PENDING
 
-Already added:
-- `widget_scale` setting, intended range 80–140%.
-- Default scale raised to about 110% to offset the smaller post-DPI appearance.
+Implemented:
+- `widget_scale` range expanded to 80–200%.
 - `show_time`, `show_status`, `show_message` settings.
-- Settings UI with scale slider and three visibility toggles.
-- Invisible top drag strip so the compact widget remains movable even when time/status are hidden.
-- Scaling intended to affect compact window, Kyunghee image, time/status/message fonts, wrap width, positions, and `×`.
-- Schema/tests updated for the new display preferences.
+- Live scale preview and live visibility toggles.
+- Character rerender at preview scale.
+- Settings return preserves preview; save persists it.
+- Typography no longer scales with widget scale. Time/status/message text sizes remain controlled by their own settings.
+- Compact transparent canvas has a generous minimum size so even small character scales have room for time/status/message.
+- Canvas expands further for large character scales.
+- Kyunghee image drag works even when time/status are hidden; short click still opens detail.
+- Message stays clickable and cycles dialogue.
+- Transparent color-key layout preserved; empty transparent areas currently click through to applications behind the widget.
 
-### Known real-world bug
-The first Phase 3 test build did not visibly react when the user moved the slider or toggled time/status/message. The controls existed but live application behavior was incomplete/broken.
+### Layout evolution and latest rule
+Earlier scale-dependent offsets caused excessive empty space between the clock/status group and Kyunghee, especially at 80/140/200%.
 
-### Required fix before Phase 3 can be marked complete
-- Slider must visibly resize the compact widget while dragging, not only after a later save/restart.
-- Character image must be rerendered at the preview scale.
-- Time/status/message toggles must immediately show/hide the corresponding widgets.
-- Returning from settings to timer must preserve the preview state.
-- `Save Settings` must persist the same state for next launch.
-- Cancel/back behavior should be intentionally defined: either keep preview and save explicitly, or revert unsaved preview. Current preferred behavior: live preview, explicit save for persistence.
-- Verify invisible drag strip still works when time and status are both hidden.
+The latest implementation replaces that with a fixed-cluster layout:
+- Clock/status + Kyunghee are treated as one visible horizontal cluster.
+- Their edge-to-edge horizontal gap is fixed at about 30 px across all widget scales.
+- Clock/status follows Kyunghee vertically instead of staying pinned to the canvas top-left.
+- Message is centered directly under Kyunghee.
+- Character-to-message relationship is fixed instead of increasing with scale.
+- The transparent canvas may remain large, but visible elements should not drift apart as scale grows.
 
-### Immediate next action
-Finish and test the live-preview wiring for the slider and visibility toggles. Do not start Phase 4 until this passes one short Windows real-device test.
+Latest source commit for this layout:
+- `2f721b996c26402e01c6f2233a7df5b4df3090d1` — `Keep timer UI clustered across scales`
+
+Latest packaging trigger commit:
+- `9d8f8a22387b240ba2235f9ea55e0a4ce4603386` — `Build fixed-cluster Phase 3 test package`
+
+Latest Windows test package:
+- Artifact name: `kyunghee-timer-phase3-final-test`
+- Build workflow run: `33842885602`
+- Build/tests/smoke: PASS
+
+### Remaining Phase 3 item
+- One real-Windows visual confirmation of the fixed-cluster build at roughly 80%, 140%, and 200%.
+- If spacing still feels off, tune the single fixed cluster gap rather than reintroducing scale-dependent gap tables.
+- Do not redesign the transparent-canvas model unless necessary; the click-through empty area is beneficial.
 
 ---
 
@@ -124,35 +126,29 @@ Finish and test the live-preview wiring for the slider and visibility toggles. D
 ### Goal
 Make situation-based Kyunghee artwork flexible without replacing the approved canonical assets.
 
-### Status: NOT STARTED
+### Status: NEXT PHASE / NOT STARTED
 
-Planned:
-- Multiple images per situation/role.
-- Random selection from role pools.
-- Folder-based image sets.
-- Fit/crop/alignment options.
-- Image preview in settings.
-- Robust cache/invalidation.
-- App-owned imported image copies remain the default storage model.
-
-Priority inside Phase 4:
-1. Multiple images per role with random selection.
+Planned priority:
+1. Multiple images per role/situation with random selection.
 2. Folder/set support.
 3. Fit/crop/alignment controls.
-4. Preview and cache refinements.
+4. Image preview in settings.
+5. Robust cache/invalidation for sets and previews.
+6. Keep app-owned imported copies as the default storage model.
 
-Do not regenerate approved PNG masters.
+Important constraints:
+- Do not regenerate or replace approved PNG masters in `assets/`.
+- Preserve existing single-image custom import/fallback behavior while extending it.
+- Do not break Phase 1 drag/hotkey/position behavior.
+- Do not break Phase 3 scale/visibility/transparent click-through behavior.
 
 ---
 
 ## Phase 5 — Personality / fun behaviors
 
-### Goal
-Make Kyunghee feel less static and more like a lightweight desktop companion.
-
 ### Status: NOT STARTED
 
-Priority order already agreed:
+Priority order:
 1. Dialogue personality presets.
 2. Rare dialogue / easter eggs.
 3. Character click reactions.
@@ -167,9 +163,6 @@ Avoid turning the app into a heavy game system.
 
 ## Phase 6 — Work/break behavior
 
-### Goal
-Turn the timer into a more useful work companion without excessive interruption.
-
 ### Status: NOT STARTED
 
 Planned:
@@ -179,16 +172,13 @@ Planned:
 - Work start/end policy refinement.
 - Manual/automatic away behavior.
 - Fullscreen/presentation deferral integration.
-- Optional Pomodoro mode later, not mandatory for first completion.
+- Optional Pomodoro mode later.
 
-Requires real-world multi-day usage testing before being called finished.
+Requires real-world multi-day usage testing before completion.
 
 ---
 
 ## Phase 7 — Stats
-
-### Goal
-Provide useful lightweight history without overbuilding analytics.
 
 ### Status: NOT STARTED
 
@@ -205,31 +195,36 @@ Data correctness is more important than visual complexity.
 ## Explicitly deferred / not now
 
 - WPF rewrite.
-- Pixel-free or fully fluid layout architecture.
-- Complex layout preset system.
+- Heavy game/leveling systems.
 - Large sound system.
 - Built-in image editor.
 - CSV export in early phases.
-- Heavy leveling/game mechanics.
+- Unnecessary pixel-perfect layout preset complexity.
 
 ---
 
-## Review checklist for a new conversation or external reviewer
+## New-conversation / reviewer checklist
 
 Before changing code:
-1. Read this file.
+1. Read this file first.
 2. Inspect PR #3 and branch `ui/dark-kyunghee-redesign`, not `main`.
 3. Treat `desktop_compact.py` as the current desktop entrypoint.
-4. Confirm current branch head before editing.
+4. Confirm the current branch HEAD before editing.
 5. Do not replace approved PNG assets.
-6. Preserve the Phase 1 drag/hotkey/position behavior that already passed real-device testing.
-7. Current highest-priority task is the Phase 3 live scale/toggle bug.
-8. After each risky Windows-specific change, run tests/build/smoke, but request real-device testing only when the behavior cannot be validated in CI.
+6. Preserve Phase 1 drag/hotkey/position behavior.
+7. Preserve the transparent color-key model and empty-area click-through behavior unless a regression requires otherwise.
+8. Phase 3 uses a fixed visible cluster; do not reintroduce scale-dependent clock/character spacing tables without a strong reason.
+9. Phase 4 is the next implementation phase.
+10. After risky Windows-specific changes, run tests/build/smoke; request real-device testing only when CI cannot validate the visual behavior.
 
 ## Last known user feedback
 
-- Phase 1: real-world test passed; drag and window behavior worked.
-- Phase 2: app looked smaller after DPI work; user requested user-adjustable scale.
-- Phase 3 first test: scale slider did not change visible size, and time/status/message ON/OFF did not work visibly.
+- Phase 1 real-world behavior passed.
+- Phase 2 visual baseline accepted; user wanted user-adjustable scale.
+- Phase 3 live controls now work and scale range is 80–200%.
+- Large transparent canvas is acceptable because empty transparent areas currently click through to the app behind it; user explicitly likes this behavior.
+- Previous Phase 3 layouts left clock/status too far from Kyunghee at 80/140/200%.
+- Latest code changed to a fixed-cluster model with one constant clock-to-character gap and message directly under Kyunghee.
+- Final visual confirmation of that latest fixed-cluster build is the only outstanding Phase 3 check.
 
 This file should be updated whenever a phase is completed, materially changed, or a new real-world issue is discovered.
