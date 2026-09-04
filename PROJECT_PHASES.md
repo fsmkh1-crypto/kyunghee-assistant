@@ -128,22 +128,22 @@ Do not rework Phase 3 layout during Phase 4 unless a real regression appears.
 ### Goal
 Make situation-based Kyunghee artwork flexible without replacing the approved canonical assets.
 
-### Status: IN PROGRESS / IMAGE-SET RUNTIME INTEGRATED
+### Status: COMPLETE / REAL-WORLD SETTINGS UI PASS
 
-Implemented so far:
+Implemented and validated:
 - App-owned multi-image sets per role/situation.
 - Multiple-file and folder import.
 - Random image selection when a role is re-entered, with stable display while the role remains active.
 - Fit/crop plus 9-way alignment controls.
 - Legacy single-image custom import preserved as fallback, followed by canonical approved assets.
 - Image-set cache/invalidation integrated into the compact runtime.
-- Ubuntu tests and Windows compile/tests/build/smoke passed after runtime integration.
-
-Remaining priority:
-1. Image preview in settings.
-2. Preview-specific cache/invalidation polish.
-3. Real-device visual check of the expanded image settings UI.
-4. Keep app-owned imported copies as the default storage model.
+- Settings image preview with role selection and previous/next navigation across image sets.
+- Preview reflects fit/crop and 9-way alignment changes without disturbing runtime random selection.
+- Preview-specific cache/invalidation is separate from runtime character caching.
+- App-owned imported copies remain the storage model.
+- Settings page mouse-wheel scrolling works across the panel, including when the pointer is over controls/preview widgets.
+- Ubuntu tests and Windows compile/tests/build/smoke passed after final Phase 4 changes.
+- User visually accepted the expanded settings/preview UI and identified the mouse-wheel regression; the wheel fix was then integrated and Windows build/smoke passed.
 
 Important constraints:
 - Do not regenerate or replace approved PNG masters in `assets/`.
@@ -156,16 +156,21 @@ Important constraints:
 
 ## Phase 5 — Personality / fun behaviors
 
-### Status: NOT STARTED
+### Status: IN PROGRESS / PERSONALITY FOUNDATION INTEGRATED
 
-Priority order:
-1. Dialogue personality presets.
-2. Rare dialogue / easter eggs.
-3. Character click reactions.
-4. Time-of-day reactions.
-5. Streak/habit reactions.
-6. Custom dialogue.
-7. Daily/random temperament.
+Implemented so far:
+- Dialogue personality presets: balanced / warm / playful / strict.
+- Settings persistence with schema version 5 and safe fallback for unknown values.
+- Personality affects normal, encouragement, and character-click dialogue while work/break/leave warnings keep their existing priority and strength.
+- Character short-click still opens detail as required, but leaves a character reaction line visible when returning to the compact timer.
+- Time-of-day dialogue buckets: morning / lunch / afternoon / evening / late.
+- Pure tests for personality selection and time buckets.
+
+Next priority:
+1. Rare dialogue / easter eggs with low-frequency, non-disruptive triggering.
+2. Streak/habit reactions using reliable existing state only.
+3. Custom dialogue storage and settings UI.
+4. Daily/random temperament only after the above remains lightweight.
 
 Avoid turning the app into a heavy game system.
 
@@ -217,7 +222,7 @@ Data correctness is more important than visual complexity.
 
 Before changing code:
 1. Read this file first.
-2. Read `PHASE4_HANDOFF.md`.
+2. Read `PHASE5_HANDOFF.md` (Phase 4 handoff is historical).
 3. Inspect PR #3 and branch `ui/dark-kyunghee-redesign`, not `main`.
 4. Treat `desktop_compact.py` as the current desktop entrypoint.
 5. Confirm the current branch HEAD before editing.
@@ -225,7 +230,7 @@ Before changing code:
 7. Preserve Phase 1 drag/hotkey/position behavior.
 8. Preserve the transparent color-key model and empty-area click-through behavior unless a regression requires otherwise.
 9. Phase 3 is complete; preserve its visible-alpha cluster layout instead of redesigning it.
-10. Phase 4 is in progress; image-set runtime integration is complete and settings preview is next.
+10. Phase 4 is complete; preserve the image-set/preview system. Phase 5 is active.
 11. After risky Windows-specific changes, run tests/build/smoke; request real-device testing only when CI cannot validate the visual behavior.
 
 ## Last known user feedback
@@ -236,5 +241,7 @@ Before changing code:
 - User explicitly likes that empty transparent areas allow clicks to reach applications behind the widget.
 - Final Phase 3 layout uses visible-alpha silhouette bounds so clock/status stays visually close to Kyunghee at 80/140/200%.
 - User reviewed the final 80/140/200 screenshots and approved moving on to Phase 4.
+- Phase 4 settings preview UI was accepted in real Windows use. A missing mouse-wheel binding was found and fixed; Phase 4 is closed.
+- Phase 5 personality foundation is now the active workstream.
 
 This file should be updated whenever a phase is completed, materially changed, or a new real-world issue is discovered.
