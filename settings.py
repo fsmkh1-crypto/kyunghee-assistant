@@ -59,6 +59,14 @@ def _position_int(value: object, default: int = -1) -> int:
         return default
 
 
+PERSONALITIES = {"balanced", "warm", "playful", "strict"}
+
+
+def _personality(value: object) -> str:
+    value = str(value)
+    return value if value in PERSONALITIES else "balanced"
+
+
 def _fit_mode(value: object) -> str:
     return str(value) if str(value) in {"fit", "crop"} else "fit"
 
@@ -81,7 +89,7 @@ def _clock_or(value: object, default: str) -> str:
 
 @dataclass(frozen=True)
 class UserSettings:
-    schema_version: int = 4
+    schema_version: int = 5
     start_with_windows: bool = False
     always_on_top: bool = False
     break_reminders: bool = True
@@ -98,6 +106,7 @@ class UserSettings:
     show_time: bool = True
     show_status: bool = True
     show_message: bool = True
+    personality: str = "balanced"
 
     time_text_size: int = 16
     status_text_size: int = 9
@@ -153,6 +162,8 @@ class UserSettings:
             raise ValueError("상태 글자 크기는 7~12 사이로 설정해 주세요.")
         if not 9 <= self.message_text_size <= 16:
             raise ValueError("메시지 글자 크기는 9~16 사이로 설정해 주세요.")
+        if self.personality not in PERSONALITIES:
+            raise ValueError("경희 말투 설정이 올바르지 않습니다.")
         validate_hex_color(self.time_text_color)
         validate_hex_color(self.status_text_color)
         validate_hex_color(self.message_text_color)
@@ -192,6 +203,7 @@ def settings_from_dict(raw: object) -> UserSettings:
         show_time=_coerce_bool(raw.get("show_time"), d.show_time),
         show_status=_coerce_bool(raw.get("show_status"), d.show_status),
         show_message=_coerce_bool(raw.get("show_message"), d.show_message),
+        personality=_personality(raw.get("personality", d.personality)),
         time_text_size=_bounded_int(raw.get("time_text_size"), d.time_text_size, 14, 24),
         status_text_size=_bounded_int(raw.get("status_text_size"), d.status_text_size, 7, 12),
         message_text_size=_bounded_int(raw.get("message_text_size"), d.message_text_size, 9, 16),

@@ -37,6 +37,7 @@ class UserSettingsTests(unittest.TestCase):
             window_x=-1420,
             window_y=80,
             image_default="default.png",
+            personality="warm",
         )
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"
@@ -105,6 +106,10 @@ class UserSettingsTests(unittest.TestCase):
     def test_bad_widget_scale_falls_back(self):
         parsed = settings_from_dict({"widget_scale": 500})
         self.assertEqual(parsed.widget_scale, UserSettings().widget_scale)
+
+    def test_personality_loads_and_invalid_value_falls_back(self):
+        self.assertEqual(settings_from_dict({"personality": "playful"}).personality, "playful")
+        self.assertEqual(settings_from_dict({"personality": "unknown"}).personality, "balanced")
 
 
 if __name__ == "__main__":

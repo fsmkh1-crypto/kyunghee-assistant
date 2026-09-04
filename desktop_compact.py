@@ -4,6 +4,7 @@ import ctypes
 from ctypes import wintypes
 from dataclasses import replace
 import os
+from datetime import datetime
 from pathlib import Path
 import shutil
 import threading
@@ -18,7 +19,7 @@ from asset_manager import resolve_asset
 from desktop_app import DesktopApp
 from image_render import resize_rgba_alpha_safe, threshold_alpha
 from image_sets import ImageSetStore, normalize_alignment
-from messages import pick
+from messages import pick, time_of_day_kind
 from settings import UserSettings, save_user_settings, set_windows_startup, validate_hex_color
 from windows_display import enable_per_monitor_dpi_awareness, should_suppress_overlay_notifications
 
@@ -677,6 +678,9 @@ class CompactDesktopApp(DesktopApp):
         self._stop_drag(event)
         self._character_dragged = False
         if not dragged:
+            if hasattr(self, "speech"):
+                self.speech.configure(text=self._pick_dialogue("click"))
+                self.last_dialogue_at = __import__("time").monotonic()
             self.show_stats()
 
     def _emergency_hide(self, _event=None):
@@ -889,6 +893,12 @@ class CompactDesktopApp(DesktopApp):
         except Exception:
             core.log.exception("character asset failed: %s", role)
 
+    def _pick_dialogue(self, kind: str, *, time_sensitive: bool = False) -> str:
+        personality = getattr(self.preferences, "personality", "balanced")
+        if time_sensitive and kind == "playful":
+            kind = time_of_day_kind(datetime.now().hour)
+        return pick(kind, personality=personality)
+
     def _build_timer_page(self):
         page = self.timer_page
         page.configure(bg=self.TRANSPARENT_KEY)
@@ -936,7 +946,7 @@ class CompactDesktopApp(DesktopApp):
         self.escape_control.bind("<Button-1>", self._emergency_hide)
 
         self.speech = OutlinedText(
-            hero, pick("playful"), family=self.FONT_FAMILY, size=p.message_text_size,
+            hero, self._pick_dialogue("playful", time_sensitive=True), family=self.FONT_FAMILY, size=p.message_text_size,
             fg=p.message_text_color, outline=_outline_for(p.message_text_color),
             bg=self.TRANSPARENT_KEY, wraplength=min(360, max(250, self._scale(self.BUBBLE_WRAP))),
             justify="center", cursor="hand2",
@@ -950,6 +960,19 @@ class CompactDesktopApp(DesktopApp):
         self.character.bind("<B1-Motion>", self._drag_character)
         self.character.bind("<ButtonRelease-1>", self._stop_character_drag)
         self.speech.bind("<Button-1>", self._cycle_message)
+        self._apply_widget_appearance()
+
+    def _cycle_message(self, _event=None):
+        mode = self._current_workday_state().mode
+        if mode != "normal":
+            kind = mode
+        elif self.state.session.is_away:
+            kind = "away_start"
+        else:
+            remaining = self.engine.remaining_to_break()
+            kind = "cheer" if remaining <= 15 * 60 else time_of_day_kind(datetime.now().hour)
+        self.speech.configure(text=self._pick_dialogue(kind))
+        self.last_dialogue_at = __import__("time").monotonic()
         self._apply_widget_appearance()
 
     def _effective_display_flag(self, key: str) -> bool:
@@ -1319,6 +1342,23 @@ class CompactDesktopApp(DesktopApp):
             anchor="w", pady=(2, 2), **pad
         )
 
+        self._label(content, "경희 말투", size=11, bg=core.PANEL).pack(anchor="w", pady=(14, 4), **pad)
+        personality_labels = {
+            "balanced": "균형형", "warm": "다정형", "playful": "장난형", "strict": "잔소리형",
+        }
+        personality_values = {label: key for key, label in personality_labels.items()}
+        self._personality_values = personality_values
+        self.personality_var = tk.StringVar(value=personality_labels.get(p.personality, "균형형"))
+        personality_row = tk.Frame(content, bg=core.PANEL)
+        personality_row.pack(fill="x", pady=(0, 3), **pad)
+        self._label(personality_row, "대화 성격", size=9, bg=core.PANEL).pack(side="left")
+        tk.OptionMenu(personality_row, self.personality_var, "균형형", "다정형", "장난형", "잔소리형").pack(side="right")
+        self._label(
+            content,
+            "휴식·퇴근 경고 강도는 그대로 유지하고 평상시/응원/클릭 반응의 말투만 바뀝니다.",
+            size=8, fg=core.MUTED, bg=core.PANEL, wraplength=590, justify="left",
+        ).pack(anchor="w", pady=(0, 4), **pad)
+
         self._label(content, "위젯 표시", size=11, bg=core.PANEL).pack(anchor="w", pady=(14, 4), **pad)
         scale_row = tk.Frame(content, bg=core.PANEL)
         scale_row.pack(fill="x", pady=(0, 5), **pad)
@@ -1536,6 +1576,7 @@ class CompactDesktopApp(DesktopApp):
                 show_time=self.display_bool_vars["show_time"].get(),
                 show_status=self.display_bool_vars["show_status"].get(),
                 show_message=self.display_bool_vars["show_message"].get(),
+                personality=self._personality_values.get(self.personality_var.get(), "balanced"),
                 time_text_size=int(self.style_size_vars["time"].get()),
                 status_text_size=int(self.style_size_vars["status"].get()),
                 message_text_size=int(self.style_size_vars["message"].get()),
@@ -1579,6 +1620,9 @@ class CompactDesktopApp(DesktopApp):
             return
 
         self.last_work_mode = self._current_workday_state().mode
+        if hasattr(self, "speech"):
+            self.speech.configure(text=self._pick_dialogue("playful", time_sensitive=True))
+            self._apply_widget_appearance()
         self.settings_status.configure(text="저장됨 · 메인 화면에 즉시 반영", fg=core.GREEN)
 
     def _update_ui(self):
