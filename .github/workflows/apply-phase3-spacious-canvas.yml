@@ -1,0 +1,39 @@
+name: Apply Phase 3 spacious canvas
+
+on:
+  push:
+    paths:
+      - '.github/workflows/apply-phase3-spacious-canvas.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ui/dark-kyunghee-redesign
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply spacious canvas patch
+        run: python tools/apply_phase3_spacious_canvas.py
+      - name: Compile and test
+        run: |
+          python -m py_compile desktop_compact.py settings.py
+          python -m unittest discover -s tests -v
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add desktop_compact.py
+          if git diff --cached --quiet; then
+            echo "No changes"
+          else
+            git commit -m "Use spacious transparent Phase 3 canvas"
+            git push origin HEAD:ui/dark-kyunghee-redesign
+          fi
