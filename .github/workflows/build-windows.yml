@@ -20,7 +20,7 @@ jobs:
       - name: Build Windows executable
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --windowed --onefile --name "KyungheeAssistant" --add-data "assets;assets" app.py
+          pyinstaller --noconfirm --clean --windowed --onefile --name "KyungheeAssistant" --add-data "assets;assets" --runtime-hook "pyi_topmost_hook.py" app.py
       - name: Package executable
         shell: pwsh
         run: |
