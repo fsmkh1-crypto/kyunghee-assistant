@@ -81,7 +81,7 @@ def _clock_or(value: object, default: str) -> str:
 
 @dataclass(frozen=True)
 class UserSettings:
-    schema_version: int = 3
+    schema_version: int = 4
     start_with_windows: bool = False
     always_on_top: bool = False
     break_reminders: bool = True
@@ -91,10 +91,13 @@ class UserSettings:
     strong_leave: str = "18:00"
     late_leave: str = "18:30"
 
-    # -1 means "use the app's default position". Negative coordinates other
-    # than -1 are valid on Windows when a monitor is positioned to the left.
     window_x: int = -1
     window_y: int = -1
+
+    widget_scale: int = 110
+    show_time: bool = True
+    show_status: bool = True
+    show_message: bool = True
 
     time_text_size: int = 16
     status_text_size: int = 9
@@ -142,6 +145,8 @@ class UserSettings:
         )
 
     def validate_widget_style(self) -> None:
+        if not 80 <= self.widget_scale <= 140:
+            raise ValueError("위젯 크기는 80~140% 사이로 설정해 주세요.")
         if not 14 <= self.time_text_size <= 24:
             raise ValueError("시간 글자 크기는 14~24 사이로 설정해 주세요.")
         if not 7 <= self.status_text_size <= 12:
@@ -163,18 +168,13 @@ def settings_from_dict(raw: object) -> UserSettings:
     strong_leave = _clock_or(raw.get("strong_leave", d.strong_leave), d.strong_leave)
     late_leave = _clock_or(raw.get("late_leave", d.late_leave), d.late_leave)
 
-    # A bad schedule should only reset the schedule group, never unrelated
-    # preferences such as custom images or startup behaviour.
     try:
         ordered = [parse_clock(v) for v in (wind_down, leave_mode, strong_leave, late_leave)]
         if ordered != sorted(ordered):
             raise ValueError
     except ValueError:
         wind_down, leave_mode, strong_leave, late_leave = (
-            d.wind_down,
-            d.leave_mode,
-            d.strong_leave,
-            d.late_leave,
+            d.wind_down, d.leave_mode, d.strong_leave, d.late_leave
         )
 
     return UserSettings(
@@ -188,6 +188,10 @@ def settings_from_dict(raw: object) -> UserSettings:
         late_leave=late_leave,
         window_x=_position_int(raw.get("window_x"), d.window_x),
         window_y=_position_int(raw.get("window_y"), d.window_y),
+        widget_scale=_bounded_int(raw.get("widget_scale"), d.widget_scale, 80, 140),
+        show_time=_coerce_bool(raw.get("show_time"), d.show_time),
+        show_status=_coerce_bool(raw.get("show_status"), d.show_status),
+        show_message=_coerce_bool(raw.get("show_message"), d.show_message),
         time_text_size=_bounded_int(raw.get("time_text_size"), d.time_text_size, 14, 24),
         status_text_size=_bounded_int(raw.get("status_text_size"), d.status_text_size, 7, 12),
         message_text_size=_bounded_int(raw.get("message_text_size"), d.message_text_size, 9, 16),
