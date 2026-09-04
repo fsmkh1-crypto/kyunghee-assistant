@@ -362,8 +362,17 @@ class CompactDesktopApp(DesktopApp):
         y = min(max(y, area[1]), area[3] - height)
         return int(x), int(y), int(width), int(height)
 
+    def _effective_widget_scale(self) -> int:
+        var = getattr(self, "widget_scale_var", None)
+        if var is not None:
+            try:
+                return int(var.get())
+            except (tk.TclError, ValueError, TypeError):
+                pass
+        return self.preferences.widget_scale
+
     def _scale(self, value: int | float) -> int:
-        return max(1, round(float(value) * self.preferences.widget_scale / 100.0))
+        return max(1, round(float(value) * self._effective_widget_scale() / 100.0))
 
     def _timer_size(self):
         return self._scale(self.COMPACT_SIZE[0]), self._scale(self.COMPACT_SIZE[1])
@@ -700,6 +709,27 @@ class CompactDesktopApp(DesktopApp):
         self.speech.bind("<Button-1>", self._cycle_message)
         self._apply_widget_appearance()
 
+    def _effective_display_flag(self, key: str) -> bool:
+        vars_map = getattr(self, "display_bool_vars", None)
+        if vars_map and key in vars_map:
+            try:
+                return bool(vars_map[key].get())
+            except tk.TclError:
+                pass
+        return bool(getattr(self.preferences, key))
+
+    def _preview_widget_controls(self, _value=None):
+        if not hasattr(self, "cont"):
+            return
+        self._image_cache.clear()
+        self._apply_widget_appearance()
+        self.character_role = None
+        self._set_character("default")
+        # Keep the settings panel usable while previewing. The timer window size
+        # is recalculated when the user returns to the timer page.
+        if self.current_page == "timer":
+            self._resize_for_page("timer")
+
     def _apply_widget_appearance(self):
         if not hasattr(self, "cont"):
             return
@@ -717,17 +747,17 @@ class CompactDesktopApp(DesktopApp):
             outline=_outline_for(p.message_text_color),
         )
 
-        if p.show_time:
+        if self._effective_display_flag("show_time"):
             if not self.cont.winfo_manager():
                 self.cont.pack(anchor="w")
         else:
             self.cont.pack_forget()
-        if p.show_status:
+        if self._effective_display_flag("show_status"):
             if not self.main_status.winfo_manager():
                 self.main_status.pack(anchor="w", pady=(0, 1))
         else:
             self.main_status.pack_forget()
-        if p.show_message:
+        if self._effective_display_flag("show_message"):
             self.speech.place(relx=0.5, rely=1.0, y=-self._scale(3), anchor="s")
         else:
             self.speech.place_forget()
@@ -853,7 +883,10 @@ class CompactDesktopApp(DesktopApp):
             variable=self.widget_scale_var, showvalue=False, length=360,
             fg=core.TEXT, bg=core.PANEL, troughcolor=core.PANEL_2,
             highlightthickness=0, bd=0,
-            command=lambda value: self.widget_scale_value.configure(text=f"{int(float(value))}%"),
+            command=lambda value: (
+                self.widget_scale_value.configure(text=f"{int(float(value))}%"),
+                self._preview_widget_controls(value),
+            ),
         )
         scale.pack(anchor="w", pady=(0, 4), **pad)
         self.display_bool_vars = {
@@ -868,6 +901,7 @@ class CompactDesktopApp(DesktopApp):
         ):
             tk.Checkbutton(
                 content, text=caption, variable=self.display_bool_vars[key],
+                command=self._preview_widget_controls,
                 font=(self.FONT_FAMILY, 9, "normal"), fg=core.TEXT, bg=core.PANEL,
                 activeforeground=core.TEXT, activebackground=core.PANEL,
                 selectcolor=core.PANEL_2, highlightthickness=0, bd=0, cursor="hand2",
@@ -979,6 +1013,12 @@ class CompactDesktopApp(DesktopApp):
         self.settings_status = self._label(save_row, "", size=9, fg=core.GREEN, bg=core.PANEL)
         self.settings_status.pack(side="left")
         self._button(save_row, "설정 저장", self._save_settings, primary=True).pack(side="right")
+
+    def _show_page(self, name: str):
+        super()._show_page(name)
+        if name == "timer":
+            self._preview_widget_controls()
+            self._resize_for_page("timer")
 
     def _save_settings(self):
         try:
