@@ -155,6 +155,7 @@ class CompactDesktopApp(DesktopApp):
         )
 
 
+# Build marker: Pretendard/text-only widget package.
 if __name__ == "__main__":
     singleton = SingleInstance()
     if not singleton.acquire():
