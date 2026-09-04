@@ -15,11 +15,8 @@ class CompactDesktopApp(DesktopApp):
     COMPACT_SIZE = (300, 430)
     DETAIL_SIZE = (410, 430)
     CHARACTER_MAX = (288, 320)
-    BUBBLE_WIDTH = 282
     BUBBLE_WRAP = 258
 
-    MESSAGE_BG = "#E5D3CF"
-    MESSAGE_BORDER = "#B98F90"
     MESSAGE_TEXT = "#493637"
 
     def __init__(self):
@@ -86,15 +83,13 @@ class CompactDesktopApp(DesktopApp):
         hero.pack(fill="both", expand=True)
         self._bind_drag_surface(hero)
 
-        # Keep the approved artwork fully contained. The label stays at the
-        # rendered image size so transparent empty space is not a click target.
+        # Approved artwork only; no visible panel around it.
         self.character = tk.Label(hero, bg=self.TRANSPARENT_KEY, bd=0, cursor="hand2")
-        self.character.place(relx=0.5, rely=1.0, y=-54, anchor="s")
+        self.character.place(relx=0.5, rely=1.0, y=-48, anchor="s")
 
-        # Time/status are text-only so the widget does not create another
-        # opaque rectangle over the desktop.
+        # Time/status are text-only on the colour-key transparent surface.
         clock = tk.Frame(hero, bg=self.TRANSPARENT_KEY, bd=0, highlightthickness=0, cursor="hand2")
-        clock.place(x=8, y=8)
+        clock.place(x=6, y=6)
         self.cont = self._label(
             clock,
             "00:00:00",
@@ -114,33 +109,27 @@ class CompactDesktopApp(DesktopApp):
         )
         self.main_status.pack(anchor="w", pady=(0, 2))
 
-        bubble = tk.Frame(
-            hero,
-            bg=self.MESSAGE_BG,
-            highlightthickness=1,
-            highlightbackground=self.MESSAGE_BORDER,
-            cursor="hand2",
-        )
-        bubble.place(relx=0.5, rely=1.0, y=-7, anchor="s", width=self.BUBBLE_WIDTH)
+        # Dialogue is also text-only: no bubble fill, border, or surrounding card.
         self.speech = tk.Label(
-            bubble,
+            hero,
             text=pick("playful"),
             wraplength=self.BUBBLE_WRAP,
             justify="center",
             font=("Malgun Gothic", 9, "bold"),
             fg=self.MESSAGE_TEXT,
-            bg=self.MESSAGE_BG,
-            padx=8,
-            pady=7,
+            bg=self.TRANSPARENT_KEY,
+            bd=0,
+            highlightthickness=0,
+            padx=2,
+            pady=1,
             cursor="hand2",
         )
-        self.speech.pack(fill="x")
+        self.speech.place(relx=0.5, rely=1.0, y=-6, anchor="s")
 
         for widget in (clock, self.cont, self.main_status):
             widget.bind("<Button-1>", lambda _event: self.show_stats())
         self.character.bind("<Button-1>", lambda _event: self.show_stats())
-        for widget in (bubble, self.speech):
-            widget.bind("<Button-1>", self._cycle_message)
+        self.speech.bind("<Button-1>", self._cycle_message)
 
 
 if __name__ == "__main__":
