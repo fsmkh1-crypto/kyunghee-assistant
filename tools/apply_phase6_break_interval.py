@@ -78,19 +78,13 @@ p.write_text(s, encoding="utf-8")
 # desktop_compact.py
 p = ROOT / "desktop_compact.py"
 s = p.read_text(encoding="utf-8")
-anchor = '''        for key, caption in (
-            ("start_with_windows", "Windows 시작 시 자동 실행"),
-            ("always_on_top", "메인 창 항상 위 표시"),
-            ("break_reminders", "휴식 알림 사용"),
-            ("workday_reminders", "퇴근 시간 알림 사용"),
-        ):
+marker = '''        self._label(content, "긴급 숨기기 단축키: Ctrl+Shift+H", size=8, fg=core.MUTED, bg=core.PANEL).pack(
+            anchor="w", pady=(2, 2), **pad
+        )
 '''
-insert = anchor + ''''''
-# Add interval UI immediately after the checkbox loop by replacing next known section marker.
-marker = '        self._label(content, "퇴근 시간 설정", size=9, weight="bold", bg=core.PANEL).pack(anchor="w", pady=(6, 3))\n'
 interval_ui = '''        interval_row = tk.Frame(content, bg=core.PANEL)
-        interval_row.pack(fill="x", padx=14, pady=(4, 2))
-        self._label(interval_row, "휴식 알림 간격(분)", size=8, fg=core.MUTED, bg=core.PANEL).pack(side="left")
+        interval_row.pack(fill="x", pady=(5, 2), **pad)
+        self._label(interval_row, "휴식 알림 간격(분)", size=9, bg=core.PANEL).pack(side="left")
         self.break_interval_var = tk.StringVar(value=str(p.break_interval_minutes))
         tk.Entry(
             interval_row,
@@ -103,8 +97,10 @@ interval_ui = '''        interval_row = tk.Frame(content, bg=core.PANEL)
             insertbackground=core.TEXT,
             relief="flat",
             bd=0,
-        ).pack(side="right", ipady=1)
-        self._label(content, "20~180분 · 기본 60분", size=7, fg=core.MUTED, bg=core.PANEL).pack(anchor="e", padx=14, pady=(0, 4))
+        ).pack(side="right", ipady=2)
+        self._label(content, "20~180분 · 기본 60분", size=8, fg=core.MUTED, bg=core.PANEL).pack(
+            anchor="e", pady=(0, 3), **pad
+        )
 
 '''
 s = replace_once(s, marker, interval_ui + marker, 'compact interval UI')
