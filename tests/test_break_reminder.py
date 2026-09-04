@@ -23,6 +23,13 @@ class BreakReminderGateTests(unittest.TestCase):
         gate.reset()
         self.assertTrue(gate.should_show(True, 101.0))
 
+    def test_defer_rearms_still_due_break_immediately(self):
+        gate = BreakReminderGate(repeat_interval_sec=300)
+        self.assertTrue(gate.should_show(True, 100.0))
+        gate.defer()
+        self.assertFalse(gate.armed)
+        self.assertTrue(gate.should_show(True, 101.0))
+
     def test_not_due_never_arms(self):
         gate = BreakReminderGate(repeat_interval_sec=300)
         self.assertFalse(gate.should_show(False, 100.0))

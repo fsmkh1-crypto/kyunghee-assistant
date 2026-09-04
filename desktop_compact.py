@@ -832,6 +832,9 @@ class CompactDesktopApp(DesktopApp):
         self._set_character("default")
         self._resize_for_page(self.current_page)
 
+    def _break_notifications_suppressed(self) -> bool:
+        return should_suppress_overlay_notifications()
+
     def _sync_presentation_state(self):
         try:
             suppressed = should_suppress_overlay_notifications()
@@ -840,6 +843,7 @@ class CompactDesktopApp(DesktopApp):
                 core.log.info("presentation/fullscreen suppression=%s", suppressed)
             if suppressed:
                 self.root.attributes("-topmost", False)
+                self.break_gate.defer()
                 self._destroy_toast()
             elif self.root.winfo_viewable():
                 self.root.attributes("-topmost", self.preferences.always_on_top)

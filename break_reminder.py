@@ -28,6 +28,10 @@ class BreakReminderGate:
             return True
         return False
 
-    def reset(self) -> None:
+    def defer(self) -> None:
+        """Forget a hidden reminder so a still-due break can show immediately later."""
         self.armed = False
         self.last_shown_at = 0.0
+
+    def reset(self) -> None:
+        self.defer()

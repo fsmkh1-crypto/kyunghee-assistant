@@ -129,6 +129,9 @@ class App:
         self.root.after(1000, self._tick_safe)
         self.root.after(5000, self._save_periodic)
 
+    def _break_notifications_suppressed(self) -> bool:
+        return False
+
     def _current_workday_state(self) -> WorkdayState:
         return apply_reminder_preference(
             classify_workday(
@@ -533,6 +536,8 @@ class App:
             now = time.monotonic()
             if not self.preferences.break_reminders or self.state.daily.break_reminders_suppressed:
                 self.break_gate.reset()
+            elif self._break_notifications_suppressed():
+                pass
             elif self.break_gate.should_show(result.break_due, now):
                 mode = self._current_workday_state().mode
                 can_snooze = should_encourage_more_work(mode)

@@ -19,7 +19,7 @@ ACTIVE / BREAK INTERVAL, SNOOZE, AND TODAY-SUPPRESSION INTEGRATED.
 2. Configurable snooze duration / reminder behavior without making the settings noisy.
 3. “Stop reminders for today” integrated as daily persisted state; it resets automatically on the next local day rollover.
 4. Refine work start/end and manual/automatic away policy where real usage shows a need.
-5. Ensure fullscreen/presentation deferral resumes reminders correctly.
+5. Fullscreen/presentation deferral integrated: hidden break reminders do not consume the repeat gate, and a still-due reminder can appear immediately after presentation mode ends.
 6. Optional Pomodoro mode only after the above is stable.
 
 ## Constraints
