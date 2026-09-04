@@ -5,6 +5,9 @@ on:
     paths:
       - '.github/workflows/apply-phase3-fixed-cluster-spacing.yml'
 
+permissions:
+  contents: write
+
 jobs:
   patch:
     runs-on: ubuntu-latest
