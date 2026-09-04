@@ -98,7 +98,7 @@ Earlier scale-dependent offsets and whole-PNG-box spacing left the clock/status 
 The final layout therefore uses the visible character silhouette instead of the PNG canvas box:
 - Clock/status + Kyunghee are treated as one visible cluster.
 - Clock placement is derived from the actual visible alpha bounds of the rendered Kyunghee image, not the image's transparent outer rectangle.
-- The visual gap between the clock/status group and Kyunghee is kept small and effectively fixed across scales (about 12 px target).
+- The visual gap between the clock/status group and Kyunghee is kept small and effectively fixed across scales (about 6 px target).
 - Clock/status follows the character vertically instead of staying pinned to the canvas top-left.
 - Message is centered under Kyunghee.
 - Character-to-message spacing stays visually stable rather than increasing with scale.
@@ -128,15 +128,22 @@ Do not rework Phase 3 layout during Phase 4 unless a real regression appears.
 ### Goal
 Make situation-based Kyunghee artwork flexible without replacing the approved canonical assets.
 
-### Status: NEXT PHASE / READY TO START
+### Status: IN PROGRESS / IMAGE-SET RUNTIME INTEGRATED
 
-Planned priority:
-1. Multiple images per role/situation with random selection.
-2. Folder/set support.
-3. Fit/crop/alignment controls.
-4. Image preview in settings.
-5. Robust cache/invalidation for sets and previews.
-6. Keep app-owned imported copies as the default storage model.
+Implemented so far:
+- App-owned multi-image sets per role/situation.
+- Multiple-file and folder import.
+- Random image selection when a role is re-entered, with stable display while the role remains active.
+- Fit/crop plus 9-way alignment controls.
+- Legacy single-image custom import preserved as fallback, followed by canonical approved assets.
+- Image-set cache/invalidation integrated into the compact runtime.
+- Ubuntu tests and Windows compile/tests/build/smoke passed after runtime integration.
+
+Remaining priority:
+1. Image preview in settings.
+2. Preview-specific cache/invalidation polish.
+3. Real-device visual check of the expanded image settings UI.
+4. Keep app-owned imported copies as the default storage model.
 
 Important constraints:
 - Do not regenerate or replace approved PNG masters in `assets/`.
@@ -218,7 +225,7 @@ Before changing code:
 7. Preserve Phase 1 drag/hotkey/position behavior.
 8. Preserve the transparent color-key model and empty-area click-through behavior unless a regression requires otherwise.
 9. Phase 3 is complete; preserve its visible-alpha cluster layout instead of redesigning it.
-10. Phase 4 is the next implementation phase.
+10. Phase 4 is in progress; image-set runtime integration is complete and settings preview is next.
 11. After risky Windows-specific changes, run tests/build/smoke; request real-device testing only when CI cannot validate the visual behavior.
 
 ## Last known user feedback

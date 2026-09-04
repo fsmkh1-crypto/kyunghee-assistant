@@ -29,7 +29,7 @@ Use this as the starting prompt for a new ChatGPT conversation.
 - `Ctrl+Shift+H` 글로벌 숨김/표시, 위치 저장, 멀티모니터 복구, topmost 옵션 등 Phase 1 동작은 이미 실사용 통과 상태다. 건드릴 때 회귀를 매우 조심한다.
 - Phase 3은 완료 상태다. 배율/표시 토글/드래그/투명 클릭 스루/레이아웃을 불필요하게 다시 설계하지 마라.
 - Phase 3 최종 레이아웃은 시계/상태 + 경희를 하나의 visible cluster로 보되, PNG 전체 박스가 아니라 실제 보이는 alpha silhouette 경계를 기준으로 배치한다.
-- 시계/상태는 경희의 실제 보이는 왼쪽 경계에 약 12px 정도의 작은 시각 간격으로 붙는다. 배율별 간격표를 다시 만들지 마라.
+- 시계/상태는 경희의 실제 보이는 왼쪽 경계에 약 6px 정도의 작은 시각 간격으로 붙는다. 배율별 간격표를 다시 만들지 마라.
 - 메시지는 경희 바로 아래 기준으로 붙는다.
 
 Phase 3 최종 관련 커밋:
@@ -46,18 +46,16 @@ Phase 3 최종 Windows 검증:
 - artifact: `kyunghee-timer-phase3-final-test`
 - 사용자가 80%, 140%, 200% 실화면을 직접 확인하고 Phase 3을 종료해도 된다고 승인했다.
 
-이제 Phase 4를 시작한다.
+Phase 4는 현재 구현 중이다. 이미지 세트 저장 계층과 실제 compact runtime 연결까지 완료됐다.
 
 Phase 4 목표:
 상황/역할별 경희 이미지 시스템을 확장하되 기존 승인 이미지와 기존 단일 이미지 import/fallback을 깨지 않는다.
 
 구현 우선순위:
-1. 역할/상황별 여러 이미지 등록 및 랜덤 선택
-2. 폴더/세트 단위 이미지 등록
-3. fit/crop/alignment 옵션
-4. 설정 화면 이미지 preview
-5. 이미지 set/preview용 cache/invalidation 정리
-6. app-owned imported copies 저장 원칙 유지
+1. 설정 화면 이미지 preview
+2. preview 전용 cache/invalidation 마무리
+3. 확장된 이미지 설정 UI의 Windows 실화면 검증
+4. app-owned imported copies 저장 원칙 유지
 
 작업 원칙:
 - 먼저 현재 코드 구조와 설정 schema를 검토하고 Phase 4 설계를 짧게 정리한다.
@@ -70,4 +68,4 @@ Phase 4 목표:
 - 실제 시각 확인이 필요한 경우에만 사용자에게 테스트본을 준다.
 - Phase 4 작업 중 레이아웃 문제가 보이더라도 Phase 3의 visible-alpha cluster 원칙을 먼저 보존하고, 실제 회귀일 때만 최소 수정한다.
 
-첫 작업은 `PROJECT_PHASES.md`, `PHASE4_HANDOFF.md`, PR #3, 현재 HEAD를 확인한 뒤 Phase 4 구현 계획을 짧게 정리하고 바로 시작해.
+다음 작업은 현재 HEAD와 CI 상태를 확인한 뒤 설정 화면 이미지 preview부터 이어가.
