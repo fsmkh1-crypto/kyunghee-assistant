@@ -1,0 +1,34 @@
+name: Close Phase 5
+
+on:
+  push:
+    paths:
+      - 'tools/close_phase5.py'
+      - '.github/workflows/close-phase5.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  closeout:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ui/dark-kyunghee-redesign
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply closeout
+        run: python tools/close_phase5.py
+      - name: Commit documentation
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add PROJECT_PHASES.md PHASE5_HANDOFF.md PHASE6_HANDOFF.md
+          if git diff --cached --quiet; then
+            echo 'No documentation changes.'
+          else
+            git commit -m 'Close Phase 5 and open Phase 6'
+            git push origin HEAD:ui/dark-kyunghee-redesign
+          fi
