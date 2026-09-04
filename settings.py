@@ -5,6 +5,7 @@ from datetime import time as dt_time
 import json
 import os
 from pathlib import Path
+import re
 import sys
 
 
@@ -19,6 +20,7 @@ class WorkdayPolicy:
 
 
 WORKDAY = WorkdayPolicy()
+HEX_COLOR_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
 
 
 def parse_clock(value: str) -> dt_time:
@@ -31,9 +33,32 @@ def parse_clock(value: str) -> dt_time:
     return dt_time(hour, minute)
 
 
+def validate_hex_color(value: str) -> str:
+    value = value.strip().upper()
+    if not HEX_COLOR_RE.fullmatch(value):
+        raise ValueError("글자 색상은 #RRGGBB 형식으로 입력해 주세요.")
+    return value
+
+
+def _coerce_bool(value: object, default: bool) -> bool:
+    return value if isinstance(value, bool) else default
+
+
+def _bounded_int(value: object, default: int, low: int, high: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if low <= parsed <= high else default
+
+
+def _fit_mode(value: object) -> str:
+    return str(value) if str(value) in {"fit", "crop"} else "fit"
+
+
 @dataclass(frozen=True)
 class UserSettings:
-    schema_version: int = 1
+    schema_version: int = 2
     start_with_windows: bool = False
     always_on_top: bool = False
     break_reminders: bool = True
@@ -42,6 +67,35 @@ class UserSettings:
     leave_mode: str = "17:30"
     strong_leave: str = "18:00"
     late_leave: str = "18:30"
+
+    time_text_size: int = 16
+    status_text_size: int = 9
+    message_text_size: int = 11
+    time_text_color: str = "#13A45C"
+    status_text_color: str = "#11854B"
+    message_text_color: str = "#E05A88"
+
+    image_default: str = ""
+    image_cheer: str = ""
+    image_rest: str = ""
+    image_away: str = ""
+    image_warning: str = ""
+    image_leave: str = ""
+    image_stats: str = ""
+    image_settings: str = ""
+    image_alert: str = ""
+    image_profile: str = ""
+
+    image_default_mode: str = "fit"
+    image_cheer_mode: str = "fit"
+    image_rest_mode: str = "fit"
+    image_away_mode: str = "fit"
+    image_warning_mode: str = "fit"
+    image_leave_mode: str = "fit"
+    image_stats_mode: str = "fit"
+    image_settings_mode: str = "fit"
+    image_alert_mode: str = "fit"
+    image_profile_mode: str = "fit"
 
     def workday_policy(self) -> WorkdayPolicy:
         times = [
@@ -59,29 +113,63 @@ class UserSettings:
             late_leave=times[3],
         )
 
-
-def _coerce_bool(value: object, default: bool) -> bool:
-    return value if isinstance(value, bool) else default
+    def validate_widget_style(self) -> None:
+        if not 14 <= self.time_text_size <= 24:
+            raise ValueError("시간 글자 크기는 14~24 사이로 설정해 주세요.")
+        if not 7 <= self.status_text_size <= 12:
+            raise ValueError("상태 글자 크기는 7~12 사이로 설정해 주세요.")
+        if not 9 <= self.message_text_size <= 16:
+            raise ValueError("메시지 글자 크기는 9~16 사이로 설정해 주세요.")
+        validate_hex_color(self.time_text_color)
+        validate_hex_color(self.status_text_color)
+        validate_hex_color(self.message_text_color)
 
 
 def settings_from_dict(raw: object) -> UserSettings:
     if not isinstance(raw, dict):
         return UserSettings()
-    defaults = UserSettings()
+    d = UserSettings()
     result = UserSettings(
-        start_with_windows=_coerce_bool(raw.get("start_with_windows"), defaults.start_with_windows),
-        always_on_top=_coerce_bool(raw.get("always_on_top"), defaults.always_on_top),
-        break_reminders=_coerce_bool(raw.get("break_reminders"), defaults.break_reminders),
-        workday_reminders=_coerce_bool(raw.get("workday_reminders"), defaults.workday_reminders),
-        wind_down=str(raw.get("wind_down", defaults.wind_down)),
-        leave_mode=str(raw.get("leave_mode", defaults.leave_mode)),
-        strong_leave=str(raw.get("strong_leave", defaults.strong_leave)),
-        late_leave=str(raw.get("late_leave", defaults.late_leave)),
+        start_with_windows=_coerce_bool(raw.get("start_with_windows"), d.start_with_windows),
+        always_on_top=_coerce_bool(raw.get("always_on_top"), d.always_on_top),
+        break_reminders=_coerce_bool(raw.get("break_reminders"), d.break_reminders),
+        workday_reminders=_coerce_bool(raw.get("workday_reminders"), d.workday_reminders),
+        wind_down=str(raw.get("wind_down", d.wind_down)),
+        leave_mode=str(raw.get("leave_mode", d.leave_mode)),
+        strong_leave=str(raw.get("strong_leave", d.strong_leave)),
+        late_leave=str(raw.get("late_leave", d.late_leave)),
+        time_text_size=_bounded_int(raw.get("time_text_size"), d.time_text_size, 14, 24),
+        status_text_size=_bounded_int(raw.get("status_text_size"), d.status_text_size, 7, 12),
+        message_text_size=_bounded_int(raw.get("message_text_size"), d.message_text_size, 9, 16),
+        time_text_color=str(raw.get("time_text_color", d.time_text_color)),
+        status_text_color=str(raw.get("status_text_color", d.status_text_color)),
+        message_text_color=str(raw.get("message_text_color", d.message_text_color)),
+        image_default=str(raw.get("image_default", "")),
+        image_cheer=str(raw.get("image_cheer", "")),
+        image_rest=str(raw.get("image_rest", "")),
+        image_away=str(raw.get("image_away", "")),
+        image_warning=str(raw.get("image_warning", "")),
+        image_leave=str(raw.get("image_leave", "")),
+        image_stats=str(raw.get("image_stats", "")),
+        image_settings=str(raw.get("image_settings", "")),
+        image_alert=str(raw.get("image_alert", "")),
+        image_profile=str(raw.get("image_profile", "")),
+        image_default_mode=_fit_mode(raw.get("image_default_mode", "fit")),
+        image_cheer_mode=_fit_mode(raw.get("image_cheer_mode", "fit")),
+        image_rest_mode=_fit_mode(raw.get("image_rest_mode", "fit")),
+        image_away_mode=_fit_mode(raw.get("image_away_mode", "fit")),
+        image_warning_mode=_fit_mode(raw.get("image_warning_mode", "fit")),
+        image_leave_mode=_fit_mode(raw.get("image_leave_mode", "fit")),
+        image_stats_mode=_fit_mode(raw.get("image_stats_mode", "fit")),
+        image_settings_mode=_fit_mode(raw.get("image_settings_mode", "fit")),
+        image_alert_mode=_fit_mode(raw.get("image_alert_mode", "fit")),
+        image_profile_mode=_fit_mode(raw.get("image_profile_mode", "fit")),
     )
     try:
         result.workday_policy()
+        result.validate_widget_style()
     except ValueError:
-        return defaults
+        return d
     return result
 
 
@@ -96,13 +184,11 @@ def load_user_settings(path: Path) -> UserSettings:
 
 def save_user_settings(path: Path, settings: UserSettings) -> None:
     settings.workday_policy()
+    settings.validate_widget_style()
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
-        temp.write_text(
-            json.dumps(asdict(settings), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        temp.write_text(json.dumps(asdict(settings), ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(temp, path)
     finally:
         try:
