@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+import tkinter.font as tkfont
 from PIL import ImageTk
 
 import app as core
@@ -9,23 +10,135 @@ from desktop_app import DesktopApp
 from messages import pick
 
 
+class OutlinedText(tk.Canvas):
+    """Text-only widget with a one-pixel outline for transparent Windows surfaces."""
+
+    OFFSETS = (
+        (-1, -1), (0, -1), (1, -1),
+        (-1, 0),           (1, 0),
+        (-1, 1),  (0, 1),  (1, 1),
+    )
+
+    def __init__(
+        self,
+        parent,
+        text,
+        *,
+        family,
+        size,
+        weight="normal",
+        fg,
+        outline,
+        bg,
+        wraplength=0,
+        justify="left",
+        cursor=None,
+    ):
+        super().__init__(
+            parent,
+            bg=bg,
+            bd=0,
+            highlightthickness=0,
+            relief="flat",
+            cursor=cursor or "arrow",
+        )
+        self._font = tkfont.Font(family=family, size=size, weight=weight)
+        self._text = text
+        self._fg = fg
+        self._outline = outline
+        self._wraplength = int(wraplength or 0)
+        self._justify = justify
+        self._outline_items = []
+        self._main_item = None
+        self._draw_items()
+        self._refresh_geometry()
+
+    def _text_position(self):
+        pad = 3
+        if self._justify == "center":
+            width = self._wraplength or max(1, self._font.measure(self._text))
+            return pad + width / 2, pad, "n"
+        return pad, pad, "nw"
+
+    def _item_kwargs(self, fill):
+        x, y, anchor = self._text_position()
+        kwargs = {
+            "text": self._text,
+            "font": self._font,
+            "fill": fill,
+            "anchor": anchor,
+            "justify": self._justify,
+        }
+        if self._wraplength:
+            kwargs["width"] = self._wraplength
+        return x, y, kwargs
+
+    def _draw_items(self):
+        x, y, kwargs = self._item_kwargs(self._outline)
+        for dx, dy in self.OFFSETS:
+            item = self.create_text(x + dx, y + dy, **kwargs)
+            self._outline_items.append(item)
+        x, y, kwargs = self._item_kwargs(self._fg)
+        self._main_item = self.create_text(x, y, **kwargs)
+
+    def _refresh_geometry(self):
+        self.update_idletasks()
+        bbox = self.bbox("all")
+        if not bbox:
+            self.configure(width=1, height=1)
+            return
+        if self._wraplength:
+            width = self._wraplength + 8
+        else:
+            width = max(1, bbox[2] - bbox[0] + 6)
+        height = max(1, bbox[3] - bbox[1] + 6)
+        tk.Canvas.configure(self, width=width, height=height)
+
+    def configure(self, cnf=None, **kwargs):
+        if cnf:
+            kwargs.update(cnf)
+        text = kwargs.pop("text", None)
+        fg = kwargs.pop("fg", kwargs.pop("foreground", None))
+        outline = kwargs.pop("outline", None)
+        if text is not None:
+            self._text = str(text)
+            for item in self._outline_items:
+                self.itemconfigure(item, text=self._text)
+            self.itemconfigure(self._main_item, text=self._text)
+        if fg is not None:
+            self._fg = fg
+            self.itemconfigure(self._main_item, fill=fg)
+        if outline is not None:
+            self._outline = outline
+            for item in self._outline_items:
+                self.itemconfigure(item, fill=outline)
+        if kwargs:
+            tk.Canvas.configure(self, **kwargs)
+        if text is not None:
+            self._refresh_geometry()
+
+    config = configure
+
+
 class CompactDesktopApp(DesktopApp):
     """Narrow frameless desktop widget using the approved Kyunghee artwork."""
 
     COMPACT_SIZE = (300, 430)
     DETAIL_SIZE = (410, 430)
-    CHARACTER_MAX = (288, 320)
-    BUBBLE_WRAP = 258
+    # Roughly 20% larger than the previous 288x320 display ceiling.
+    CHARACTER_MAX = (346, 384)
+    BUBBLE_WRAP = 270
 
     FONT_FAMILY = "Pretendard"
-    TIME_TEXT = "#159A55"
-    STATUS_TEXT = "#178A50"
-    MESSAGE_TEXT = "#C85B7D"
+    TIME_TEXT = "#13A45C"
+    TIME_OUTLINE = "#07552F"
+    STATUS_TEXT = "#11854B"
+    STATUS_OUTLINE = "#064A2A"
+    MESSAGE_TEXT = "#E05A88"
+    MESSAGE_OUTLINE = "#7B304B"
 
     def __init__(self):
         super().__init__()
-        # Frameless widget mode. Top-most behavior follows the saved setting
-        # instead of being forced on by the compact shell.
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", self.preferences.always_on_top)
         self._drag_origin = None
@@ -72,8 +185,6 @@ class CompactDesktopApp(DesktopApp):
         widget.bind("<ButtonRelease-1>", self._stop_drag)
 
     def apply_preferences(self, preferences) -> None:
-        # The base implementation saves preferences and applies -topmost
-        # immediately, so the setting now works in compact mode as well.
         super().apply_preferences(preferences)
 
     def show(self):
@@ -99,29 +210,31 @@ class CompactDesktopApp(DesktopApp):
         hero = tk.Frame(page, bg=self.TRANSPARENT_KEY, bd=0, highlightthickness=0)
         hero.pack(fill="both", expand=True)
 
-        # Approved artwork only; clicking Kyunghee is the only way to open details.
         self.character = tk.Label(hero, bg=self.TRANSPARENT_KEY, bd=0, cursor="hand2")
-        self.character.place(relx=0.5, rely=1.0, y=-48, anchor="s")
+        self.character.place(relx=0.5, rely=1.0, y=-46, anchor="s")
 
-        # The time itself doubles as the move handle. No extra move button is shown.
         clock = tk.Frame(hero, bg=self.TRANSPARENT_KEY, bd=0, highlightthickness=0, cursor="fleur")
         clock.place(x=6, y=6)
-        self.cont = self._label(
+        self.cont = OutlinedText(
             clock,
             "00:00:00",
-            size=20,
+            family=self.FONT_FAMILY,
+            size=22,
             weight="bold",
             fg=self.TIME_TEXT,
+            outline=self.TIME_OUTLINE,
             bg=self.TRANSPARENT_KEY,
             cursor="fleur",
         )
         self.cont.pack(anchor="w")
-        self.main_status = self._label(
+        self.main_status = OutlinedText(
             clock,
             "집중 중",
-            size=8,
+            family=self.FONT_FAMILY,
+            size=9,
             weight="bold",
             fg=self.STATUS_TEXT,
+            outline=self.STATUS_OUTLINE,
             bg=self.TRANSPARENT_KEY,
             cursor="fleur",
         )
@@ -129,23 +242,20 @@ class CompactDesktopApp(DesktopApp):
         for widget in (clock, self.cont, self.main_status):
             self._bind_drag_surface(widget)
 
-        # Dialogue remains text-only, but darker rose and a slightly larger
-        # Pretendard face improve readability over light desktop backgrounds.
-        self.speech = tk.Label(
+        self.speech = OutlinedText(
             hero,
-            text=pick("playful"),
+            pick("playful"),
+            family=self.FONT_FAMILY,
+            size=11,
+            weight="bold",
+            fg=self.MESSAGE_TEXT,
+            outline=self.MESSAGE_OUTLINE,
+            bg=self.TRANSPARENT_KEY,
             wraplength=self.BUBBLE_WRAP,
             justify="center",
-            font=(self.FONT_FAMILY, 10, "bold"),
-            fg=self.MESSAGE_TEXT,
-            bg=self.TRANSPARENT_KEY,
-            bd=0,
-            highlightthickness=0,
-            padx=2,
-            pady=1,
             cursor="hand2",
         )
-        self.speech.place(relx=0.5, rely=1.0, y=-6, anchor="s")
+        self.speech.place(relx=0.5, rely=1.0, y=-4, anchor="s")
 
         self.character.bind("<Button-1>", lambda _event: self.show_stats())
         self.speech.bind("<Button-1>", self._cycle_message)
@@ -156,6 +266,7 @@ class CompactDesktopApp(DesktopApp):
         self.main_status.configure(
             text="자리비움 중" if away else "집중 중",
             fg=core.AMBER if away else self.STATUS_TEXT,
+            outline="#7A4A00" if away else self.STATUS_OUTLINE,
         )
 
 
