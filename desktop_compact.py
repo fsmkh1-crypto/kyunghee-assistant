@@ -17,7 +17,8 @@ class CompactDesktopApp(DesktopApp):
     CHARACTER_MAX = (288, 320)
     BUBBLE_WRAP = 258
 
-    MESSAGE_TEXT = "#493637"
+    MESSAGE_TEXT = "#F29AB7"
+    MOVE_TEXT = "#AEB7C8"
 
     def __init__(self):
         super().__init__()
@@ -81,7 +82,24 @@ class CompactDesktopApp(DesktopApp):
         page.configure(bg=self.TRANSPARENT_KEY)
         hero = tk.Frame(page, bg=self.TRANSPARENT_KEY, bd=0, highlightthickness=0)
         hero.pack(fill="both", expand=True)
-        self._bind_drag_surface(hero)
+
+        # Visible move handle. A colour-key transparent background means the
+        # empty widget surface itself is not a reliable drag target on Windows,
+        # so this text-only handle owns window dragging.
+        move_handle = tk.Label(
+            hero,
+            text="↕ 이동",
+            font=("Malgun Gothic", 8, "bold"),
+            fg=self.MOVE_TEXT,
+            bg=self.TRANSPARENT_KEY,
+            bd=0,
+            highlightthickness=0,
+            cursor="fleur",
+            padx=2,
+            pady=1,
+        )
+        move_handle.place(relx=1.0, x=-6, y=6, anchor="ne")
+        self._bind_drag_surface(move_handle)
 
         # Approved artwork only; no visible panel around it.
         self.character = tk.Label(hero, bg=self.TRANSPARENT_KEY, bd=0, cursor="hand2")
@@ -95,6 +113,7 @@ class CompactDesktopApp(DesktopApp):
             "00:00:00",
             size=18,
             weight="bold",
+            fg=core.GREEN,
             bg=self.TRANSPARENT_KEY,
             cursor="hand2",
         )
