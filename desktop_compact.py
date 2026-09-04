@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import time
 import tkinter as tk
 from PIL import ImageTk
 
 import app as core
 from app import SingleInstance
-from asset_manager import resolve_asset
 from desktop_app import DesktopApp
 from messages import pick
 
@@ -14,17 +12,38 @@ from messages import pick
 class CompactDesktopApp(DesktopApp):
     """Narrow desktop shell that preserves the approved character artwork."""
 
-    COMPACT_SIZE = (390, 430)
-    DETAIL_SIZE = (500, 430)
-    CHARACTER_MAX = (370, 320)
-    BUBBLE_WIDTH = 360
-    BUBBLE_WRAP = 330
+    COMPACT_SIZE = (330, 430)
+    DETAIL_SIZE = (440, 430)
+    CHARACTER_MAX = (315, 320)
+    BUBBLE_WIDTH = 306
+    BUBBLE_WRAP = 278
+
+    MESSAGE_BG = "#E5D3CF"
+    MESSAGE_BORDER = "#B98F90"
+    MESSAGE_TEXT = "#493637"
+
+    @staticmethod
+    def _clean_character_alpha(image):
+        """Avoid dark colour-key fringes around anti-aliased PNG edges.
+
+        Windows/Tk colour-key transparency only removes pixels that exactly
+        match the transparent key. Semi-transparent PNG edge pixels otherwise
+        blend against that dark key and leave a visible grey/black halo. For
+        the compact always-on-top view, snap very faint edge pixels to fully
+        transparent and the remaining artwork pixels to fully opaque.
+        """
+        rgba = image.convert("RGBA")
+        alpha = rgba.getchannel("A")
+        binary_alpha = alpha.point(lambda value: 0 if value < 72 else 255)
+        rgba.putalpha(binary_alpha)
+        return rgba
 
     def _set_character(self, role: str):
         if role == self.character_role:
             return
         try:
             image = self._load_character_image(role, self.CHARACTER_MAX, preserve_alpha=True)
+            image = self._clean_character_alpha(image)
             self.character_photo = ImageTk.PhotoImage(image)
             self.character.configure(image=self.character_photo)
             self.character_role = role
@@ -64,9 +83,9 @@ class CompactDesktopApp(DesktopApp):
 
         bubble = tk.Frame(
             hero,
-            bg="#211644",
+            bg=self.MESSAGE_BG,
             highlightthickness=1,
-            highlightbackground="#523A8E",
+            highlightbackground=self.MESSAGE_BORDER,
             cursor="hand2",
         )
         bubble.place(relx=0.5, rely=1.0, y=-7, anchor="s", width=self.BUBBLE_WIDTH)
@@ -76,8 +95,8 @@ class CompactDesktopApp(DesktopApp):
             wraplength=self.BUBBLE_WRAP,
             justify="center",
             font=("Malgun Gothic", 9, "bold"),
-            fg=core.TEXT,
-            bg="#211644",
+            fg=self.MESSAGE_TEXT,
+            bg=self.MESSAGE_BG,
             padx=8,
             pady=7,
             cursor="hand2",
