@@ -10,14 +10,16 @@ import threading
 import tkinter as tk
 from tkinter import colorchooser, filedialog
 import tkinter.font as tkfont
-from PIL import Image, ImageOps, ImageTk
+from PIL import Image, ImageTk
 
 import app as core
 from app import SingleInstance
 from asset_manager import resolve_asset
 from desktop_app import DesktopApp
+from image_render import resize_rgba_alpha_safe, threshold_alpha
 from messages import pick
 from settings import UserSettings, save_user_settings, set_windows_startup, validate_hex_color
+from windows_display import enable_per_monitor_dpi_awareness, should_suppress_overlay_notifications
 
 
 USER_IMAGE_DIR = core.DATA_DIR / "images"
@@ -73,8 +75,9 @@ class OutlinedText(tk.Canvas):
         self._justify = justify
         self._outline_items = []
         self._main_item = None
+        self._last_geometry_key = None
         self._draw_items()
-        self._refresh_geometry()
+        self._refresh_geometry(force=True)
 
     def _text_position(self):
         pad = 3
@@ -103,8 +106,16 @@ class OutlinedText(tk.Canvas):
         x, y, kwargs = self._item_kwargs(self._fg)
         self._main_item = self.create_text(x, y, **kwargs)
 
-    def _refresh_geometry(self):
-        self.update_idletasks()
+    def _refresh_geometry(self, force=False):
+        geometry_key = (
+            self._text,
+            self._wraplength,
+            self._font.actual("family"),
+            self._font.actual("size"),
+        )
+        if not force and geometry_key == self._last_geometry_key:
+            return
+        self._last_geometry_key = geometry_key
         bbox = self.bbox("all")
         if not bbox:
             tk.Canvas.configure(self, width=1, height=1)
@@ -114,8 +125,11 @@ class OutlinedText(tk.Canvas):
         tk.Canvas.configure(self, width=width, height=height)
 
     def set_style(self, *, size=None, fg=None, outline=None):
+        size_changed = False
         if size is not None:
-            self._font.configure(size=int(size), weight="normal")
+            new_size = int(size)
+            size_changed = int(self._font.actual("size")) != new_size
+            self._font.configure(size=new_size, weight="normal")
             for item in self._outline_items:
                 self.itemconfigure(item, font=self._font)
             self.itemconfigure(self._main_item, font=self._font)
@@ -126,7 +140,8 @@ class OutlinedText(tk.Canvas):
             self._outline = outline
             for item in self._outline_items:
                 self.itemconfigure(item, fill=outline)
-        self._refresh_geometry()
+        if size_changed:
+            self._refresh_geometry(force=True)
 
     def configure(self, cnf=None, **kwargs):
         if cnf:
@@ -134,17 +149,21 @@ class OutlinedText(tk.Canvas):
         text = kwargs.pop("text", None)
         fg = kwargs.pop("fg", kwargs.pop("foreground", None))
         outline = kwargs.pop("outline", None)
+        changed = False
         if text is not None:
-            self._text = str(text)
-            for item in self._outline_items:
-                self.itemconfigure(item, text=self._text)
-            self.itemconfigure(self._main_item, text=self._text)
+            new_text = str(text)
+            changed = new_text != self._text
+            if changed:
+                self._text = new_text
+                for item in self._outline_items:
+                    self.itemconfigure(item, text=self._text)
+                self.itemconfigure(self._main_item, text=self._text)
         if fg is not None or outline is not None:
             self.set_style(fg=fg, outline=outline)
         if kwargs:
             tk.Canvas.configure(self, **kwargs)
-        if text is not None:
-            self._refresh_geometry()
+        if changed:
+            self._refresh_geometry(force=True)
 
     config = configure
 
@@ -218,6 +237,8 @@ class CompactDesktopApp(DesktopApp):
         self._drag_origin = None
         self._hotkey_stop = threading.Event()
         self._hotkey_thread = None
+        self._image_cache = {}
+        self._presentation_suppressed = False
         super().__init__()
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", self.preferences.always_on_top)
@@ -226,6 +247,7 @@ class CompactDesktopApp(DesktopApp):
         self._restore_window_position()
         self._start_global_hotkey()
         self._check_font_available()
+        self.root.after(1500, self._sync_presentation_state)
 
     def _check_font_available(self):
         try:
@@ -409,10 +431,7 @@ class CompactDesktopApp(DesktopApp):
 
     @staticmethod
     def _clean_character_alpha(image):
-        rgba = image.convert("RGBA")
-        alpha = rgba.getchannel("A")
-        rgba.putalpha(alpha.point(lambda value: 0 if value < 72 else 255))
-        return rgba
+        return threshold_alpha(image)
 
     def _start_drag(self, event):
         self._drag_origin = (event.x_root, event.y_root, self.root.winfo_x(), self.root.winfo_y())
@@ -517,19 +536,31 @@ class CompactDesktopApp(DesktopApp):
         path = custom or resolve_asset(role)
         if not path:
             return super()._load_character_image(role, max_size, preserve_alpha)
+        try:
+            stat_key = path.stat().st_mtime_ns
+        except OSError:
+            stat_key = 0
+        cache_key = (str(path), stat_key, tuple(max_size), mode, bool(preserve_alpha))
+        cached = self._image_cache.get(cache_key)
+        if cached is not None:
+            return cached.copy()
         with Image.open(path) as src:
             if src.width > MAX_CUSTOM_IMAGE_DIMENSION or src.height > MAX_CUSTOM_IMAGE_DIMENSION:
                 raise ValueError(f"이미지가 너무 큽니다. 최대 {MAX_CUSTOM_IMAGE_DIMENSION}px까지 사용할 수 있습니다.")
-            image = src.convert("RGBA")
-            if mode == "crop" and custom:
-                image = ImageOps.fit(image, max_size, method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
-            else:
-                image.thumbnail(max_size, Image.Resampling.LANCZOS)
+            image = resize_rgba_alpha_safe(
+                src,
+                max_size,
+                crop=bool(mode == "crop" and custom),
+                centering=(0.5, 0.5),
+            )
             if preserve_alpha:
-                return image
-            canvas = Image.new("RGBA", image.size, core.PANEL)
-            canvas.alpha_composite(image)
-            return canvas.convert("RGB")
+                result = image
+            else:
+                canvas = Image.new("RGBA", image.size, core.PANEL)
+                canvas.alpha_composite(image)
+                result = canvas.convert("RGB")
+        self._image_cache[cache_key] = result.copy()
+        return result
 
     def _set_small_avatar(self, target):
         try:
@@ -544,10 +575,28 @@ class CompactDesktopApp(DesktopApp):
             core.log.exception("avatar asset failed")
 
     def apply_preferences(self, preferences) -> None:
+        self._image_cache.clear()
         super().apply_preferences(preferences)
         self._apply_widget_appearance()
         self.character_role = None
         self._set_character("default")
+
+    def _sync_presentation_state(self):
+        try:
+            suppressed = should_suppress_overlay_notifications()
+            if suppressed != self._presentation_suppressed:
+                self._presentation_suppressed = suppressed
+                core.log.info("presentation/fullscreen suppression=%s", suppressed)
+            if suppressed:
+                self.root.attributes("-topmost", False)
+                self._destroy_toast()
+            elif self.root.winfo_viewable():
+                self.root.attributes("-topmost", self.preferences.always_on_top)
+        except Exception:
+            core.log.exception("presentation state sync failed")
+        finally:
+            if self.root.winfo_exists():
+                self.root.after(2000, self._sync_presentation_state)
 
     def show(self):
         self.root.deiconify()
@@ -560,7 +609,22 @@ class CompactDesktopApp(DesktopApp):
         )
         self._set_window_rect(x, y, width, height)
         self.root.lift()
-        self.root.attributes("-topmost", self.preferences.always_on_top)
+        self.root.attributes(
+            "-topmost",
+            self.preferences.always_on_top and not should_suppress_overlay_notifications(),
+        )
+
+    def show_toast(self, text):
+        if should_suppress_overlay_notifications():
+            core.log.info("toast suppressed during fullscreen/presentation state")
+            return
+        super().show_toast(text)
+
+    def show_break_toast(self, text, allow_snooze=True):
+        if should_suppress_overlay_notifications():
+            core.log.info("break toast suppressed during fullscreen/presentation state")
+            return
+        super().show_break_toast(text, allow_snooze=allow_snooze)
 
     def _set_character(self, role: str):
         if role == self.character_role:
@@ -674,6 +738,7 @@ class CompactDesktopApp(DesktopApp):
             shutil.copy2(source, destination)
             self.image_path_vars[key].set(destination.name)
             self.image_name_vars[key].set(destination.name)
+            self._image_cache.clear()
         except Exception as exc:
             core.log.exception("custom image import failed: %s", source)
             self.settings_status.configure(text=f"이미지 선택 실패: {exc}", fg=core.AMBER)
@@ -682,6 +747,7 @@ class CompactDesktopApp(DesktopApp):
         self.image_path_vars[key].set("")
         self.image_name_vars[key].set("기본 이미지")
         self.image_mode_vars[key].set("자동 맞춤")
+        self._image_cache.clear()
         if USER_IMAGE_DIR.is_dir():
             for old in USER_IMAGE_DIR.glob(f"{key}.*"):
                 try:
@@ -908,6 +974,7 @@ class CompactDesktopApp(DesktopApp):
 if __name__ == "__main__":
     if os.name != "nt":
         raise SystemExit("Windows only")
+    enable_per_monitor_dpi_awareness()
     singleton = SingleInstance()
     if not singleton.acquire():
         raise SystemExit(0)
