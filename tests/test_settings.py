@@ -34,6 +34,9 @@ class UserSettingsTests(unittest.TestCase):
             break_reminders=False,
             wind_down="16:45",
             leave_mode="17:15",
+            window_x=-1420,
+            window_y=80,
+            image_default="default.png",
         )
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"
@@ -51,11 +54,41 @@ class UserSettingsTests(unittest.TestCase):
         self.assertFalse(parsed.always_on_top)
         self.assertTrue(parsed.break_reminders)
 
+    def test_bad_color_only_falls_back_for_that_color(self):
+        parsed = settings_from_dict(
+            {
+                "always_on_top": True,
+                "time_text_color": "not-a-color",
+                "message_text_color": "#123456",
+                "image_default": "default.png",
+            }
+        )
+        self.assertTrue(parsed.always_on_top)
+        self.assertEqual(parsed.time_text_color, UserSettings().time_text_color)
+        self.assertEqual(parsed.message_text_color, "#123456")
+        self.assertEqual(parsed.image_default, "default.png")
+
+    def test_bad_schedule_only_resets_schedule_group(self):
+        parsed = settings_from_dict(
+            {
+                "always_on_top": True,
+                "wind_down": "19:00",
+                "leave_mode": "17:30",
+                "message_text_size": 14,
+            }
+        )
+        defaults = UserSettings()
+        self.assertTrue(parsed.always_on_top)
+        self.assertEqual(parsed.message_text_size, 14)
+        self.assertEqual(parsed.wind_down, defaults.wind_down)
+        self.assertEqual(parsed.leave_mode, defaults.leave_mode)
+
     def test_saved_json_has_schema_version(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"
             save_user_settings(path, UserSettings())
-            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["schema_version"], 1)
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(data["schema_version"], UserSettings().schema_version)
 
 
 if __name__ == "__main__":
