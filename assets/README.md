@@ -2,7 +2,24 @@
 
 The UI uses the finalized Kyunghee character set through `asset_manager.py`.
 
-## Committed runtime files
+## Approved desktop PNG files
+
+The ten approved PNG masters are committed and are the first-choice assets for the integrated desktop UI:
+
+- `main_kyunghee.png`
+- `stats_kyunghee.png`
+- `settings_kyunghee.png`
+- `alert_kyunghee.png`
+- `away_kyunghee.png`
+- `focus_cheer_kyunghee.png`
+- `rest_suggest_kyunghee.png`
+- `leave_work_kyunghee.png`
+- `warning_kyunghee.png`
+- `profile_kyunghee.png`
+
+Full-body artwork is displayed with aspect-ratio-preserving containment so the legs are not cropped.
+
+## Legacy fallback files
 
 The repository now contains the full runtime set:
 
@@ -16,7 +33,7 @@ The repository now contains the full runtime set:
 - `praise.webp` — leave-mode close-out
 - `master_face.png` — tray icon / canonical face
 
-WebP is preferred for runtime character images to keep the public repository compact. PNG and JPG names remain supported as local compatibility fallbacks. Missing assets use a generated placeholder rather than crashing the application.
+The compact WebP files remain as safe compatibility fallbacks. Missing assets use a generated placeholder rather than crashing the application.
 
 ## Workday mapping
 

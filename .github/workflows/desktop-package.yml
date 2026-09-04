@@ -1,0 +1,73 @@
+name: Desktop Package
+
+on:
+  push:
+    branches:
+      - ui/dark-kyunghee-redesign
+    paths:
+      - 'desktop_app.py'
+      - 'app.py'
+      - 'asset_manager.py'
+      - 'break_reminder.py'
+      - 'messages.py'
+      - 'settings.py'
+      - 'state.py'
+      - 'timer_engine.py'
+      - 'windows_idle.py'
+      - 'workday.py'
+      - 'requirements.txt'
+      - 'RUN.cmd'
+      - 'RUN_DEBUG.cmd'
+      - 'INSTALL_ASSETS.cmd'
+      - 'install_asset_pack.py'
+      - 'assets/**'
+      - '.github/workflows/desktop-package.yml'
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install build dependencies
+        run: python -m pip install -r requirements.txt pyinstaller
+      - name: Build standalone Windows app
+        run: >-
+          python -m PyInstaller
+          --noconfirm
+          --clean
+          --onedir
+          --windowed
+          --name KyungheeTimer
+          --add-data "assets;assets"
+          desktop_app.py
+      - name: Smoke-test packaged app
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $process = Start-Process -FilePath dist\KyungheeTimer\KyungheeTimer.exe -PassThru
+          Start-Sleep -Seconds 8
+          if ($process.HasExited) {
+            throw "Packaged app exited during startup with code $($process.ExitCode)."
+          }
+          Stop-Process -Id $process.Id -Force
+
+          $logPath = Join-Path $env:APPDATA "KyungheeAssistant\kyunghee.log"
+          if (Test-Path $logPath) {
+            $errors = Select-String -Path $logPath -Pattern "asset failed|tick failed|Traceback| ERROR "
+            if ($errors) {
+              throw "Packaged app logged a startup or asset error: $($errors.Line -join '; ')"
+            }
+          }
+      - name: Prepare package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Copy-Item README.md dist\KyungheeTimer\README.md
+          Copy-Item LICENSE dist\KyungheeTimer\LICENSE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kyunghee-timer-desktop
+          path: dist/KyungheeTimer

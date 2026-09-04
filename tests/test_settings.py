@@ -1,0 +1,62 @@
+import json
+from pathlib import Path
+import tempfile
+import unittest
+
+from settings import (
+    UserSettings,
+    load_user_settings,
+    parse_clock,
+    save_user_settings,
+    settings_from_dict,
+)
+
+
+class UserSettingsTests(unittest.TestCase):
+    def test_parse_clock_accepts_valid_time(self):
+        parsed = parse_clock("07:05")
+        self.assertEqual((parsed.hour, parsed.minute), (7, 5))
+
+    def test_parse_clock_rejects_invalid_time(self):
+        for value in ("7", "24:00", "12:60", "ab:cd"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                parse_clock(value)
+
+    def test_workday_times_must_be_ordered(self):
+        settings = UserSettings(wind_down="18:00", leave_mode="17:30")
+        with self.assertRaises(ValueError):
+            settings.workday_policy()
+
+    def test_settings_round_trip(self):
+        expected = UserSettings(
+            start_with_windows=True,
+            always_on_top=True,
+            break_reminders=False,
+            wind_down="16:45",
+            leave_mode="17:15",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            save_user_settings(path, expected)
+            self.assertEqual(load_user_settings(path), expected)
+
+    def test_bad_file_falls_back_to_defaults(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            path.write_text("{bad", encoding="utf-8")
+            self.assertEqual(load_user_settings(path), UserSettings())
+
+    def test_wrong_types_do_not_turn_strings_into_true(self):
+        parsed = settings_from_dict({"always_on_top": "false", "break_reminders": 0})
+        self.assertFalse(parsed.always_on_top)
+        self.assertTrue(parsed.break_reminders)
+
+    def test_saved_json_has_schema_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            save_user_settings(path, UserSettings())
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["schema_version"], 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

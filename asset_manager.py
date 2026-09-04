@@ -5,30 +5,78 @@ from typing import Iterable
 
 ASSET_DIR = Path(__file__).resolve().parent / "assets"
 
-# Runtime assets committed to the repository are compact WebP files. PNG/JPG
-# names remain as compatibility fallbacks for older local asset packs.
+# Canonical desktop asset pack.
+#
+# New UI work uses explicit PNG masters so the same approved images are reused
+# across screens instead of being regenerated or depending on fragile WebP
+# placeholders. Legacy names remain as fallbacks until the PNG pack is copied
+# into the repository/runtime bundle.
 ROLE_FILES = {
-    "default": ("default_full.webp", "default_full.png", "default_full.jpg"),
-    "playful": ("playful.webp", "playful.png", "playful.jpg"),
+    "default": (
+        "main_kyunghee.png",
+        "default_full.webp", "default_full.png", "default_full.jpg",
+    ),
+    "playful": (
+        "main_kyunghee.png",
+        "playful.webp", "playful.png", "playful.jpg",
+    ),
     "cheer": (
+        "focus_cheer_kyunghee.png",
         "cheer_full.webp", "cheer.webp",
         "cheer_full.png", "cheer.png",
         "cheer_full.jpg", "cheer.jpg",
     ),
-    "cute_cheer": ("cute_cheer.webp", "cute_cheer.png", "cute_cheer.jpg"),
-    "nag": ("nag.webp", "nag.png", "nag.jpg"),
-    "worry": ("worry.webp", "worry.png", "worry.jpg"),
-    "praise": ("praise.webp", "praise.png", "praise.jpg"),
-    # The current master_face.png in the alpha asset pack is truncated. Until
-    # the final lossless master-face crop is committed, use the valid playful
-    # portrait for the tray icon instead of allowing a corrupt PNG to crash
-    # asset verification/runtime loading.
-    "master_face": ("playful.webp", "master_face.webp", "master_face.png", "master_face.jpg"),
+    "cute_cheer": (
+        "focus_cheer_kyunghee.png",
+        "cute_cheer.webp", "cute_cheer.png", "cute_cheer.jpg",
+    ),
+    "rest": (
+        "rest_suggest_kyunghee.png",
+        "worry.webp", "worry.png", "worry.jpg",
+    ),
+    "away": (
+        "away_kyunghee.png",
+        "worry.webp", "worry.png", "worry.jpg",
+    ),
+    "worry": (
+        "warning_kyunghee.png",
+        "worry.webp", "worry.png", "worry.jpg",
+    ),
+    "nag": (
+        "warning_kyunghee.png",
+        "nag.webp", "nag.png", "nag.jpg",
+    ),
+    "praise": (
+        "leave_work_kyunghee.png",
+        "praise.webp", "praise.png", "praise.jpg",
+    ),
+    "stats": (
+        "stats_kyunghee.png",
+        "focus_cheer_kyunghee.png",
+        "cheer_full.webp", "cheer.webp",
+    ),
+    "settings": (
+        "settings_kyunghee.png",
+        "main_kyunghee.png",
+        "default_full.webp",
+    ),
+    "alert": (
+        "alert_kyunghee.png",
+        "focus_cheer_kyunghee.png",
+        "cheer_full.webp",
+    ),
+    "master_face": (
+        "profile_kyunghee.png",
+        # Keep the valid playful portrait ahead of the known-truncated legacy
+        # master_face.png when the approved profile PNG is unavailable.
+        "playful.webp",
+        "master_face.webp", "master_face.png", "master_face.jpg",
+    ),
 }
 
 WORK_MODE_ROLE = {
     "normal": "default",
-    "wind_down": "worry",
+    "wind_down": "rest",
     "leave": "praise",
     "strong_leave": "nag",
     "late_leave": "nag",
@@ -43,11 +91,11 @@ DIALOGUE_ROLE = {
     "nag": "nag",
     "praise": "praise",
     "return": "cute_cheer",
-    "away_start": "worry",
-    "break": "worry",
-    "snooze1": "worry",
+    "away_start": "away",
+    "break": "rest",
+    "snooze1": "rest",
     "snooze2": "nag",
-    "stats": "cheer",
+    "stats": "stats",
 }
 
 

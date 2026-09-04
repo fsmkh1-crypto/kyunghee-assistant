@@ -9,5 +9,5 @@ if errorlevel 1 (
   exit /b 1
 )
 
-python app.py
+python desktop_app.py
 pause

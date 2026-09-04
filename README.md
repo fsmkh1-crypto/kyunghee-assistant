@@ -8,6 +8,22 @@ Windows productivity timer and virtual secretary.
 
 The 0.4 line is focused on correctness before real-world testing.
 
+## Desktop app
+
+Development is focused on the Windows desktop app. `RUN.cmd` launches the integrated desktop UI during development. The **Desktop Package** workflow builds a standalone `KyungheeTimer.exe` package that does not require Python on the user's PC.
+
+The earlier `android-prototype/` is retained only as inactive design history and is not a current development target.
+
+The settings page now persists and applies:
+
+- Windows sign-in startup
+- always-on-top mode
+- break reminder on/off
+- workday reminder on/off
+- wind-down, leave, strong-leave, and late-leave times
+
+User preferences are stored in `%APPDATA%\KyungheeAssistant\settings.json`.
+
 ### Core timer behavior
 
 - 60 minutes of continuous active use triggers a break reminder.
