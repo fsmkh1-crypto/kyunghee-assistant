@@ -38,6 +38,29 @@ class StateTests(unittest.TestCase):
         self.assertEqual(state.session.day_continuous_seconds, 0)
         self.assertEqual(state.session.next_break_at, 4_500)
 
+    def test_midnight_clears_daily_break_suppression(self):
+        state = PersistedState(
+            7,
+            DailyStats(day="2026-09-02", break_reminders_suppressed=True),
+            SessionState(continuous_seconds=1200),
+        )
+        rollover_daily(state, today="2026-09-03")
+        self.assertEqual(state.daily.day, "2026-09-03")
+        self.assertFalse(state.daily.break_reminders_suppressed)
+        self.assertEqual(state.session.continuous_seconds, 1200)
+
+    def test_break_suppression_roundtrips_in_state_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "state.json"
+            state = PersistedState(
+                7,
+                DailyStats(day="2026-09-04", break_reminders_suppressed=True),
+                SessionState(),
+            )
+            save_state(path, state, now_wall=1000)
+            loaded = load_state(path)
+            self.assertTrue(loaded.daily.break_reminders_suppressed)
+
     def test_midnight_away_is_counted_as_one_ongoing_away(self):
         state = PersistedState(
             6,

@@ -489,6 +489,16 @@ class App:
         self._say("away_start", text)
         self.show_toast(text)
 
+    def suppress_break_reminders_today(self):
+        self.state.daily.break_reminders_suppressed = True
+        self.break_gate.reset()
+        self._destroy_toast()
+        save_state(STATE_FILE, self.state)
+        text = "알겠어. 오늘은 휴식 알림은 그만할게. 내일 다시 챙길게."
+        self._say("playful", text)
+        self.show_toast(text)
+        self._update_ui()
+
     def snooze_break(self):
         mode = self._current_workday_state().mode
         if not should_encourage_more_work(mode):
@@ -521,7 +531,7 @@ class App:
                 self.show_toast(text)
 
             now = time.monotonic()
-            if not self.preferences.break_reminders:
+            if not self.preferences.break_reminders or self.state.daily.break_reminders_suppressed:
                 self.break_gate.reset()
             elif self.break_gate.should_show(result.break_due, now):
                 mode = self._current_workday_state().mode
@@ -590,8 +600,12 @@ class App:
         )
         self.away_btn.configure(text="복귀하기" if s.is_away else "자리비움 시작")
         self.cont.configure(text=fmt_clock(s.continuous_seconds))
-        self.remain.configure(text=fmt(remaining))
-        self.next_break.configure(text=f"다음 휴식 알림: {fmt(remaining)} 후")
+        if d.break_reminders_suppressed:
+            self.remain.configure(text="오늘 꺼짐")
+            self.next_break.configure(text="오늘 휴식 알림: 꺼짐")
+        else:
+            self.remain.configure(text=fmt(remaining))
+            self.next_break.configure(text=f"다음 휴식 알림: {fmt(remaining)} 후")
         self.today_active.configure(text=fmt(d.active_seconds))
         self.today_away.configure(text=fmt(d.away_seconds))
         self.today_ratio.configure(text=f"{ratio:.0f}%")
@@ -676,7 +690,8 @@ class App:
         row.pack(anchor="w")
         self._button(row, "알았어, 쉴게", self.accept_break, primary=True).pack(side="left", padx=(0, 6))
         if allow_snooze:
-            self._button(row, "5분 더", self.snooze_break).pack(side="left")
+            self._button(row, f"{self.preferences.snooze_minutes}분 더", self.snooze_break).pack(side="left", padx=(0, 6))
+        self._button(row, "오늘은 그만", self.suppress_break_reminders_today).pack(side="left")
 
     def _save_periodic(self):
         try:

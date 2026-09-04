@@ -2,7 +2,7 @@
 
 ## Status
 
-ACTIVE / BREAK AND SNOOZE INTERVAL SETTINGS INTEGRATED.
+ACTIVE / BREAK INTERVAL, SNOOZE, AND TODAY-SUPPRESSION INTEGRATED.
 
 ## Existing baseline to preserve
 
@@ -17,7 +17,7 @@ ACTIVE / BREAK AND SNOOZE INTERVAL SETTINGS INTEGRATED.
 
 1. Configurable break interval while keeping 60 minutes as the default.
 2. Configurable snooze duration / reminder behavior without making the settings noisy.
-3. “Stop reminders for today” with a clear reset at the next workday/day boundary.
+3. “Stop reminders for today” integrated as daily persisted state; it resets automatically on the next local day rollover.
 4. Refine work start/end and manual/automatic away policy where real usage shows a need.
 5. Ensure fullscreen/presentation deferral resumes reminders correctly.
 6. Optional Pomodoro mode only after the above is stable.

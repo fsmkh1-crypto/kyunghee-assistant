@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import time
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 @dataclass
@@ -19,6 +19,7 @@ class DailyStats:
     auto_away_seconds: float = 0.0
     away_count: int = 0
     longest_continuous_today: float = 0.0
+    break_reminders_suppressed: bool = False
 
     @classmethod
     def today(cls) -> "DailyStats":
@@ -61,7 +62,7 @@ _FLOAT_FIELDS = {
     "last_seen_wall",
 }
 _INT_FIELDS = {"away_count", "ignored_breaks"}
-_BOOL_FIELDS = {"is_away", "manual_away"}
+_BOOL_FIELDS = {"is_away", "manual_away", "break_reminders_suppressed"}
 
 
 def _coerce(cls, data: dict):
