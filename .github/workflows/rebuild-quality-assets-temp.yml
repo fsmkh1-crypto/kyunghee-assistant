@@ -1,0 +1,143 @@
+name: Rebuild quality assets temp
+
+on:
+  push:
+    branches:
+      - asset-quality-rebuild-20260905
+    paths:
+      - .github/quality-assets-trigger
+
+permissions:
+  contents: write
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    env:
+      ATLAS_URL: 'https://oaisdmntprjapaneast.blob.core.windows.net/files/00000000-aae8-8209-85b0-d214f4253f1b/raw?se=2026-09-04T19%3A46%3A43Z&sp=r&sv=2026-02-06&sr=b&scid=b26df805-d27c-41c2-a339-ca2ea15ee154&skoid=b1bca990-dcac-4c31-8ca1-ac563cf24c54&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-04T02%3A37%3A12Z&ske=2026-09-05T02%3A37%3A12Z&sks=b&skv=2026-02-06&sig=UtRRzFY1liwU9ObdscXl/892dJUPABUgetcVzzZNdWw%3D'
+      ATLAS_SHA256: '2f2133387fc3a6c4215be0cecc4e03f66887f5417d47b3e1099cda564e9f6d62'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install asset tooling dependencies
+        run: |
+          python -m pip install -r tools/requirements-asset-import.txt
+
+      - name: Download and extract exact quality atlas
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image
+          import hashlib
+          import os
+          import urllib.request
+
+          atlas_path = Path('.github/quality-assets-atlas.png')
+          urllib.request.urlretrieve(os.environ['ATLAS_URL'], atlas_path)
+          got = hashlib.sha256(atlas_path.read_bytes()).hexdigest()
+          expected_atlas = os.environ['ATLAS_SHA256']
+          if got != expected_atlas:
+              raise SystemExit(f'atlas SHA256 mismatch: {got} != {expected_atlas}')
+
+          items = [
+              ('assets/default/default_01.png',(0,0,254,602),'07832e308f433b99701976103c70b543a5413f542d33ecac4c0ea245c0e57d01'),
+              ('assets/cheer/cheer_01.png',(254,0,576,624),'6c007dd3a4fa66ee7bcb9a4c1658ebf20c920741bd69b4fe5d677d1ccdf9863c'),
+              ('assets/rest/rest_01.png',(576,0,1003,494),'b50db4a633e01633e79d052db7b4ae9a9875e7927edea308ce6b406b4be5e80a'),
+              ('assets/away/away_01.png',(1003,0,1256,606),'bf8a0108bd74687d79adaeb086fa528733ec2f522fcdbfc66cd250856ba9bac3'),
+              ('assets/warning/warning_01.png',(1256,0,1550,689),'da49df14162c94abee8ba5926c92224310c4075fbd0c02deed87b932faa3fdb8'),
+              ('assets/leave/leave_01.png',(1550,0,1856,456),'5b7615eeb67ed8c286992d37bf82d0f3ff5793622ff76f386787bd250c1ae5ef'),
+              ('assets/stats/stats_01.png',(1856,0,2181,462),'b53b194bb2a906f89791a7334c3e3bfb737cfa42b2a66676784c62614f67c168'),
+              ('assets/settings/settings_01.png',(2181,0,2520,465),'9b468fe4d618bed668adbf2dc80b324b33f056304c4f781c24e2f4fb968134f1'),
+              ('assets/alert/alert_01.png',(2520,0,2845,453),'abc36fa5487547cb59b1c39938c1919f98093160a152e0c1bdb7ecb78ba89377'),
+              ('assets/profile/profile_01.png',(2845,0,3136,288),'52d6895194d768ba23eb9c65ddf0efa7dc12341718e94475ad0aef4678c0064b'),
+              ('assets/default/default_02.png',(0,689,298,1508),'04d6f8a6a1fae128908e38af62caa4438bc0d89c42b0441b3dca5931ae63acce'),
+              ('assets/cheer/cheer_02.png',(298,689,616,1505),'d1c42b423d7e5a3cfca24d0a936c1ccbd910b093fadcddace3374e1128b18517'),
+              ('assets/rest/rest_02.png',(616,689,1084,1382),'cad51e7c7bf872dfe2fa00c1dff757e5aec283069f52a38faf0593ecc0722f9c'),
+              ('assets/away/away_02.png',(1084,689,1395,1500),'4b01e833232497d817c3a9005d08255c49843fd293153df5f6d69ac3d12f2ca2'),
+              ('assets/warning/warning_02.png',(1395,689,1655,1508),'12e57b035ec59d18522d4d5578f24452a74b73be18ff6c2ba3662be24dbc10b9'),
+              ('assets/leave/leave_02.png',(1655,689,1938,1451),'141f8ac399db71bc11aea20a0ce17572abe65418dd5112eda463efa996771799'),
+              ('assets/stats/stats_02.png',(1938,689,2209,1451),'f611a4793158ca61941e368ad256d80c6b1d6f250722975291c742058a51cc24'),
+              ('assets/settings/settings_02.png',(2209,689,2540,1283),'25a117f3ed558e47160b49799842d0f2d7fa86c36b97233547d13581beffc5db'),
+              ('assets/alert/alert_02.png',(2540,689,2871,1431),'5694e93bde2f58503ba472368f1ebb7d62f8a781ef4bf739ec3a435e0d8a6576'),
+              ('assets/profile/profile_02.png',(2871,689,3150,979),'d83e6066f31dbcb14a24ec9c03bc66cbc66d385f45b7b69fb31e35a57426f845'),
+              ('assets/default/default_03.png',(0,1508,209,2105),'b9e286d50d35ebfeb67a29aacf5860d2b8fabea2393cebcf37f8e3eaada7c344'),
+              ('assets/cheer/cheer_03.png',(209,1508,531,2097),'9dd8f5a5f406d82b91781a983e603ecae34be42ad5fd331c4688df12e71f8067'),
+              ('assets/rest/rest_03.png',(531,1508,945,2088),'b8296788e71201bef2312d2eab678e2ea205020fb26597612b556932731f2fa9'),
+              ('assets/away/away_03.png',(945,1508,1211,2094),'73163c8981125fcddbf80cd44b1bec3f094c7859c2ac41830d92a2ae7a885bcd'),
+              ('assets/warning/warning_03.png',(1211,1508,1500,2096),'3271c45d47c9bdc7d9e71b2a92e589eef58367f9f1bfb05a32d68e1fadfb2a4e'),
+              ('assets/leave/leave_03.png',(1500,1508,1824,1965),'60b776a46b99b17c65ddb61770724ef168d9e618e618472c10483740f59615bf'),
+              ('assets/stats/stats_03.png',(1824,1508,2153,1975),'a7142b9b59f6dadeb7d04881272ecd39283b5abbc02549724f4711d7cb34760f'),
+              ('assets/settings/settings_03.png',(2153,1508,2440,1973),'3c991c6c6f231431e8f26b439348ec49d7d6acf0a7aa9cf332324ae1b65c5e14'),
+              ('assets/alert/alert_03.png',(2440,1508,2798,1972),'31ca0c9a62181155f06038417764dc011c0db6d5f9de341226ea7af18d7dd8c5'),
+              ('assets/profile/profile_03.png',(2798,1508,3124,1870),'cbabd2630f288f82edc94878c3a47836d04625475e9361569a9fd327e58fd986'),
+              ('assets/default/default_04.png',(0,2105,257,2722),'9805b99445fbab08e27de8b01ac510caedcce4192f41d25cb1ada2a6fce7bd2d'),
+              ('assets/cheer/cheer_04.png',(257,2105,601,2753),'e4c4bd5cd241060fa5e78786de99f3abac155e68aa6cf976ca6e1ea9b3353d4e'),
+              ('assets/rest/rest_04.png',(601,2105,1043,2608),'513a5bb0b9f267d84fcac7478d4a20f514ed8613d0db7556a4d41f6e9551784e'),
+              ('assets/away/away_04.png',(1043,2105,1308,2748),'743308608f09f6ce7a1ee8d7be199d94673c1aa516ca492a9911b87ca2bda5d6'),
+              ('assets/warning/warning_04.png',(1308,2105,1609,2766),'034eb5737d73d487a7cb7fcaba95de58c932267f7b8de2dd0c95dda0a590ee8a'),
+              ('assets/leave/leave_04.png',(1609,2105,1899,2560),'cf06b965dc87ce5ef8c90c2e0dcf8667aedb47b678388747470f1409189c0438'),
+              ('assets/stats/stats_04.png',(1899,2105,2209,2572),'02c12dc6bef92529eaf664fbd348ad43cabf3adda40eff52b65e2005d19279af'),
+              ('assets/settings/settings_04.png',(2209,2105,2513,2553),'949d1f54f20bee668284c37a6585473ce1d5a01ca3df96f43e47fcb83534cbec'),
+              ('assets/alert/alert_04.png',(2513,2105,2852,2546),'a34e9b64a257d3aa1c301c1e0cf774eef0910ca6e25e54d7fcc6a3e19efd48f9'),
+              ('assets/profile/profile_04.png',(2852,2105,3144,2409),'6777be04ad87b1d0ecdfe189e5a1720c67b01ee705b4e62404b8a0a48030e193'),
+              ('assets/default/default_05.png',(0,2766,237,3379),'e3dbec43e35f5f470ff569aa9c571e4adb674f0d7f996221dc0c152f8740fc7d'),
+              ('assets/cheer/cheer_05.png',(237,2766,529,3386),'e2ed7af669c7aa77991709469d1eca648803002947e4619193c0b87e9b3cbfc1'),
+              ('assets/rest/rest_05.png',(529,2766,933,3257),'8dac9146bfdc025d02004f5c1ae41ccd63c632419091ee9c441797cf9e1344b3'),
+              ('assets/away/away_05.png',(933,2766,1174,3385),'8b59f8fbc87076b5badb0fdef80ac70cab473787899087ce84209abd2346b22c'),
+              ('assets/warning/warning_05.png',(1174,2766,1437,3380),'cfd66abc069804caaa5e6ad115d5cbba9cb77ef789c4f07dfb51aa0e4d973b02'),
+              ('assets/leave/leave_05.png',(1437,2766,1736,3227),'b020767a3a383a9890be77d45a77f40bb4e9ecbcce1ccd906309d570d69ec43e'),
+              ('assets/stats/stats_05.png',(1736,2766,2008,3224),'137fd90fe22932697e28d1b088631471f5717be6db0f59afa94362bf95f475b3'),
+              ('assets/settings/settings_05.png',(2008,2766,2356,3224),'5b14605ddb91340c4ab7d9791eb2e8bd21ee51f957a0cc5617bcc153d9c1d6c1'),
+              ('assets/alert/alert_05.png',(2356,2766,2655,3221),'5084f20dc2a40e87b583b77a16ea805e4f336eb2f319138d0005ac53f0a765a8'),
+              ('assets/profile/profile_05.png',(2655,2766,2994,3120),'04feb578b9dbaca4bf97d03d0e25a7f6b1045cf1d20b98ba40e909c5ecf27080'),
+          ]
+
+          atlas = Image.open(atlas_path).convert('RGBA')
+          if atlas.size != (3150, 3386):
+              raise SystemExit(f'unexpected atlas size: {atlas.size}')
+
+          for rel, box, expected_sha in items:
+              out = Path(rel)
+              out.parent.mkdir(parents=True, exist_ok=True)
+              atlas.crop(box).save(out, 'PNG', optimize=True)
+              got = hashlib.sha256(out.read_bytes()).hexdigest()
+              if got != expected_sha:
+                  raise SystemExit(f'{rel}: SHA256 mismatch {got} != {expected_sha}')
+              print(rel, got)
+          PY
+
+      - name: Rebuild numbered-asset index
+        run: python tools/backfill_asset_index.py
+
+      - name: Verify exact maintenance diff
+        shell: bash
+        run: |
+          python - <<'PY'
+          import subprocess
+          expected = {'assets/asset_index.json'}
+          roles = ['default','cheer','rest','away','warning','leave','stats','settings','alert','profile']
+          for n in range(1,6):
+              s = f'{n:02d}'
+              expected.update(f'assets/{r}/{r}_{s}.png' for r in roles)
+          changed = set(subprocess.check_output(['git','diff','--name-only'], text=True).splitlines())
+          if changed != expected:
+              raise SystemExit(f'unexpected diff\nmissing={sorted(expected-changed)}\nextra={sorted(changed-expected)}')
+          print(f'validated {len(changed)} changed paths')
+          PY
+
+      - name: Commit staging result
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add assets/asset_index.json assets/*/*_[0-9][0-9].png
+          test "$(git diff --cached --name-only | wc -l)" -eq 51
+          git commit -m 'Stage quality-improved character assets 01-05'
+          git push
