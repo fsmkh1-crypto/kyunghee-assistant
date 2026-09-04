@@ -10,33 +10,62 @@ from messages import pick
 
 
 class CompactDesktopApp(DesktopApp):
-    """Narrow desktop shell that preserves the approved character artwork."""
+    """Narrow frameless desktop widget using the approved Kyunghee artwork."""
 
-    COMPACT_SIZE = (330, 430)
-    DETAIL_SIZE = (440, 430)
-    CHARACTER_MAX = (315, 320)
-    BUBBLE_WIDTH = 306
-    BUBBLE_WRAP = 278
+    COMPACT_SIZE = (300, 430)
+    DETAIL_SIZE = (410, 430)
+    CHARACTER_MAX = (288, 320)
+    BUBBLE_WIDTH = 282
+    BUBBLE_WRAP = 258
 
     MESSAGE_BG = "#E5D3CF"
     MESSAGE_BORDER = "#B98F90"
     MESSAGE_TEXT = "#493637"
 
+    def __init__(self):
+        super().__init__()
+        # Compact mode is intentionally a desktop widget: no native title bar
+        # and always above normal application windows.
+        self.root.overrideredirect(True)
+        self.root.attributes("-topmost", True)
+        self._drag_origin = None
+
     @staticmethod
     def _clean_character_alpha(image):
-        """Avoid dark colour-key fringes around anti-aliased PNG edges.
-
-        Windows/Tk colour-key transparency only removes pixels that exactly
-        match the transparent key. Semi-transparent PNG edge pixels otherwise
-        blend against that dark key and leave a visible grey/black halo. For
-        the compact always-on-top view, snap very faint edge pixels to fully
-        transparent and the remaining artwork pixels to fully opaque.
-        """
+        """Avoid dark colour-key fringes around anti-aliased PNG edges."""
         rgba = image.convert("RGBA")
         alpha = rgba.getchannel("A")
         binary_alpha = alpha.point(lambda value: 0 if value < 72 else 255)
         rgba.putalpha(binary_alpha)
         return rgba
+
+    def _start_drag(self, event):
+        self._drag_origin = (event.x_root, event.y_root, self.root.winfo_x(), self.root.winfo_y())
+
+    def _drag_window(self, event):
+        if not self._drag_origin:
+            return
+        start_x, start_y, win_x, win_y = self._drag_origin
+        self.root.geometry(f"+{win_x + event.x_root - start_x}+{win_y + event.y_root - start_y}")
+
+    def _stop_drag(self, _event=None):
+        self._drag_origin = None
+
+    def _bind_drag_surface(self, widget):
+        widget.bind("<ButtonPress-1>", self._start_drag)
+        widget.bind("<B1-Motion>", self._drag_window)
+        widget.bind("<ButtonRelease-1>", self._stop_drag)
+
+    def apply_preferences(self, preferences) -> None:
+        # Persist the rest of the settings, but compact widget mode itself is
+        # always-on-top by design.
+        super().apply_preferences(preferences)
+        self.root.attributes("-topmost", True)
+
+    def show(self):
+        self.root.deiconify()
+        self.root.lift()
+        self.root.attributes("-topmost", True)
 
     def _set_character(self, role: str):
         if role == self.character_role:
@@ -55,31 +84,35 @@ class CompactDesktopApp(DesktopApp):
         page.configure(bg=self.TRANSPARENT_KEY)
         hero = tk.Frame(page, bg=self.TRANSPARENT_KEY, bd=0, highlightthickness=0)
         hero.pack(fill="both", expand=True)
+        self._bind_drag_surface(hero)
 
         # Keep the approved artwork fully contained. The label stays at the
         # rendered image size so transparent empty space is not a click target.
         self.character = tk.Label(hero, bg=self.TRANSPARENT_KEY, bd=0, cursor="hand2")
         self.character.place(relx=0.5, rely=1.0, y=-54, anchor="s")
 
-        clock = tk.Frame(
-            hero,
-            bg=core.PANEL_2,
-            highlightthickness=1,
-            highlightbackground=core.BORDER,
+        # Time/status are text-only so the widget does not create another
+        # opaque rectangle over the desktop.
+        clock = tk.Frame(hero, bg=self.TRANSPARENT_KEY, bd=0, highlightthickness=0, cursor="hand2")
+        clock.place(x=8, y=8)
+        self.cont = self._label(
+            clock,
+            "00:00:00",
+            size=18,
+            weight="bold",
+            bg=self.TRANSPARENT_KEY,
             cursor="hand2",
         )
-        clock.place(x=8, y=8)
-        self.cont = self._label(clock, "00:00:00", size=18, weight="bold", bg=core.PANEL_2, cursor="hand2")
-        self.cont.pack(padx=9, pady=(4, 0))
+        self.cont.pack(anchor="w")
         self.main_status = self._label(
             clock,
             "집중 중 · 상세 보기",
             size=7,
             fg=core.GREEN,
-            bg=core.PANEL_2,
+            bg=self.TRANSPARENT_KEY,
             cursor="hand2",
         )
-        self.main_status.pack(pady=(0, 4))
+        self.main_status.pack(anchor="w", pady=(0, 2))
 
         bubble = tk.Frame(
             hero,
