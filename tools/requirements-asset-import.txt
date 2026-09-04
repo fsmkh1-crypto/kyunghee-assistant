@@ -1,0 +1,5 @@
+# Developer-only dependencies for tools/import_asset_sheet.py
+Pillow>=10.0
+numpy>=1.26
+scipy>=1.11
+scikit-image>=0.22

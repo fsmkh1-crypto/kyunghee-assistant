@@ -12,3 +12,4 @@ state.json
 state.*.tmp
 *.corrupt
 .DS_Store
+.asset_import_preview/
