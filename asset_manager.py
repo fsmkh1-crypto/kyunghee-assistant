@@ -1,28 +1,37 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Iterable
 
-ASSET_DIR = Path(__file__).resolve().parent / "assets"
+# PyInstaller one-file builds extract bundled data under sys._MEIPASS.
+# Source runs continue to use the repository-local assets directory.
+BASE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+ASSET_DIR = BASE_DIR / "assets"
 
-# Runtime assets committed to the repository are compact WebP files. PNG/JPG
-# names remain as compatibility fallbacks for older local asset packs.
+# Prefer the compact runtime portraits because they are the clean UI-ready
+# crops. The *_full files remain fallbacks for compatibility.
 ROLE_FILES = {
-    "default": ("default_full.webp", "default_full.png", "default_full.jpg"),
+    "default": (
+        "playful.webp",
+        "default_full.webp",
+        "playful.png",
+        "default_full.png",
+        "playful.jpg",
+        "default_full.jpg",
+    ),
     "playful": ("playful.webp", "playful.png", "playful.jpg"),
     "cheer": (
-        "cheer_full.webp", "cheer.webp",
-        "cheer_full.png", "cheer.png",
-        "cheer_full.jpg", "cheer.jpg",
+        "cheer.webp", "cheer_full.webp",
+        "cheer.png", "cheer_full.png",
+        "cheer.jpg", "cheer_full.jpg",
     ),
     "cute_cheer": ("cute_cheer.webp", "cute_cheer.png", "cute_cheer.jpg"),
     "nag": ("nag.webp", "nag.png", "nag.jpg"),
     "worry": ("worry.webp", "worry.png", "worry.jpg"),
     "praise": ("praise.webp", "praise.png", "praise.jpg"),
-    # The current master_face.png in the alpha asset pack is truncated. Until
-    # the final lossless master-face crop is committed, use the valid playful
-    # portrait for the tray icon instead of allowing a corrupt PNG to crash
-    # asset verification/runtime loading.
+    # Keep the known-good compact portrait first for the tray icon. The
+    # master-face PNG remains a fallback until its integrity is finalized.
     "master_face": ("playful.webp", "master_face.webp", "master_face.png", "master_face.jpg"),
 }
 
