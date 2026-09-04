@@ -156,23 +156,22 @@ Important constraints:
 
 ## Phase 5 — Personality / fun behaviors
 
-### Status: IN PROGRESS / PERSONALITY FOUNDATION INTEGRATED
+### Status: COMPLETE / CODE AND SETTINGS FLOW VALIDATED
 
-Implemented so far:
+Implemented and validated:
 - Dialogue personality presets: balanced / warm / playful / strict.
 - Settings persistence with schema version 5 and safe fallback for unknown values.
 - Personality affects normal, encouragement, and character-click dialogue while work/break/leave warnings keep their existing priority and strength.
 - Character short-click still opens detail as required, but leaves a character reaction line visible when returning to the compact timer.
 - Time-of-day dialogue buckets: morning / lunch / afternoon / evening / late.
-- Pure tests for personality selection and time buckets.
+- Rare dialogue / easter eggs at low frequency with a minimum-gap guard so they do not cluster.
+- Habit reactions use existing reliable state only; no score, affinity, level, or heavy game system was introduced.
+- User custom dialogue accepts multiple lines, is bounded/sanitized, and is mixed only into normal dialogue so operational reminders are never replaced.
+- Lightweight daily temperament uses a date-stable calm / bright / focused mood and only occasionally affects normal dialogue.
+- Phase 5 dialogue helpers have deterministic unit-test hooks for probability and date behavior.
+- Existing Phase 1–4 window, image, warning, leave-work, and transparency priorities remain unchanged.
 
-Next priority:
-1. Rare dialogue / easter eggs with low-frequency, non-disruptive triggering.
-2. Streak/habit reactions using reliable existing state only.
-3. Custom dialogue storage and settings UI.
-4. Daily/random temperament only after the above remains lightweight.
-
-Avoid turning the app into a heavy game system.
+Extended real-world personality tuning can continue during normal use, but no Phase 5 blocker remains.
 
 ---
 
@@ -222,7 +221,7 @@ Data correctness is more important than visual complexity.
 
 Before changing code:
 1. Read this file first.
-2. Read `PHASE5_HANDOFF.md` (Phase 4 handoff is historical).
+2. Read `PHASE6_HANDOFF.md` for the active workstream; Phase 5 is historical.
 3. Inspect PR #3 and branch `ui/dark-kyunghee-redesign`, not `main`.
 4. Treat `desktop_compact.py` as the current desktop entrypoint.
 5. Confirm the current branch HEAD before editing.
@@ -230,7 +229,7 @@ Before changing code:
 7. Preserve Phase 1 drag/hotkey/position behavior.
 8. Preserve the transparent color-key model and empty-area click-through behavior unless a regression requires otherwise.
 9. Phase 3 is complete; preserve its visible-alpha cluster layout instead of redesigning it.
-10. Phase 4 is complete; preserve the image-set/preview system. Phase 5 is active.
+10. Phases 4 and 5 are complete; preserve the image-set/preview and personality systems. Phase 6 is active.
 11. After risky Windows-specific changes, run tests/build/smoke; request real-device testing only when CI cannot validate the visual behavior.
 
 ## Last known user feedback
@@ -242,6 +241,6 @@ Before changing code:
 - Final Phase 3 layout uses visible-alpha silhouette bounds so clock/status stays visually close to Kyunghee at 80/140/200%.
 - User reviewed the final 80/140/200 screenshots and approved moving on to Phase 4.
 - Phase 4 settings preview UI was accepted in real Windows use. A missing mouse-wheel binding was found and fixed; Phase 4 is closed.
-- Phase 5 personality foundation is now the active workstream.
+- Phase 5 personality/fun behavior scope is complete; Phase 6 work/break behavior is now active.
 
 This file should be updated whenever a phase is completed, materially changed, or a new real-world issue is discovered.
