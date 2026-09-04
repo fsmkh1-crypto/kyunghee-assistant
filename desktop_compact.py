@@ -17,12 +17,14 @@ from app import SingleInstance
 from asset_manager import resolve_asset
 from desktop_app import DesktopApp
 from image_render import resize_rgba_alpha_safe, threshold_alpha
+from image_sets import ImageSetStore, normalize_alignment
 from messages import pick
 from settings import UserSettings, save_user_settings, set_windows_startup, validate_hex_color
 from windows_display import enable_per_monitor_dpi_awareness, should_suppress_overlay_notifications
 
 
 USER_IMAGE_DIR = core.DATA_DIR / "images"
+USER_IMAGE_SET_DIR = core.DATA_DIR / "image_sets"
 MAX_CUSTOM_IMAGE_DIMENSION = 4000
 GLOBAL_HOTKEY_ID = 0x4B48
 MOD_CONTROL = 0x0002
@@ -240,6 +242,8 @@ class CompactDesktopApp(DesktopApp):
         self._hotkey_stop = threading.Event()
         self._hotkey_thread = None
         self._image_cache = {}
+        self._image_set_store = ImageSetStore(USER_IMAGE_SET_DIR)
+        self._image_set_choices = {}
         self._presentation_suppressed = False
         super().__init__()
         self.root.overrideredirect(True)
@@ -646,6 +650,21 @@ class CompactDesktopApp(DesktopApp):
         self._hotkey_thread = threading.Thread(target=hotkey_loop, daemon=True, name="KyungheeHotkey")
         self._hotkey_thread.start()
 
+    @staticmethod
+    def _alignment_center(value: str) -> tuple[float, float]:
+        value = normalize_alignment(value)
+        return {
+            "center": (0.5, 0.5),
+            "top": (0.5, 0.0),
+            "bottom": (0.5, 1.0),
+            "left": (0.0, 0.5),
+            "right": (1.0, 0.5),
+            "top_left": (0.0, 0.0),
+            "top_right": (1.0, 0.0),
+            "bottom_left": (0.0, 1.0),
+            "bottom_right": (1.0, 1.0),
+        }[value]
+
     def _stored_image_path(self, value: str):
         if not value:
             return None
@@ -656,16 +675,28 @@ class CompactDesktopApp(DesktopApp):
 
     def _custom_image(self, role: str):
         key = self.ROLE_TO_SETTING.get(role, "default")
+        config = self._image_set_store.get(key)
+        available = self._image_set_store.list_images(key)
+        selected = self._image_set_choices.get(role)
+        if selected not in available:
+            selected = None
+        if selected is None and available:
+            selected = self._image_set_store.choose(key)
+            if selected is not None:
+                self._image_set_choices[role] = selected
+        if selected is not None:
+            return selected, config.fit_mode, self._alignment_center(config.alignment)
+
         value = getattr(self.preferences, f"image_{key}", "")
         path = self._stored_image_path(value)
         mode = getattr(self.preferences, f"image_{key}_mode", "fit")
         if path and not path.is_file():
             core.log.warning("custom image missing for %s: %s", key, path)
-            return None, mode
-        return path, mode
+            return None, mode, (0.5, 0.5)
+        return path, mode, (0.5, 0.5)
 
     def _load_character_image(self, role: str, max_size=(470, 300), preserve_alpha=False):
-        custom, mode = self._custom_image(role)
+        custom, mode, centering = self._custom_image(role)
         path = custom or resolve_asset(role)
         if not path:
             return super()._load_character_image(role, max_size, preserve_alpha)
@@ -673,7 +704,7 @@ class CompactDesktopApp(DesktopApp):
             stat_key = path.stat().st_mtime_ns
         except OSError:
             stat_key = 0
-        cache_key = (str(path), stat_key, tuple(max_size), mode, bool(preserve_alpha))
+        cache_key = (str(path), stat_key, tuple(max_size), mode, tuple(centering), bool(preserve_alpha))
         cached = self._image_cache.get(cache_key)
         if cached is not None:
             return cached.copy()
@@ -684,7 +715,7 @@ class CompactDesktopApp(DesktopApp):
                 src,
                 max_size,
                 crop=bool(mode == "crop" and custom),
-                centering=(0.5, 0.5),
+                centering=centering,
             )
             if preserve_alpha:
                 result = image
@@ -709,6 +740,8 @@ class CompactDesktopApp(DesktopApp):
 
     def apply_preferences(self, preferences) -> None:
         self._image_cache.clear()
+        self._image_set_store.invalidate()
+        self._image_set_choices.clear()
         super().apply_preferences(preferences)
         self._apply_widget_appearance()
         self.character_role = None
@@ -763,6 +796,7 @@ class CompactDesktopApp(DesktopApp):
     def _set_character(self, role: str):
         if role == self.character_role:
             return
+        self._image_set_choices.pop(role, None)
         try:
             max_size = (self._scale(self.CHARACTER_MAX[0]), self._scale(self.CHARACTER_MAX[1]))
             image = self._load_character_image(role, max_size, preserve_alpha=True)
@@ -912,6 +946,29 @@ class CompactDesktopApp(DesktopApp):
             var.set(picked.upper())
             self.color_swatches[key].configure(bg=picked)
 
+    def _validate_image_source(self, source: Path) -> None:
+        if source.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
+            raise ValueError("PNG, JPG, JPEG, WebP 이미지만 사용할 수 있습니다.")
+        with Image.open(source) as probe:
+            if probe.width > MAX_CUSTOM_IMAGE_DIMENSION or probe.height > MAX_CUSTOM_IMAGE_DIMENSION:
+                raise ValueError(
+                    f"이미지가 너무 큽니다. 가로·세로 각각 {MAX_CUSTOM_IMAGE_DIMENSION}px 이하를 사용해 주세요."
+                )
+            probe.verify()
+
+    def _remove_legacy_image_files(self, key: str) -> None:
+        if not USER_IMAGE_DIR.is_dir():
+            return
+        for old in USER_IMAGE_DIR.glob(f"{key}.*"):
+            try:
+                old.unlink()
+            except OSError:
+                core.log.warning("old custom image could not be removed: %s", old)
+
+    def _image_set_summary(self, key: str) -> str:
+        count = len(self._image_set_store.list_images(key))
+        return f"{count}장 세트" if count else "기본 이미지"
+
     def _choose_image(self, key):
         path = filedialog.askopenfilename(
             parent=self.root,
@@ -923,21 +980,11 @@ class CompactDesktopApp(DesktopApp):
 
         source = Path(path)
         try:
-            with Image.open(source) as probe:
-                if probe.width > MAX_CUSTOM_IMAGE_DIMENSION or probe.height > MAX_CUSTOM_IMAGE_DIMENSION:
-                    raise ValueError(
-                        f"이미지가 너무 큽니다. 가로·세로 각각 {MAX_CUSTOM_IMAGE_DIMENSION}px 이하를 사용해 주세요."
-                    )
-                probe.verify()
+            self._validate_image_source(source)
+            self._image_set_store.clear(key)
             USER_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
-            for old in USER_IMAGE_DIR.glob(f"{key}.*"):
-                try:
-                    old.unlink()
-                except OSError:
-                    core.log.warning("old custom image could not be removed: %s", old)
+            self._remove_legacy_image_files(key)
             suffix = source.suffix.lower()
-            if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
-                raise ValueError("PNG, JPG, JPEG, WebP 이미지만 사용할 수 있습니다.")
             destination = USER_IMAGE_DIR / f"{key}{suffix}"
             shutil.copy2(source, destination)
             self.image_path_vars[key].set(destination.name)
@@ -947,19 +994,72 @@ class CompactDesktopApp(DesktopApp):
             core.log.exception("custom image import failed: %s", source)
             self.settings_status.configure(text=f"이미지 선택 실패: {exc}", fg=core.AMBER)
 
+    def _choose_image_set(self, key):
+        paths = filedialog.askopenfilenames(
+            parent=self.root,
+            title=f"{dict(self.IMAGE_ROWS)[key]} 이미지 여러 장 선택",
+            filetypes=[("이미지", "*.png *.jpg *.jpeg *.webp"), ("모든 파일", "*.*")],
+        )
+        if not paths:
+            return
+        sources = [Path(value) for value in paths]
+        try:
+            for source in sources:
+                self._validate_image_source(source)
+            self._image_set_store.clear(key)
+            config = self._image_set_store.import_files(key, sources)
+            self._remove_legacy_image_files(key)
+            self.image_path_vars[key].set("")
+            self.image_name_vars[key].set(f"{len(config.images)}장 세트")
+            self._image_cache.clear()
+            self._image_set_choices.clear()
+        except Exception as exc:
+            core.log.exception("custom image set import failed")
+            self.settings_status.configure(text=f"이미지 세트 선택 실패: {exc}", fg=core.AMBER)
+
+    def _choose_image_folder(self, key):
+        folder = filedialog.askdirectory(
+            parent=self.root, title=f"{dict(self.IMAGE_ROWS)[key]} 이미지 폴더 선택"
+        )
+        if not folder:
+            return
+        source_dir = Path(folder)
+        try:
+            sources = [
+                path for path in sorted(source_dir.iterdir(), key=lambda item: item.name.lower())
+                if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
+            ]
+            if not sources:
+                raise ValueError("선택한 폴더에 지원되는 이미지가 없습니다.")
+            for source in sources:
+                self._validate_image_source(source)
+            self._image_set_store.clear(key)
+            config = self._image_set_store.import_files(key, sources)
+            self._remove_legacy_image_files(key)
+            self.image_path_vars[key].set("")
+            self.image_name_vars[key].set(f"{len(config.images)}장 세트")
+            self._image_cache.clear()
+            self._image_set_choices.clear()
+        except Exception as exc:
+            core.log.exception("custom image folder import failed: %s", source_dir)
+            self.settings_status.configure(text=f"이미지 폴더 선택 실패: {exc}", fg=core.AMBER)
+
     def _reset_image(self, key):
         self.image_path_vars[key].set("")
         self.image_name_vars[key].set("기본 이미지")
         self.image_mode_vars[key].set("자동 맞춤")
+        if hasattr(self, "image_alignment_vars"):
+            self.image_alignment_vars[key].set("가운데")
+        self._image_set_store.clear(key)
+        self._image_set_store.set_options(key, fit_mode="fit", alignment="center")
+        self._image_set_choices.clear()
         self._image_cache.clear()
-        if USER_IMAGE_DIR.is_dir():
-            for old in USER_IMAGE_DIR.glob(f"{key}.*"):
-                try:
-                    old.unlink()
-                except OSError:
-                    core.log.warning("custom image reset could not remove: %s", old)
+        self._remove_legacy_image_files(key)
 
-    def _image_display_name(self, value):
+    def _image_display_name(self, key, value):
+        set_count = len(self._image_set_store.list_images(key))
+        if set_count:
+            return f"{set_count}장 세트"
         if not value:
             return "기본 이미지"
         path = self._stored_image_path(value)
@@ -1105,24 +1205,44 @@ class CompactDesktopApp(DesktopApp):
         self.image_path_vars = {}
         self.image_name_vars = {}
         self.image_mode_vars = {}
+        self.image_alignment_vars = {}
+        alignment_labels = {
+            "center": "가운데", "top": "위", "bottom": "아래",
+            "left": "왼쪽", "right": "오른쪽",
+            "top_left": "왼쪽 위", "top_right": "오른쪽 위",
+            "bottom_left": "왼쪽 아래", "bottom_right": "오른쪽 아래",
+        }
         for key, caption in self.IMAGE_ROWS:
             path_value = getattr(p, f"image_{key}")
-            mode_value = getattr(p, f"image_{key}_mode")
+            config = self._image_set_store.get(key)
+            mode_value = config.fit_mode if config.images else getattr(p, f"image_{key}_mode")
             self.image_path_vars[key] = tk.StringVar(value=path_value)
-            self.image_name_vars[key] = tk.StringVar(value=self._image_display_name(path_value))
+            self.image_name_vars[key] = tk.StringVar(value=self._image_display_name(key, path_value))
             self.image_mode_vars[key] = tk.StringVar(value="가운데 크롭" if mode_value == "crop" else "자동 맞춤")
+            self.image_alignment_vars[key] = tk.StringVar(value=alignment_labels.get(config.alignment, "가운데"))
 
             row = tk.Frame(content, bg=core.PANEL)
-            row.pack(fill="x", pady=2, **pad)
+            row.pack(fill="x", pady=(3, 0), **pad)
             self._label(row, caption, size=9, bg=core.PANEL).pack(side="left")
             name_label = tk.Label(
-                row, textvariable=self.image_name_vars[key], width=22, anchor="w",
+                row, textvariable=self.image_name_vars[key], width=18, anchor="w",
                 font=(self.FONT_FAMILY, 8, "normal"), fg=core.MUTED, bg=core.PANEL,
             )
             name_label.pack(side="left", padx=(10, 5))
-            tk.OptionMenu(row, self.image_mode_vars[key], "자동 맞춤", "가운데 크롭").pack(side="left", padx=4)
-            self._button(row, "선택", lambda k=key: self._choose_image(k)).pack(side="left", padx=4)
-            self._button(row, "기본값", lambda k=key: self._reset_image(k)).pack(side="left")
+            self._button(row, "한 장", lambda k=key: self._choose_image(k)).pack(side="left", padx=2)
+            self._button(row, "여러 장", lambda k=key: self._choose_image_set(k)).pack(side="left", padx=2)
+            self._button(row, "폴더", lambda k=key: self._choose_image_folder(k)).pack(side="left", padx=2)
+            self._button(row, "기본값", lambda k=key: self._reset_image(k)).pack(side="left", padx=(2, 0))
+            options = tk.Frame(content, bg=core.PANEL)
+            options.pack(fill="x", pady=(0, 3), **pad)
+            self._label(options, "표시", size=8, fg=core.MUTED, bg=core.PANEL).pack(side="left", padx=(70, 3))
+            tk.OptionMenu(options, self.image_mode_vars[key], "자동 맞춤", "가운데 크롭").pack(side="left", padx=(0, 5))
+            self._label(options, "정렬", size=8, fg=core.MUTED, bg=core.PANEL).pack(side="left", padx=(5, 3))
+            tk.OptionMenu(
+                options, self.image_alignment_vars[key],
+                "가운데", "위", "아래", "왼쪽", "오른쪽",
+                "왼쪽 위", "오른쪽 위", "왼쪽 아래", "오른쪽 아래",
+            ).pack(side="left")
 
         self._label(content, "퇴근 시간", size=11, bg=core.PANEL).pack(anchor="w", pady=(16, 4), **pad)
         self.settings_time_vars = {
@@ -1189,6 +1309,19 @@ class CompactDesktopApp(DesktopApp):
             )
             candidate.workday_policy()
             candidate.validate_widget_style()
+            alignment_values = {
+                "가운데": "center", "위": "top", "아래": "bottom",
+                "왼쪽": "left", "오른쪽": "right",
+                "왼쪽 위": "top_left", "오른쪽 위": "top_right",
+                "왼쪽 아래": "bottom_left", "오른쪽 아래": "bottom_right",
+            }
+            for key, _caption in self.IMAGE_ROWS:
+                self._image_set_store.set_options(
+                    key,
+                    fit_mode="crop" if self.image_mode_vars[key].get() == "가운데 크롭" else "fit",
+                    alignment=alignment_values.get(self.image_alignment_vars[key].get(), "center"),
+                )
+            self._image_set_choices.clear()
             previous = self.preferences
             startup_changed = candidate.start_with_windows != previous.start_with_windows
             if startup_changed:
