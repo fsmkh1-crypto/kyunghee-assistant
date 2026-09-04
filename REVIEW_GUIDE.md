@@ -10,7 +10,7 @@ This branch is the current Windows desktop product target.
 - User settings: `settings.py`
 - Character asset mapping: `asset_manager.py`
 
-Do not review the repository default branch (`main`) as the current desktop UI implementation. `main` still contains the older windowed UI and is intentionally behind this branch until the redesign is stabilized.
+Do not review the repository default branch (`main`) as the current desktop UI implementation. `main` still contains the older windowed UI and is intentionally behind this branch until the redesign is stabilized. If an automated reviewer starts from the default branch, switch to this branch before drawing conclusions about the desktop product.
 
 ## Current implementation phases
 
