@@ -141,6 +141,34 @@ POOLS = {
     ],
 }
 
+RARE_POOLS = {
+    "balanced": [
+        "잠깐만. 오늘 내가 꽤 열심히 챙겨주고 있는 거 알지?",
+        "이 말은 자주 안 해주는데… 오늘 페이스, 꽤 마음에 들어.",
+        "경희 비밀 점검 결과: 지금은 딴짓 판정 아님. 계속해도 됨.",
+        "가끔은 내가 먼저 말 걸어도 되잖아. 잘하고 있어.",
+    ],
+    "warm": [
+        "이건 가끔만 말할게. 오늘도 같이 있어서 좋네.",
+        "조용히 응원하고 있었어. 생각보다 훨씬 잘하고 있어.",
+        "오늘은 특별 칭찬 한 번. 무리하지 않고 여기까지 온 거 잘했어.",
+    ],
+    "playful": [
+        "희귀 대사 당첨. 축하합니다. 상품은 10초간 경희 구경권입니다.",
+        "쉿, 이건 자주 안 나오는 대사야. 캡처할 거면 지금 해.",
+        "이스터에그 발견. 근데 찾았다고 일 안 해도 되는 건 아님.",
+        "경희 숨겨둔 대사 발견했네. 운 좋은데?",
+    ],
+    "strict": [
+        "특별 점검 결과: 오늘은 잔소리 보류. 지금처럼만 해.",
+        "이 말 자주 안 한다. 지금 페이스는 합격.",
+        "예외적으로 칭찬한다. 흐름 좋으니까 괜히 깨지 마.",
+    ],
+}
+
+RARE_CHANCE = 0.04
+RARE_MIN_GAP = 12
+
 PERSONALITY_POOLS = {
     "warm": {
         "playful": [
@@ -212,6 +240,8 @@ def time_of_day_kind(hour: int) -> str:
     return "late"
 
 _recent = []
+_rare_gap = RARE_MIN_GAP
+_recent_rare = []
 
 
 def pick(kind: str, personality: str = "balanced", **fmt) -> str:
@@ -226,3 +256,37 @@ def pick(kind: str, personality: str = "balanced", **fmt) -> str:
         return msg.format(**fmt)
     except Exception:
         return msg
+
+
+def maybe_pick_rare(
+    personality: str = "balanced",
+    *,
+    chance: float = RARE_CHANCE,
+    roll: float | None = None,
+) -> str | None:
+    """Return a rare line only after enough ordinary selections have elapsed.
+
+    This helper is intentionally separate from pick(): safety/workflow dialogue can
+    keep calling pick() and will never be replaced by an easter egg.
+    """
+    global _rare_gap
+    _rare_gap += 1
+    if _rare_gap < RARE_MIN_GAP:
+        return None
+    value = random.random() if roll is None else float(roll)
+    if value >= max(0.0, min(1.0, float(chance))):
+        return None
+    pool = RARE_POOLS.get(personality) or RARE_POOLS["balanced"]
+    candidates = [m for m in pool if m not in _recent_rare[-2:]] or pool
+    msg = random.choice(candidates)
+    _recent_rare.append(msg)
+    if len(_recent_rare) > 8:
+        del _recent_rare[:-4]
+    _rare_gap = 0
+    return msg
+
+
+def _reset_rare_state_for_tests(gap: int = RARE_MIN_GAP) -> None:
+    global _rare_gap
+    _rare_gap = int(gap)
+    _recent_rare.clear()
