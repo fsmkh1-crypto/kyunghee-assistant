@@ -6,7 +6,7 @@ on:
       - '.github/workflows/build-phase3-final-test.yml'
   workflow_dispatch:
 
-# Manual trigger commit for the spacious transparent-canvas Phase 3 test package.
+# Trigger build for the clock-follow-character Phase 3 test package.
 jobs:
   build:
     runs-on: windows-latest
