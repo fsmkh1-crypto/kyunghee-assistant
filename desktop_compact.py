@@ -1384,6 +1384,19 @@ class CompactDesktopApp(DesktopApp):
             anchor="e", pady=(0, 3), **pad
         )
 
+        snooze_row = tk.Frame(content, bg=core.PANEL)
+        snooze_row.pack(fill="x", pady=(3, 2), **pad)
+        self._label(snooze_row, "미루기 시간(분)", size=9, bg=core.PANEL).pack(side="left")
+        self.snooze_minutes_var = tk.StringVar(value=str(p.snooze_minutes))
+        tk.Entry(
+            snooze_row, textvariable=self.snooze_minutes_var, width=6, justify="center",
+            font=(self.FONT_FAMILY, 9, "normal"), fg=core.TEXT, bg=core.PANEL_2,
+            insertbackground=core.TEXT, relief="flat", bd=0,
+        ).pack(side="right", ipady=2)
+        self._label(content, "1~30분 · 기본 5분", size=8, fg=core.MUTED, bg=core.PANEL).pack(
+            anchor="e", pady=(0, 3), **pad
+        )
+
         self._label(content, "긴급 숨기기 단축키: Ctrl+Shift+H", size=8, fg=core.MUTED, bg=core.PANEL).pack(
             anchor="w", pady=(2, 2), **pad
         )
@@ -1627,6 +1640,7 @@ class CompactDesktopApp(DesktopApp):
                 always_on_top=self.settings_bool_vars["always_on_top"].get(),
                 break_reminders=self.settings_bool_vars["break_reminders"].get(),
                 break_interval_minutes=int(self.break_interval_var.get()),
+                snooze_minutes=int(self.snooze_minutes_var.get()),
                 workday_reminders=self.settings_bool_vars["workday_reminders"].get(),
                 wind_down=self.settings_time_vars["wind_down"].get().strip(),
                 leave_mode=self.settings_time_vars["leave_mode"].get().strip(),

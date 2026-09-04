@@ -28,9 +28,10 @@ class TimerEngine:
     reproduced in unit tests without Windows.
     """
 
-    def __init__(self, persisted_state, clock=time.monotonic, wall=time.time, idle_provider=None, break_interval_sec=BREAK_INTERVAL_SEC):
+    def __init__(self, persisted_state, clock=time.monotonic, wall=time.time, idle_provider=None, break_interval_sec=BREAK_INTERVAL_SEC, snooze_sec=SNOOZE_SEC):
         self.state = persisted_state
         self.break_interval_sec = max(1.0, float(break_interval_sec))
+        self.snooze_sec = max(1.0, float(snooze_sec))
         self.clock = clock
         self.wall = wall
         if idle_provider is None:
@@ -49,6 +50,9 @@ class TimerEngine:
         self.break_interval_sec = max(1.0, float(seconds))
         if self.state.session.ignored_breaks == 0:
             self.state.session.next_break_at = self.break_interval_sec
+
+    def set_snooze_interval(self, seconds: float) -> None:
+        self.snooze_sec = max(1.0, float(seconds))
 
     def remaining_to_break(self) -> float:
         s = self.state.session
@@ -109,7 +113,7 @@ class TimerEngine:
     def snooze_break(self):
         s = self.state.session
         s.ignored_breaks += 1
-        s.next_break_at = s.continuous_seconds + SNOOZE_SEC
+        s.next_break_at = s.continuous_seconds + self.snooze_sec
 
     def _record_active(self, elapsed: float, provisional_idle: bool):
         if elapsed <= 0:

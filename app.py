@@ -93,6 +93,7 @@ class App:
         self.engine = TimerEngine(
             self.state,
             break_interval_sec=self.preferences.break_interval_minutes * 60,
+            snooze_sec=self.preferences.snooze_minutes * 60,
         )
         self.break_gate = BreakReminderGate()
 
@@ -144,6 +145,7 @@ class App:
         self.preferences = preferences
         self.workday_policy = preferences.workday_policy()
         self.engine.set_break_interval(preferences.break_interval_minutes * 60)
+        self.engine.set_snooze_interval(preferences.snooze_minutes * 60)
         self.root.attributes("-topmost", preferences.always_on_top)
 
     def _label(self, parent, text="", size=10, weight="normal", fg=TEXT, bg=None, **kwargs):
