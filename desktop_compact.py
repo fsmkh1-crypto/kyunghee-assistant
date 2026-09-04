@@ -235,6 +235,7 @@ class CompactDesktopApp(DesktopApp):
 
     def __init__(self):
         self._drag_origin = None
+        self._character_dragged = False
         self._hotkey_stop = threading.Event()
         self._hotkey_thread = None
         self._image_cache = {}
@@ -478,6 +479,24 @@ class CompactDesktopApp(DesktopApp):
         widget.bind("<B1-Motion>", self._drag_window)
         widget.bind("<ButtonRelease-1>", self._stop_drag)
 
+    def _start_character_drag(self, event):
+        self._character_dragged = False
+        self._start_drag(event)
+
+    def _drag_character(self, event):
+        if self._drag_origin:
+            start_x, start_y, _win_x, _win_y = self._drag_origin
+            if abs(event.x_root - start_x) >= 4 or abs(event.y_root - start_y) >= 4:
+                self._character_dragged = True
+        self._drag_window(event)
+
+    def _stop_character_drag(self, event):
+        dragged = self._character_dragged
+        self._stop_drag(event)
+        self._character_dragged = False
+        if not dragged:
+            self.show_stats()
+
     def _emergency_hide(self, _event=None):
         self.root.attributes("-topmost", False)
         self.root.withdraw()
@@ -675,13 +694,13 @@ class CompactDesktopApp(DesktopApp):
         self.clock = clock
         clock.place(x=self._scale(6), y=self._scale(6))
         self.cont = OutlinedText(
-            clock, "00:00:00", family=self.FONT_FAMILY, size=self._scale(p.time_text_size),
+            clock, "00:00:00", family=self.FONT_FAMILY, size=p.time_text_size,
             fg=p.time_text_color, outline=_outline_for(p.time_text_color),
             bg=self.TRANSPARENT_KEY, cursor="fleur",
         )
         self.cont.pack(anchor="w")
         self.main_status = OutlinedText(
-            clock, "집중 중", family=self.FONT_FAMILY, size=self._scale(p.status_text_size),
+            clock, "집중 중", family=self.FONT_FAMILY, size=p.status_text_size,
             fg=p.status_text_color, outline=_outline_for(p.status_text_color),
             bg=self.TRANSPARENT_KEY, cursor="fleur",
         )
@@ -690,7 +709,7 @@ class CompactDesktopApp(DesktopApp):
             self._bind_drag_surface(widget)
 
         self.escape_control = tk.Label(
-            hero, text="×", font=(self.FONT_FAMILY, self._scale(12), "normal"),
+            hero, text="×", font=(self.FONT_FAMILY, 12, "normal"),
             fg=self.ESCAPE_TEXT, bg=self.TRANSPARENT_KEY, bd=0,
             highlightthickness=0, cursor="hand2",
         )
@@ -698,14 +717,16 @@ class CompactDesktopApp(DesktopApp):
         self.escape_control.bind("<Button-1>", self._emergency_hide)
 
         self.speech = OutlinedText(
-            hero, pick("playful"), family=self.FONT_FAMILY, size=self._scale(p.message_text_size),
+            hero, pick("playful"), family=self.FONT_FAMILY, size=p.message_text_size,
             fg=p.message_text_color, outline=_outline_for(p.message_text_color),
             bg=self.TRANSPARENT_KEY, wraplength=self._scale(self.BUBBLE_WRAP),
             justify="center", cursor="hand2",
         )
         self.speech.place(relx=0.5, rely=1.0, y=-self._scale(3), anchor="s")
 
-        self.character.bind("<Button-1>", lambda _event: self.show_stats())
+        self.character.bind("<ButtonPress-1>", self._start_character_drag)
+        self.character.bind("<B1-Motion>", self._drag_character)
+        self.character.bind("<ButtonRelease-1>", self._stop_character_drag)
         self.speech.bind("<Button-1>", self._cycle_message)
         self._apply_widget_appearance()
 
@@ -735,15 +756,15 @@ class CompactDesktopApp(DesktopApp):
             return
         p = self.preferences
         self.cont.set_style(
-            size=self._scale(p.time_text_size), fg=p.time_text_color,
+            size=p.time_text_size, fg=p.time_text_color,
             outline=_outline_for(p.time_text_color),
         )
         self.main_status.set_style(
-            size=self._scale(p.status_text_size), fg=p.status_text_color,
+            size=p.status_text_size, fg=p.status_text_color,
             outline=_outline_for(p.status_text_color),
         )
         self.speech.set_style(
-            size=self._scale(p.message_text_size), fg=p.message_text_color,
+            size=p.message_text_size, fg=p.message_text_color,
             outline=_outline_for(p.message_text_color),
         )
 
@@ -764,7 +785,7 @@ class CompactDesktopApp(DesktopApp):
 
         self.clock.place(x=self._scale(6), y=self._scale(6))
         self.character.place(relx=0.5, rely=1.0, y=-self._scale(18), anchor="s")
-        self.escape_control.configure(font=(self.FONT_FAMILY, self._scale(12), "normal"))
+        self.escape_control.configure(font=(self.FONT_FAMILY, 12, "normal"))
         self.escape_control.place(relx=1.0, x=-self._scale(8), y=self._scale(5), anchor="ne")
 
     def _choose_color(self, key):
@@ -879,7 +900,7 @@ class CompactDesktopApp(DesktopApp):
         self.widget_scale_value = self._label(scale_row, f"{p.widget_scale}%", size=9, fg=core.MUTED, bg=core.PANEL)
         self.widget_scale_value.pack(side="right")
         scale = tk.Scale(
-            content, from_=80, to=140, orient="horizontal", resolution=5,
+            content, from_=80, to=200, orient="horizontal", resolution=5,
             variable=self.widget_scale_var, showvalue=False, length=360,
             fg=core.TEXT, bg=core.PANEL, troughcolor=core.PANEL_2,
             highlightthickness=0, bd=0,
@@ -908,7 +929,7 @@ class CompactDesktopApp(DesktopApp):
             ).pack(anchor="w", pady=1, **pad)
         self._label(
             content,
-            "시간과 상태를 모두 꺼도 위쪽 투명 드래그 영역으로 창을 이동할 수 있습니다.",
+            "시간과 상태를 모두 꺼도 경희 이미지를 누른 채 움직이면 창을 이동할 수 있습니다.",
             size=8, fg=core.MUTED, bg=core.PANEL,
         ).pack(anchor="w", pady=(2, 4), **pad)
 

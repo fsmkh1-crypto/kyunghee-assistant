@@ -145,8 +145,8 @@ class UserSettings:
         )
 
     def validate_widget_style(self) -> None:
-        if not 80 <= self.widget_scale <= 140:
-            raise ValueError("위젯 크기는 80~140% 사이로 설정해 주세요.")
+        if not 80 <= self.widget_scale <= 200:
+            raise ValueError("위젯 크기는 80~200% 사이로 설정해 주세요.")
         if not 14 <= self.time_text_size <= 24:
             raise ValueError("시간 글자 크기는 14~24 사이로 설정해 주세요.")
         if not 7 <= self.status_text_size <= 12:
@@ -188,7 +188,7 @@ def settings_from_dict(raw: object) -> UserSettings:
         late_leave=late_leave,
         window_x=_position_int(raw.get("window_x"), d.window_x),
         window_y=_position_int(raw.get("window_y"), d.window_y),
-        widget_scale=_bounded_int(raw.get("widget_scale"), d.widget_scale, 80, 140),
+        widget_scale=_bounded_int(raw.get("widget_scale"), d.widget_scale, 80, 200),
         show_time=_coerce_bool(raw.get("show_time"), d.show_time),
         show_status=_coerce_bool(raw.get("show_status"), d.show_status),
         show_message=_coerce_bool(raw.get("show_message"), d.show_message),
