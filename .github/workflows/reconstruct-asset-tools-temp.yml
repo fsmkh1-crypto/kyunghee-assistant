@@ -1,0 +1,46 @@
+name: Reconstruct asset importer temp
+
+on:
+  push:
+    branches:
+      - asset-code-transfer-20260905
+
+permissions:
+  contents: write
+
+jobs:
+  reconstruct:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: asset-code-transfer-20260905
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Reconstruct importer source
+        run: |
+          gzip -dc .github/import_asset_sheet.py.gz > tools/import_asset_sheet.py
+          test "$(git hash-object tools/import_asset_sheet.py)" = "9963411e41d8d0cc8be5035c42e7f9c64abe0b0d"
+      - name: Install developer dependencies
+        run: python -m pip install -r tools/requirements-asset-import.txt
+      - name: Backfill installed asset index
+        run: |
+          python tools/backfill_asset_index.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('assets/asset_index.json')
+          data = json.loads(p.read_text(encoding='utf-8'))
+          assert data.get('schema_version') == 1
+          assert len(data.get('assets', {})) == 50
+          assert data.get('sources', {}) == {}
+          PY
+      - name: Commit reconstructed files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tools/import_asset_sheet.py assets/asset_index.json
+          test "$(git diff --cached --name-only | wc -l)" -eq 2
+          git commit -m "Stage asset importer v2 and index"
+          git push origin HEAD:asset-code-transfer-20260905
