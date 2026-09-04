@@ -85,7 +85,7 @@ class OutlinedText(tk.Canvas):
         self.update_idletasks()
         bbox = self.bbox("all")
         if not bbox:
-            self.configure(width=1, height=1)
+            tk.Canvas.configure(self, width=1, height=1)
             return
         if self._wraplength:
             width = self._wraplength + 8
@@ -118,6 +118,18 @@ class OutlinedText(tk.Canvas):
             self._refresh_geometry()
 
     config = configure
+
+    def cget(self, key):
+        # DesktopApp reads the timer label's text during its normal refresh.
+        if key == "text":
+            return self._text
+        if key in ("fg", "foreground"):
+            return self._fg
+        if key == "outline":
+            return self._outline
+        return tk.Canvas.cget(self, key)
+
+    __getitem__ = cget
 
 
 class CompactDesktopApp(DesktopApp):
