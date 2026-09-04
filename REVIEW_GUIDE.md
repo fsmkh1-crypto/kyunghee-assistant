@@ -12,9 +12,19 @@ This branch is the current Windows desktop product target.
 
 Do not review the repository default branch (`main`) as the current desktop UI implementation. `main` still contains the older windowed UI and is intentionally behind this branch until the redesign is stabilized.
 
-## Review priorities
+## Current implementation phases
 
-For current reviews, inspect the branch above and focus on:
+- Phase 1: stability and Windows lifecycle hardening
+- Phase 2: transparent rendering, DPI and visual quality
+- Phase 3: settings UX cleanup
+- Phase 4: richer situation-based image system
+- Phase 5: personality, rare dialogue and interaction fun
+- Phase 6: work/break controls and notification fatigue reduction
+- Phase 7: lightweight recent statistics and character reactions
+
+## Review priorities now
+
+For current reviews, inspect this branch and focus on:
 
 1. Frameless/transparent Windows behaviour
 2. Window movement, restore, multi-monitor/off-screen recovery
