@@ -32,6 +32,7 @@ class UserSettingsTests(unittest.TestCase):
             start_with_windows=True,
             always_on_top=True,
             break_reminders=False,
+            break_interval_minutes=45,
             wind_down="16:45",
             leave_mode="17:15",
             window_x=-1420,
@@ -102,6 +103,17 @@ class UserSettingsTests(unittest.TestCase):
         self.assertFalse(parsed.show_time)
         self.assertTrue(parsed.show_status)
         self.assertFalse(parsed.show_message)
+
+    def test_break_interval_loads_and_bad_value_falls_back(self):
+        self.assertEqual(settings_from_dict({"break_interval_minutes": 45}).break_interval_minutes, 45)
+        self.assertEqual(
+            settings_from_dict({"break_interval_minutes": 5}).break_interval_minutes,
+            UserSettings().break_interval_minutes,
+        )
+
+    def test_break_interval_validation(self):
+        with self.assertRaises(ValueError):
+            UserSettings(break_interval_minutes=181).validate_widget_style()
 
     def test_bad_widget_scale_falls_back(self):
         parsed = settings_from_dict({"widget_scale": 500})

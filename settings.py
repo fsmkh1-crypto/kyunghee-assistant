@@ -106,10 +106,11 @@ def _clock_or(value: object, default: str) -> str:
 
 @dataclass(frozen=True)
 class UserSettings:
-    schema_version: int = 5
+    schema_version: int = 6
     start_with_windows: bool = False
     always_on_top: bool = False
     break_reminders: bool = True
+    break_interval_minutes: int = 60
     workday_reminders: bool = True
     wind_down: str = "17:00"
     leave_mode: str = "17:30"
@@ -172,6 +173,8 @@ class UserSettings:
         )
 
     def validate_widget_style(self) -> None:
+        if not 20 <= self.break_interval_minutes <= 180:
+            raise ValueError("휴식 알림 간격은 20~180분 사이로 설정해 주세요.")
         if not 80 <= self.widget_scale <= 200:
             raise ValueError("위젯 크기는 80~200% 사이로 설정해 주세요.")
         if not 14 <= self.time_text_size <= 24:
@@ -211,6 +214,7 @@ def settings_from_dict(raw: object) -> UserSettings:
         start_with_windows=_coerce_bool(raw.get("start_with_windows"), d.start_with_windows),
         always_on_top=_coerce_bool(raw.get("always_on_top"), d.always_on_top),
         break_reminders=_coerce_bool(raw.get("break_reminders"), d.break_reminders),
+        break_interval_minutes=_bounded_int(raw.get("break_interval_minutes"), d.break_interval_minutes, 20, 180),
         workday_reminders=_coerce_bool(raw.get("workday_reminders"), d.workday_reminders),
         wind_down=wind_down,
         leave_mode=leave_mode,

@@ -20,7 +20,7 @@ from break_reminder import BreakReminderGate
 from messages import pick
 from settings import UserSettings, load_user_settings, save_user_settings
 from state import load_state, save_state, rollover_daily, prepare_startup_state
-from timer_engine import BREAK_INTERVAL_SEC, TimerEngine
+from timer_engine import TimerEngine
 from workday import WorkdayState, apply_reminder_preference, classify_workday, should_encourage_more_work
 
 APP_NAME = "경희 타이머"
@@ -90,7 +90,10 @@ class App:
         self.workday_policy = self.preferences.workday_policy()
         self.state = load_state(STATE_FILE)
         prepare_startup_state(self.state, time.time())
-        self.engine = TimerEngine(self.state)
+        self.engine = TimerEngine(
+            self.state,
+            break_interval_sec=self.preferences.break_interval_minutes * 60,
+        )
         self.break_gate = BreakReminderGate()
 
         self.root = tk.Tk()
@@ -140,6 +143,7 @@ class App:
         save_user_settings(SETTINGS_FILE, preferences)
         self.preferences = preferences
         self.workday_policy = preferences.workday_policy()
+        self.engine.set_break_interval(preferences.break_interval_minutes * 60)
         self.root.attributes("-topmost", preferences.always_on_top)
 
     def _label(self, parent, text="", size=10, weight="normal", fg=TEXT, bg=None, **kwargs):
@@ -567,7 +571,8 @@ class App:
             return
         width = max(1, self.progress_canvas.winfo_width())
         continuous = max(0.0, float(self.state.session.continuous_seconds))
-        progress = min(1.0, continuous / BREAK_INTERVAL_SEC)
+        target = max(1.0, float(self.state.session.next_break_at))
+        progress = min(1.0, continuous / target)
         self.progress_canvas.coords(self.progress_bar, 0, 0, width * progress, 9)
 
     def _update_ui(self):

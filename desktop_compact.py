@@ -1364,6 +1364,26 @@ class CompactDesktopApp(DesktopApp):
                 selectcolor=core.PANEL_2, highlightthickness=0, bd=0, cursor="hand2",
             ).pack(anchor="w", pady=1, **pad)
 
+        interval_row = tk.Frame(content, bg=core.PANEL)
+        interval_row.pack(fill="x", pady=(5, 2), **pad)
+        self._label(interval_row, "휴식 알림 간격(분)", size=9, bg=core.PANEL).pack(side="left")
+        self.break_interval_var = tk.StringVar(value=str(p.break_interval_minutes))
+        tk.Entry(
+            interval_row,
+            textvariable=self.break_interval_var,
+            width=6,
+            justify="center",
+            font=(self.FONT_FAMILY, 9, "normal"),
+            fg=core.TEXT,
+            bg=core.PANEL_2,
+            insertbackground=core.TEXT,
+            relief="flat",
+            bd=0,
+        ).pack(side="right", ipady=2)
+        self._label(content, "20~180분 · 기본 60분", size=8, fg=core.MUTED, bg=core.PANEL).pack(
+            anchor="e", pady=(0, 3), **pad
+        )
+
         self._label(content, "긴급 숨기기 단축키: Ctrl+Shift+H", size=8, fg=core.MUTED, bg=core.PANEL).pack(
             anchor="w", pady=(2, 2), **pad
         )
@@ -1606,6 +1626,7 @@ class CompactDesktopApp(DesktopApp):
                 start_with_windows=self.settings_bool_vars["start_with_windows"].get(),
                 always_on_top=self.settings_bool_vars["always_on_top"].get(),
                 break_reminders=self.settings_bool_vars["break_reminders"].get(),
+                break_interval_minutes=int(self.break_interval_var.get()),
                 workday_reminders=self.settings_bool_vars["workday_reminders"].get(),
                 wind_down=self.settings_time_vars["wind_down"].get().strip(),
                 leave_mode=self.settings_time_vars["leave_mode"].get().strip(),

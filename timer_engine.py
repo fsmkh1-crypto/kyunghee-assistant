@@ -28,8 +28,9 @@ class TimerEngine:
     reproduced in unit tests without Windows.
     """
 
-    def __init__(self, persisted_state, clock=time.monotonic, wall=time.time, idle_provider=None):
+    def __init__(self, persisted_state, clock=time.monotonic, wall=time.time, idle_provider=None, break_interval_sec=BREAK_INTERVAL_SEC):
         self.state = persisted_state
+        self.break_interval_sec = max(1.0, float(break_interval_sec))
         self.clock = clock
         self.wall = wall
         if idle_provider is None:
@@ -41,6 +42,13 @@ class TimerEngine:
         self.last_wall = self.wall()
         self.last_input_tick = self.idle_provider()[1]
         self.manual_grace_until = 0.0
+        if self.state.session.ignored_breaks == 0:
+            self.state.session.next_break_at = self.break_interval_sec
+
+    def set_break_interval(self, seconds: float) -> None:
+        self.break_interval_sec = max(1.0, float(seconds))
+        if self.state.session.ignored_breaks == 0:
+            self.state.session.next_break_at = self.break_interval_sec
 
     def remaining_to_break(self) -> float:
         s = self.state.session
@@ -57,7 +65,7 @@ class TimerEngine:
         s = self.state.session
         s.continuous_seconds = 0.0
         s.day_continuous_seconds = 0.0
-        s.next_break_at = BREAK_INTERVAL_SEC
+        s.next_break_at = self.break_interval_sec
         s.ignored_breaks = 0
         s.idle_candidate_seconds = 0.0
 

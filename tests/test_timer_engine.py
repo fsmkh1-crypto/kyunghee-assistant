@@ -64,6 +64,36 @@ class TimerEngineTests(unittest.TestCase):
         e.advance(1, idle=0, input_event=True)
         self.assertTrue(eng.tick().break_due)
 
+    def test_custom_break_interval(self):
+        e = FakeEnv()
+        s = new_state()
+        eng = TimerEngine(
+            s,
+            clock=e.clock,
+            wall=e.wall_clock,
+            idle_provider=e.idle_provider,
+            break_interval_sec=45 * 60,
+        )
+        s.session.continuous_seconds = 2699
+        s.session.day_continuous_seconds = 2699
+        e.advance(1, idle=0, input_event=True)
+        self.assertTrue(eng.tick().break_due)
+
+    def test_changing_interval_updates_unsnoozed_target(self):
+        _, s, eng = self.make()
+        eng.set_break_interval(40 * 60)
+        self.assertEqual(s.session.next_break_at, 40 * 60)
+
+    def test_changing_interval_preserves_active_snooze(self):
+        _, s, eng = self.make()
+        s.session.continuous_seconds = 3600
+        eng.snooze_break()
+        target = s.session.next_break_at
+        eng.set_break_interval(40 * 60)
+        self.assertEqual(s.session.next_break_at, target)
+        eng.start_manual_away()
+        self.assertEqual(s.session.next_break_at, 40 * 60)
+
     def test_snooze_is_exactly_five_minutes(self):
         _, s, eng = self.make()
         s.session.continuous_seconds = 3600
