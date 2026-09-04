@@ -23,6 +23,12 @@ from workday import classify_workday, should_encourage_more_work
 APP_NAME = "경희 비서"
 DIALOGUE_INTERVAL_SEC = 60
 
+# Windows/Tk color-key transparency keeps the native title bar and all actual
+# widgets fully opaque while the otherwise-empty client area disappears.
+TRANSPARENT_BG = "#010203"
+PANEL_BG = "#f5f1ed"
+TEXT_FG = "#191919"
+
 DATA_DIR = Path(os.getenv("APPDATA", Path.home())) / "KyungheeAssistant"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 STATE_FILE = DATA_DIR / "state.json"
@@ -73,6 +79,9 @@ class App:
         self.root.title(APP_NAME)
         self.root.geometry("470x560")
         self.root.minsize(450, 540)
+        self.root.configure(bg=TRANSPARENT_BG)
+        if os.name == "nt":
+            self.root.wm_attributes("-transparentcolor", TRANSPARENT_BG)
         self.root.protocol("WM_DELETE_WINDOW", self.root.withdraw)
 
         self.ui_commands: queue.Queue = queue.Queue()
@@ -97,12 +106,15 @@ class App:
         self.root.after(1000, self._tick_safe)
         self.root.after(5000, self._save_periodic)
 
+    def _panel_label(self, parent, **kwargs):
+        return tk.Label(parent, bg=PANEL_BG, fg=TEXT_FG, **kwargs)
+
     def _build_ui(self):
-        self.page_host = tk.Frame(self.root)
+        self.page_host = tk.Frame(self.root, bg=TRANSPARENT_BG)
         self.page_host.pack(fill="both", expand=True)
 
-        self.timer_page = tk.Frame(self.page_host)
-        self.stats_page = tk.Frame(self.page_host)
+        self.timer_page = tk.Frame(self.page_host, bg=TRANSPARENT_BG)
+        self.stats_page = tk.Frame(self.page_host, bg=TRANSPARENT_BG)
         for page in (self.timer_page, self.stats_page):
             page.place(relx=0, rely=0, relwidth=1, relheight=1)
 
@@ -112,30 +124,40 @@ class App:
 
     def _build_timer_page(self):
         page = self.timer_page
-        self.status = tk.Label(page, text="사용 중", font=("Malgun Gothic", 9, "bold"))
+        self.status = self._panel_label(page, text="사용 중", font=("Malgun Gothic", 9, "bold"), padx=10, pady=3)
         self.status.pack(pady=(12, 2))
 
-        self.character = tk.Label(page, bd=0)
+        self.character = tk.Label(page, bd=0, bg=TRANSPARENT_BG, cursor="hand2")
         self.character.pack(pady=(2, 6))
+        self.character.bind("<Button-1>", lambda _event: self._show_page("stats"))
 
-        timer_row = tk.Frame(page)
+        timer_row = tk.Frame(page, bg=PANEL_BG, bd=0, padx=14, pady=8)
         timer_row.pack(pady=(0, 6))
-        left = tk.Frame(timer_row)
+        left = tk.Frame(timer_row, bg=PANEL_BG)
         left.pack(side="left", padx=18)
-        right = tk.Frame(timer_row)
+        right = tk.Frame(timer_row, bg=PANEL_BG)
         right.pack(side="left", padx=18)
 
-        tk.Label(left, text="현재 연속 사용", font=("Malgun Gothic", 8)).pack()
-        self.cont = tk.Label(left, text="0초", font=("Malgun Gothic", 18, "bold"))
+        self._panel_label(left, text="현재 연속 사용", font=("Malgun Gothic", 8)).pack()
+        self.cont = self._panel_label(left, text="0초", font=("Malgun Gothic", 18, "bold"))
         self.cont.pack()
-        tk.Label(right, text="다음 휴식까지", font=("Malgun Gothic", 8)).pack()
-        self.remain = tk.Label(right, text="60분", font=("Malgun Gothic", 18, "bold"))
+        self._panel_label(right, text="다음 휴식까지", font=("Malgun Gothic", 8)).pack()
+        self.remain = self._panel_label(right, text="60분", font=("Malgun Gothic", 18, "bold"))
         self.remain.pack()
 
-        self.speech = tk.Label(page, text=pick("playful"), wraplength=410, font=("Malgun Gothic", 9))
+        self.speech = self._panel_label(
+            page,
+            text=pick("playful"),
+            wraplength=390,
+            font=("Malgun Gothic", 9),
+            padx=14,
+            pady=9,
+            cursor="hand2",
+        )
         self.speech.pack(padx=20, pady=(6, 8))
+        self.speech.bind("<Button-1>", self._cycle_dialogue)
 
-        buttons = tk.Frame(page)
+        buttons = tk.Frame(page, bg=TRANSPARENT_BG)
         buttons.pack(pady=8)
         self.away_btn = tk.Button(buttons, text="자리비움", command=self.toggle_manual_away)
         self.away_btn.pack(side="left", padx=5)
@@ -143,11 +165,13 @@ class App:
 
     def _build_stats_page(self):
         page = self.stats_page
-        tk.Label(page, text="오늘 기록", font=("Malgun Gothic", 12, "bold")).pack(pady=(14, 4))
-        self.stats_character = tk.Label(page, bd=0)
+        title = self._panel_label(page, text="오늘 기록", font=("Malgun Gothic", 12, "bold"), padx=12, pady=4)
+        title.pack(pady=(14, 4))
+        self.stats_character = tk.Label(page, bd=0, bg=TRANSPARENT_BG, cursor="hand2")
         self.stats_character.pack(pady=(2, 8))
+        self.stats_character.bind("<Button-1>", lambda _event: self._show_page("timer"))
 
-        grid = tk.Frame(page)
+        grid = tk.Frame(page, bg=PANEL_BG, padx=14, pady=8)
         grid.pack(padx=28, pady=(2, 6), fill="x")
         self.stats_values = {}
         rows = [
@@ -158,14 +182,18 @@ class App:
             ("ratio", "실사용률"),
         ]
         for idx, (key, label) in enumerate(rows):
-            tk.Label(grid, text=label, anchor="w", font=("Malgun Gothic", 9)).grid(row=idx, column=0, sticky="w", pady=4)
-            value = tk.Label(grid, text="-", anchor="e", font=("Malgun Gothic", 10, "bold"))
+            self._panel_label(grid, text=label, anchor="w", font=("Malgun Gothic", 9)).grid(
+                row=idx, column=0, sticky="w", pady=4
+            )
+            value = self._panel_label(grid, text="-", anchor="e", font=("Malgun Gothic", 10, "bold"))
             value.grid(row=idx, column=1, sticky="e", pady=4)
             self.stats_values[key] = value
         grid.grid_columnconfigure(0, weight=1)
         grid.grid_columnconfigure(1, weight=1)
 
-        self.stats_speech = tk.Label(page, text=pick("stats"), wraplength=400, font=("Malgun Gothic", 9))
+        self.stats_speech = self._panel_label(
+            page, text=pick("stats"), wraplength=380, font=("Malgun Gothic", 9), padx=14, pady=8
+        )
         self.stats_speech.pack(padx=20, pady=(8, 8))
         tk.Button(page, text="타이머로 돌아가기", command=lambda: self._show_page("timer")).pack(pady=8)
 
@@ -178,7 +206,7 @@ class App:
             self.timer_page.tkraise()
 
     def _fallback_character(self):
-        img = Image.new("RGB", (230, 300), "white")
+        img = Image.new("RGBA", (230, 300), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
         draw.ellipse((65, 34, 165, 134), outline="black", width=2)
         draw.text((103, 150), "K", fill="black")
@@ -186,7 +214,11 @@ class App:
 
     def _load_character_image(self, role: str, max_size=(230, 300)):
         path = resolve_asset(role)
-        image = Image.open(path).convert("RGB") if path else self._fallback_character()
+        if path:
+            source = Image.open(path)
+            image = source.convert("RGBA") if "A" in source.getbands() else source.convert("RGB")
+        else:
+            image = self._fallback_character()
         image.thumbnail(max_size, Image.Resampling.LANCZOS)
         return image
 
@@ -213,6 +245,20 @@ class App:
         self.speech.configure(text=text or pick(kind))
         self._set_character(role_for_dialogue(kind, work_mode))
         self.last_dialogue_at = time.monotonic()
+
+    def _cycle_dialogue(self, _event=None):
+        state = classify_workday(datetime.now(), self.state.daily.active_seconds)
+        if state.mode != "normal":
+            kind = state.mode
+        elif self.state.session.ignored_breaks >= 2:
+            kind = "nag"
+        elif self.state.session.ignored_breaks == 1:
+            kind = "worry"
+        elif self.engine.remaining_to_break() <= 15 * 60:
+            kind = "cheer"
+        else:
+            kind = "playful"
+        self._say(kind, work_mode=state.mode)
 
     def toggle_manual_away(self):
         if self.state.session.is_away:
