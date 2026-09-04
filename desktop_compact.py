@@ -18,14 +18,16 @@ class CompactDesktopApp(DesktopApp):
     BUBBLE_WRAP = 258
 
     FONT_FAMILY = "Pretendard"
-    MESSAGE_TEXT = "#F29AB7"
+    TIME_TEXT = "#159A55"
+    STATUS_TEXT = "#178A50"
+    MESSAGE_TEXT = "#C85B7D"
 
     def __init__(self):
         super().__init__()
-        # Compact mode is intentionally a desktop widget: no native title bar
-        # and always above normal application windows.
+        # Frameless widget mode. Top-most behavior follows the saved setting
+        # instead of being forced on by the compact shell.
         self.root.overrideredirect(True)
-        self.root.attributes("-topmost", True)
+        self.root.attributes("-topmost", self.preferences.always_on_top)
         self._drag_origin = None
 
     def _label(self, parent, text="", size=10, weight="normal", fg=core.TEXT, bg=None, **kwargs):
@@ -70,15 +72,14 @@ class CompactDesktopApp(DesktopApp):
         widget.bind("<ButtonRelease-1>", self._stop_drag)
 
     def apply_preferences(self, preferences) -> None:
-        # Persist the rest of the settings, but compact widget mode itself is
-        # always-on-top by design.
+        # The base implementation saves preferences and applies -topmost
+        # immediately, so the setting now works in compact mode as well.
         super().apply_preferences(preferences)
-        self.root.attributes("-topmost", True)
 
     def show(self):
         self.root.deiconify()
         self.root.lift()
-        self.root.attributes("-topmost", True)
+        self.root.attributes("-topmost", self.preferences.always_on_top)
 
     def _set_character(self, role: str):
         if role == self.character_role:
@@ -108,9 +109,9 @@ class CompactDesktopApp(DesktopApp):
         self.cont = self._label(
             clock,
             "00:00:00",
-            size=18,
+            size=20,
             weight="bold",
-            fg=core.GREEN,
+            fg=self.TIME_TEXT,
             bg=self.TRANSPARENT_KEY,
             cursor="fleur",
         )
@@ -118,8 +119,9 @@ class CompactDesktopApp(DesktopApp):
         self.main_status = self._label(
             clock,
             "집중 중",
-            size=7,
-            fg=core.GREEN,
+            size=8,
+            weight="bold",
+            fg=self.STATUS_TEXT,
             bg=self.TRANSPARENT_KEY,
             cursor="fleur",
         )
@@ -127,13 +129,14 @@ class CompactDesktopApp(DesktopApp):
         for widget in (clock, self.cont, self.main_status):
             self._bind_drag_surface(widget)
 
-        # Dialogue is text-only: no bubble fill, border, or surrounding card.
+        # Dialogue remains text-only, but darker rose and a slightly larger
+        # Pretendard face improve readability over light desktop backgrounds.
         self.speech = tk.Label(
             hero,
             text=pick("playful"),
             wraplength=self.BUBBLE_WRAP,
             justify="center",
-            font=(self.FONT_FAMILY, 9, "bold"),
+            font=(self.FONT_FAMILY, 10, "bold"),
             fg=self.MESSAGE_TEXT,
             bg=self.TRANSPARENT_KEY,
             bd=0,
@@ -149,13 +152,13 @@ class CompactDesktopApp(DesktopApp):
 
     def _update_ui(self):
         super()._update_ui()
+        away = self.state.session.is_away
         self.main_status.configure(
-            text="자리비움 중" if self.state.session.is_away else "집중 중",
-            fg=core.AMBER if self.state.session.is_away else core.GREEN,
+            text="자리비움 중" if away else "집중 중",
+            fg=core.AMBER if away else self.STATUS_TEXT,
         )
 
 
-# Build marker: Pretendard/text-only widget package.
 if __name__ == "__main__":
     singleton = SingleInstance()
     if not singleton.acquire():
