@@ -1275,10 +1275,33 @@ class CompactDesktopApp(DesktopApp):
         canvas.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
+
+        def _settings_mousewheel(event):
+            if self.current_page != "settings":
+                return
+            delta = int(getattr(event, "delta", 0))
+            if not delta:
+                return
+            units = -1 if delta > 0 else 1
+            canvas.yview_scroll(units * 3, "units")
+            return "break"
+
+        canvas.bind("<MouseWheel>", _settings_mousewheel)
         content = tk.Frame(canvas, bg=core.PANEL)
         window_id = canvas.create_window((0, 0), window=content, anchor="nw")
         content.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window_id, width=e.width))
+
+        def _bind_settings_wheel(_event):
+            self.root.bind_all("<MouseWheel>", _settings_mousewheel)
+
+        def _unbind_settings_wheel(_event):
+            self.root.unbind_all("<MouseWheel>")
+
+        canvas.bind("<Enter>", _bind_settings_wheel)
+        canvas.bind("<Leave>", _unbind_settings_wheel)
+        content.bind("<Enter>", _bind_settings_wheel)
+        content.bind("<Leave>", _unbind_settings_wheel)
 
         p = self.preferences
         pad = {"padx": 14}
