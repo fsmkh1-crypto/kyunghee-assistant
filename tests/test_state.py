@@ -37,6 +37,9 @@ class StateTests(unittest.TestCase):
         self.assertEqual(state.session.continuous_seconds, 4_000)
         self.assertEqual(state.session.day_continuous_seconds, 0)
         self.assertEqual(state.session.next_break_at, 4_500)
+        self.assertEqual(len(state.history), 1)
+        self.assertEqual(state.history[0].day, "2026-09-02")
+        self.assertEqual(state.history[0].active_seconds, 10_000)
 
     def test_midnight_clears_daily_break_suppression(self):
         state = PersistedState(
@@ -48,6 +51,7 @@ class StateTests(unittest.TestCase):
         self.assertEqual(state.daily.day, "2026-09-03")
         self.assertFalse(state.daily.break_reminders_suppressed)
         self.assertEqual(state.session.continuous_seconds, 1200)
+        self.assertTrue(state.history[0].break_reminders_suppressed)
 
     def test_break_suppression_roundtrips_in_state_file(self):
         with tempfile.TemporaryDirectory() as td:
@@ -60,6 +64,40 @@ class StateTests(unittest.TestCase):
             save_state(path, state, now_wall=1000)
             loaded = load_state(path)
             self.assertTrue(loaded.daily.break_reminders_suppressed)
+
+    def test_history_roundtrips_and_is_deduplicated_by_day(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "state.json"
+            state = PersistedState(
+                8,
+                DailyStats(day="2026-09-05"),
+                SessionState(),
+                history=[
+                    DailyStats(day="2026-09-03", active_seconds=100),
+                    DailyStats(day="2026-09-04", active_seconds=200),
+                ],
+            )
+            save_state(path, state, now_wall=1000)
+            loaded = load_state(path)
+            self.assertEqual([item.day for item in loaded.history], ["2026-09-03", "2026-09-04"])
+            self.assertEqual(loaded.history[-1].active_seconds, 200)
+
+    def test_malformed_history_entries_are_ignored(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "state.json"
+            path.write_text(json.dumps({
+                "daily": {"day": "2026-09-05"},
+                "session": {},
+                "history": [
+                    None,
+                    "bad",
+                    {"day": "2026-09-03", "active_seconds": "123.5"},
+                    {"day": "", "active_seconds": 999},
+                ],
+            }), encoding="utf-8")
+            loaded = load_state(path)
+            self.assertEqual(len(loaded.history), 1)
+            self.assertEqual(loaded.history[0].active_seconds, 123.5)
 
     def test_midnight_away_is_counted_as_one_ongoing_away(self):
         state = PersistedState(
@@ -117,6 +155,7 @@ class StateTests(unittest.TestCase):
         self.assertEqual(state.daily.day, "2026-09-03")
         self.assertEqual(state.daily.away_count, 0)
         self.assertFalse(state.session.is_away)
+        self.assertEqual(state.history[0].away_count, 5)
 
     def test_bad_json_is_preserved_as_corrupt_file(self):
         with tempfile.TemporaryDirectory() as td:

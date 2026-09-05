@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from datetime import date
 import json
 import os
 from pathlib import Path
 import time
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
+HISTORY_LIMIT = 30
 
 
 @dataclass
@@ -45,6 +46,7 @@ class PersistedState:
     schema_version: int
     daily: DailyStats
     session: SessionState
+    history: list[DailyStats] = field(default_factory=list)
 
 
 _FLOAT_FIELDS = {
@@ -89,6 +91,19 @@ def _coerce(cls, data: dict):
     return cls(**out)
 
 
+def _load_history(raw) -> list[DailyStats]:
+    if not isinstance(raw, list):
+        return []
+    by_day: dict[str, DailyStats] = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        entry = _coerce(DailyStats, item)
+        if entry.day:
+            by_day[entry.day] = entry
+    return [by_day[day] for day in sorted(by_day)[-HISTORY_LIMIT:]]
+
+
 def fresh_state() -> PersistedState:
     return PersistedState(SCHEMA_VERSION, DailyStats.today(), SessionState())
 
@@ -98,12 +113,14 @@ def load_state(path: Path) -> PersistedState:
         raw = json.loads(path.read_text(encoding="utf-8"))
         daily = _coerce(DailyStats, raw.get("daily", {}))
         session = _coerce(SessionState, raw.get("session", {}))
+        history = _load_history(raw.get("history", []))
         if not daily.day:
             daily.day = date.today().isoformat()
         return PersistedState(
             int(raw.get("schema_version", SCHEMA_VERSION)),
             daily,
             session,
+            history,
         )
     except FileNotFoundError:
         return fresh_state()
@@ -123,19 +140,30 @@ def save_state(path: Path, state: PersistedState, now_wall: float | None = None)
         "schema_version": SCHEMA_VERSION,
         "daily": asdict(state.daily),
         "session": asdict(state.session),
+        "history": [asdict(item) for item in state.history[-HISTORY_LIMIT:]],
     }
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp, path)
 
 
+def _archive_daily(state: PersistedState) -> None:
+    if not state.daily.day:
+        return
+    snapshot = _coerce(DailyStats, asdict(state.daily))
+    by_day = {item.day: item for item in state.history if item.day}
+    by_day[snapshot.day] = snapshot
+    state.history = [by_day[day] for day in sorted(by_day)[-HISTORY_LIMIT:]]
+
+
 def rollover_daily(state: PersistedState, today: str | None = None):
-    """Reset daily counters without breaking an in-progress live session."""
+    """Archive the finished day and reset daily counters without breaking a live session."""
     today = today or date.today().isoformat()
     if state.daily.day == today:
         return
 
     was_away = state.session.is_away
+    _archive_daily(state)
     state.daily = DailyStats(day=today)
     state.session.day_continuous_seconds = 0.0
     if was_away:

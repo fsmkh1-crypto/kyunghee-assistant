@@ -2,28 +2,29 @@
 
 ## Status
 
-ACTIVE / BREAK INTERVAL, SNOOZE, AND TODAY-SUPPRESSION INTEGRATED.
+CODE INTEGRATED / MULTI-DAY REAL-WORLD VALIDATION PENDING.
 
-## Existing baseline to preserve
+## Completed behavior to preserve
 
-- Continuous PC-use tracking and 60-minute break reminder.
-- 5-minute snooze flow.
-- Manual rest and away/return tracking.
-- Sleep/lock gaps treated as away.
-- Workday wind-down / leave / strong-leave / late-leave / 9-hour hard-stop policy.
-- Fullscreen/presentation suppression infrastructure already exists.
+- Configurable break interval: 20–180 minutes, default 60.
+- Configurable snooze interval: 1–30 minutes, default 5.
+- Break popup text reflects the actual configured snooze duration.
+- “오늘은 그만” suppresses break reminders for the current local day only and survives restart.
+- Daily suppression resets automatically after local day rollover.
+- Manual away / return behavior remains independent from break-reminder suppression.
+- Sleep/lock gaps remain treated as away according to the existing timer engine policy.
+- Workday wind-down / leave / strong-leave / late-leave / 9-hour hard-stop behavior remains intact.
+- Fullscreen/presentation mode hides break alerts without consuming the reminder gate.
+- When presentation mode ends, a still-due break reminder may appear immediately on the next check.
 
-## Phase 6 priority
+## Remaining Phase 6 work
 
-1. Configurable break interval while keeping 60 minutes as the default.
-2. Configurable snooze duration / reminder behavior without making the settings noisy.
-3. “Stop reminders for today” integrated as daily persisted state; it resets automatically on the next local day rollover.
-4. Refine work start/end and manual/automatic away policy where real usage shows a need.
-5. Fullscreen/presentation deferral integrated: hidden break reminders do not consume the repeat gate, and a still-due reminder can appear immediately after presentation mode ends.
-6. Optional Pomodoro mode only after the above is stable.
+- Multi-day real-world use to catch timing or rollover regressions that CI cannot reproduce reliably.
+- Refine manual/automatic away or workday policy only if real usage exposes a concrete problem.
+- Pomodoro mode remains optional and deferred; do not add it merely to close the phase.
 
 ## Constraints
 
 - Preserve all Phase 1–5 behavior unless a verified regression requires change.
 - Operational reminders always outrank personality/custom/rare/daily dialogue.
-- Multi-day real-world use is required before Phase 6 can be marked complete.
+- Do not mark Phase 6 fully complete until multi-day real-world use is satisfactory.
