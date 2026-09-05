@@ -24,6 +24,7 @@ ACTIVE / 7-DAY HISTORY FOUNDATION AND SUMMARY UI INTEGRATED.
 
 ## Data rules
 
+- Historical collection begins with schema 8; daily records from before this rollout were never stored and cannot be reconstructed.
 - Current-day data overrides any same-day archived entry.
 - “기록일 평균” averages only days that contain recorded activity; missing calendar days are not treated as fake workdays.
 - 7-day totals still cover the full calendar window, including zero days.

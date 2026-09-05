@@ -9,6 +9,7 @@ import time
 
 SCHEMA_VERSION = 8
 HISTORY_LIMIT = 30
+# Schema 8 begins historical collection; older state files do not contain reconstructable past days.
 
 
 @dataclass
