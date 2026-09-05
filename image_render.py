@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageFilter, ImageOps
 
 
 DEFAULT_ALPHA_THRESHOLD = 112
@@ -41,11 +41,24 @@ def resize_rgba_alpha_safe(
     return resized.convert("RGBA")
 
 
-def threshold_alpha(image: Image.Image, threshold: int = DEFAULT_ALPHA_THRESHOLD) -> Image.Image:
-    """Convert alpha to binary transparency for Tk color-key windows after resizing."""
+def threshold_alpha(
+    image: Image.Image,
+    threshold: int = DEFAULT_ALPHA_THRESHOLD,
+    *,
+    smooth_radius: float = 0.0,
+) -> Image.Image:
+    """Convert alpha to binary transparency for Tk color-key windows after resizing.
+
+    ``smooth_radius`` gently regularizes the resized alpha mask before the binary
+    color-key cut.  A zero radius preserves the historical behavior exactly.
+    """
     if not 0 <= threshold <= 255:
         raise ValueError("alpha threshold must be between 0 and 255")
+    if smooth_radius < 0:
+        raise ValueError("alpha smooth radius must be non-negative")
     rgba = image.convert("RGBA")
     alpha = rgba.getchannel("A")
+    if smooth_radius:
+        alpha = alpha.filter(ImageFilter.GaussianBlur(radius=float(smooth_radius)))
     rgba.putalpha(alpha.point(lambda value: 0 if value < threshold else 255))
     return rgba

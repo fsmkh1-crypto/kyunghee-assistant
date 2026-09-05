@@ -27,6 +27,7 @@ from windows_display import enable_per_monitor_dpi_awareness, should_suppress_ov
 USER_IMAGE_DIR = core.DATA_DIR / "images"
 USER_IMAGE_SET_DIR = core.DATA_DIR / "image_sets"
 MAX_CUSTOM_IMAGE_DIMENSION = 4000
+BUILTIN_ALPHA_SMOOTH_RADIUS = 0.35
 GLOBAL_HOTKEY_ID = 0x4B48
 MOD_CONTROL = 0x0002
 MOD_SHIFT = 0x0004
@@ -629,8 +630,8 @@ class CompactDesktopApp(DesktopApp):
         return button
 
     @staticmethod
-    def _clean_character_alpha(image):
-        return threshold_alpha(image)
+    def _clean_character_alpha(image, *, smooth_radius=0.0):
+        return threshold_alpha(image, smooth_radius=smooth_radius)
 
     def _start_drag(self, event):
         self._drag_origin = (event.x_root, event.y_root, self.root.winfo_x(), self.root.winfo_y())
@@ -886,9 +887,14 @@ class CompactDesktopApp(DesktopApp):
             return
         self._image_set_choices.pop(role, None)
         try:
+            # Establish any user-selected image before loading so built-in-only
+            # mask smoothing never changes user supplied artwork.  _custom_image
+            # stores an image-set choice, so _load_character_image reuses it.
+            custom, _mode, _centering = self._custom_image(role)
             max_size = (self._scale(self.CHARACTER_MAX[0]), self._scale(self.CHARACTER_MAX[1]))
             image = self._load_character_image(role, max_size, preserve_alpha=True)
-            image = self._clean_character_alpha(image)
+            smooth_radius = 0.0 if custom is not None else BUILTIN_ALPHA_SMOOTH_RADIUS
+            image = self._clean_character_alpha(image, smooth_radius=smooth_radius)
             alpha_bbox = image.getchannel("A").getbbox()
             self._character_alpha_bbox = alpha_bbox or (0, 0, image.width, image.height)
             self.character_photo = ImageTk.PhotoImage(image)
