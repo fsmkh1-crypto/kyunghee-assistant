@@ -1,0 +1,37 @@
+name: Asset Quality Lab
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ui/dark-kyunghee-redesign
+    paths:
+      - 'assets/**/*.png'
+      - 'image_render.py'
+      - 'tools/asset_display_lab.py'
+      - 'tools/test_asset_display_lab.py'
+      - 'tools/requirements-asset-import.txt'
+      - '.github/workflows/asset-quality-lab.yml'
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install asset lab dependencies
+        run: python -m pip install -r tools/requirements-asset-import.txt
+      - name: Compile asset lab
+        run: python -m py_compile tools/asset_display_lab.py tools/test_asset_display_lab.py image_render.py
+      - name: Test asset lab
+        run: python tools/test_asset_display_lab.py
+      - name: Analyze built-in assets
+        run: python tools/asset_display_lab.py
+      - name: Upload asset quality report
+        uses: actions/upload-artifact@v4
+        with:
+          name: asset-quality-lab
+          path: .asset_display_lab
+          retention-days: 14

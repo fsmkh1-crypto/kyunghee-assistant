@@ -13,3 +13,4 @@ state.*.tmp
 *.corrupt
 .DS_Store
 .asset_import_preview/
+.asset_display_lab/
