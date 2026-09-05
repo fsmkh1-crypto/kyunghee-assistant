@@ -181,26 +181,26 @@ class DesktopApp(App):
         panel.grid(row=0, column=0, sticky="nsew")
 
         summary = tk.Frame(panel, bg=core.PANEL)
-        summary.pack(fill="x", padx=12, pady=(10, 5))
+        summary.pack(fill="x", padx=12, pady=(8, 4))
         self.detail_cont = self._label(summary, "00:00:00", size=20, weight="bold", bg=core.PANEL)
         self.detail_cont.pack(side="left")
         self.status = self._label(summary, "현재 사용 중", size=8, weight="bold", fg=core.GREEN, bg=core.PANEL)
         self.status.pack(side="right")
 
         progress_wrap = tk.Frame(panel, bg=core.PANEL)
-        progress_wrap.pack(fill="x", padx=12, pady=(2, 7))
+        progress_wrap.pack(fill="x", padx=12, pady=(1, 5))
         progress_text = tk.Frame(progress_wrap, bg=core.PANEL)
         progress_text.pack(fill="x")
         self._label(progress_text, "다음 휴식까지", size=8, fg=core.MUTED, bg=core.PANEL).pack(side="left")
         self.remain = self._label(progress_text, "60분", size=8, weight="bold", bg=core.PANEL)
         self.remain.pack(side="right")
         self.progress_canvas = tk.Canvas(progress_wrap, height=6, bg=core.PANEL_2, highlightthickness=0, bd=0)
-        self.progress_canvas.pack(fill="x", pady=(4, 0))
+        self.progress_canvas.pack(fill="x", pady=(3, 0))
         self.progress_bar = self.progress_canvas.create_rectangle(0, 0, 0, 6, fill=core.PURPLE, outline="")
         self.progress_canvas.bind("<Configure>", lambda _e: self._update_progress())
 
         metrics = tk.Frame(panel, bg=core.PANEL)
-        metrics.pack(fill="x", padx=12, pady=(2, 7))
+        metrics.pack(fill="x", padx=12, pady=(1, 5))
         for i in range(3):
             metrics.grid_columnconfigure(i, weight=1)
         self.today_active = self._metric(metrics, 0, "오늘 실사용")
@@ -208,20 +208,45 @@ class DesktopApp(App):
         self.today_ratio = self._metric(metrics, 2, "실사용률")
 
         self.stats_values = {}
-        rows = [
+        for key, caption in (
             ("count", "휴식 횟수"),
             ("longest", "최장 연속 사용"),
-        ]
-        for key, caption in rows:
+        ):
             row = tk.Frame(panel, bg=core.PANEL)
-            row.pack(fill="x", padx=12, pady=2)
+            row.pack(fill="x", padx=12, pady=1)
             self._label(row, caption, size=8, fg=core.MUTED, bg=core.PANEL).pack(side="left")
             value = self._label(row, "-", size=9, weight="bold", bg=core.PANEL)
             value.pack(side="right")
             self.stats_values[key] = value
 
+        self._label(panel, "최근 7일", size=8, weight="bold", fg=core.MUTED, bg=core.PANEL).pack(
+            anchor="w", padx=12, pady=(5, 1)
+        )
+        for key, caption in (
+            ("week_active", "7일 실사용"),
+            ("week_average", "기록일 평균"),
+            ("week_best", "최고 집중일"),
+        ):
+            row = tk.Frame(panel, bg=core.PANEL)
+            row.pack(fill="x", padx=12, pady=1)
+            self._label(row, caption, size=8, fg=core.MUTED, bg=core.PANEL).pack(side="left")
+            value = self._label(row, "-", size=9, weight="bold", bg=core.PANEL)
+            value.pack(side="right")
+            self.stats_values[key] = value
+
+        self.stats_reaction = self._label(
+            panel,
+            "",
+            size=8,
+            fg=core.TEXT,
+            bg=core.PANEL_2,
+            wraplength=350,
+            justify="left",
+        )
+        self.stats_reaction.pack(fill="x", padx=12, pady=(5, 3), ipadx=7, ipady=4)
+
         actions = tk.Frame(panel, bg=core.PANEL)
-        actions.pack(fill="x", padx=12, pady=(7, 5))
+        actions.pack(fill="x", padx=12, pady=(3, 4))
         self.away_btn = self._button(actions, "자리비움 시작", self.toggle_manual_away, primary=True)
         self.away_btn.pack(side="left", fill="x", expand=True, padx=(0, 4))
         self._button(actions, "기본 화면", lambda: self._show_page("timer")).pack(
@@ -229,14 +254,31 @@ class DesktopApp(App):
         )
 
         footer = self._card(panel, bg=core.PANEL_2)
-        footer.pack(fill="x", padx=12, pady=(0, 10))
+        footer.pack(fill="x", padx=12, pady=(0, 8))
         self.next_break = self._label(footer, "다음 휴식 알림: 60분 후", size=8, fg=core.MUTED, bg=core.PANEL_2)
-        self.next_break.pack(side="left", padx=8, pady=5)
+        self.next_break.pack(side="left", padx=8, pady=4)
 
     def _update_stats_page(self, refresh_image=True):
+        from stats_summary import stats_reaction, summarize_recent
+
         d = self.state.daily
         self.stats_values["count"].configure(text=f"{d.away_count}회")
         self.stats_values["longest"].configure(text=core.fmt(d.longest_continuous_today))
+
+        recent = summarize_recent(self.state, days=7)
+        self.stats_values["week_active"].configure(text=core.fmt(recent.active_seconds))
+        average_text = core.fmt(recent.average_active_seconds) if recent.tracked_days else "-"
+        self.stats_values["week_average"].configure(text=average_text)
+        if recent.best_day:
+            try:
+                _, month, day = recent.best_day.split("-")
+                best_day = f"{int(month)}/{int(day)} · {core.fmt(recent.best_day_active_seconds)}"
+            except (ValueError, TypeError):
+                best_day = core.fmt(recent.best_day_active_seconds)
+        else:
+            best_day = "-"
+        self.stats_values["week_best"].configure(text=best_day)
+        self.stats_reaction.configure(text=stats_reaction(recent))
 
     def _build_settings_page(self):
         page = self.settings_page

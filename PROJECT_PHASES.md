@@ -177,32 +177,40 @@ Extended real-world personality tuning can continue during normal use, but no Ph
 
 ## Phase 6 — Work/break behavior
 
-### Status: NOT STARTED
+### Status: CODE INTEGRATED / MULTI-DAY REAL-WORLD VALIDATION PENDING
 
-Planned:
-- Configurable break intervals.
-- Snooze behavior.
-- “Stop reminders for today”.
-- Work start/end policy refinement.
-- Manual/automatic away behavior.
-- Fullscreen/presentation deferral integration.
-- Optional Pomodoro mode later.
+Implemented:
+- Configurable break interval: 20–180 minutes, default 60.
+- Configurable snooze duration: 1–30 minutes, default 5; popup wording follows the configured value.
+- “오늘은 그만” suppresses break reminders for the current local day, survives restart, and resets at the next local day rollover.
+- Manual away, automatic away, workday/leave reminders, and the 9-hour hard stop remain independent from daily break suppression.
+- Fullscreen/presentation mode does not consume a hidden break reminder; a still-due reminder may appear immediately after presentation mode ends.
+- Phase 6 regression tests and Windows package/smoke checks pass.
 
-Requires real-world multi-day usage testing before completion.
+Remaining before full closure:
+- Multi-day real-world use to verify day rollover, sleep/lock gaps, suppression reset, and reminder timing under normal work conditions.
+- Refine away/workday policy only if a concrete real-use regression appears.
+- Optional Pomodoro mode remains deferred.
 
 ---
 
 ## Phase 7 — Stats
 
-### Status: NOT STARTED
+### Status: ACTIVE / 7-DAY HISTORY FOUNDATION INTEGRATED
 
-Planned:
-- 7-day summary.
-- Personal records / streak-style summaries where useful.
-- Dialogue reactions to stats.
-- CSV export only later if still useful.
+Implemented:
+- State schema 8 archives completed daily records and keeps up to 30 days of history.
+- Existing state files migrate safely with empty history; malformed historical entries are ignored.
+- Recent-stat helpers produce a calendar-aligned 7-day window with current-day data taking priority.
+- The desktop detail screen shows 7-day active time, average active time across recorded days, and the best active day alongside today's metrics.
+- A lightweight Kyunghee stats reaction uses the recent summary without introducing levels, scores, or a heavy game system.
 
-Data correctness is more important than visual complexity.
+Next validation/tuning:
+- Verify archived totals over several real day rollovers.
+- Adjust compact detail spacing or wording only if real Windows use feels crowded.
+- Streak-style summaries remain optional; CSV export stays deferred until actually useful.
+
+Data correctness remains more important than visual complexity.
 
 ---
 
@@ -229,7 +237,7 @@ Before changing code:
 7. Preserve Phase 1 drag/hotkey/position behavior.
 8. Preserve the transparent color-key model and empty-area click-through behavior unless a regression requires otherwise.
 9. Phase 3 is complete; preserve its visible-alpha cluster layout instead of redesigning it.
-10. Phases 4 and 5 are complete; preserve the image-set/preview and personality systems. Phase 6 is active.
+10. Phases 4 and 5 are complete; preserve the image-set/preview and personality systems. Phase 6 code is integrated and under real-world validation; Phase 7 stats work is active.
 11. After risky Windows-specific changes, run tests/build/smoke; request real-device testing only when CI cannot validate the visual behavior.
 
 ## Last known user feedback
@@ -241,6 +249,6 @@ Before changing code:
 - Final Phase 3 layout uses visible-alpha silhouette bounds so clock/status stays visually close to Kyunghee at 80/140/200%.
 - User reviewed the final 80/140/200 screenshots and approved moving on to Phase 4.
 - Phase 4 settings preview UI was accepted in real Windows use. A missing mouse-wheel binding was found and fixed; Phase 4 is closed.
-- Phase 5 personality/fun behavior scope is complete; Phase 6 work/break behavior is now active.
+- Phase 5 personality/fun behavior scope is complete. Phase 6 code is integrated and awaiting multi-day real-world validation. Phase 7 recent-stats work is active.
 
 This file should be updated whenever a phase is completed, materially changed, or a new real-world issue is discovered.
