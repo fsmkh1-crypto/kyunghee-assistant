@@ -34,4 +34,5 @@ jobs:
         with:
           name: asset-quality-lab
           path: .asset_display_lab
+          include-hidden-files: true
           retention-days: 14
