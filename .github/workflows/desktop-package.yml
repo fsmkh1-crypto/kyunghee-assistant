@@ -73,3 +73,5 @@ jobs:
         with:
           name: kyunghee-timer-desktop
           path: dist/KyungheeTimer
+
+# Package trigger: asset-selection build 2026-09-07
