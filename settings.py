@@ -90,17 +90,19 @@ def _fit_mode(value: object) -> str:
 
 def _builtin_set_choice(value: object, default: str = "random") -> str:
     value = str(value).strip().lower()
-    if value == "random":
-        return "random"
+    if value in {"random", "canonical"}:
+        return value
     if value.isdigit() and 1 <= int(value) <= 99:
         return f"{int(value):02d}"
     return default
 
 
 def _builtin_override_choice(value: object) -> str:
-    value = str(value).strip()
+    value = str(value).strip().lower()
     if not value:
         return ""
+    if value == "canonical":
+        return "canonical"
     if value.isdigit() and 1 <= int(value) <= 99:
         return f"{int(value):02d}"
     return ""

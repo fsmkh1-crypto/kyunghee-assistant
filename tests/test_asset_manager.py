@@ -73,6 +73,11 @@ class AssetManagerTests(unittest.TestCase):
                 for number in (3, 5):
                     (folder / f"{role}_{number:02d}.png").write_bytes(b"x")
 
+            canonical_default = root / "default" / "main_kyunghee.png"
+            canonical_default.write_bytes(b"x")
+            canonical_warning = root / "warning" / "warning_kyunghee.png"
+            canonical_warning.write_bytes(b"x")
+
             set_session_set(3, root)
             self.assertEqual(
                 resolve_configured_asset("default", "05", "", root),
@@ -85,6 +90,14 @@ class AssetManagerTests(unittest.TestCase):
             self.assertEqual(
                 resolve_configured_asset("praise", "random", "", root),
                 root / "leave" / "leave_03.png",
+            )
+            self.assertEqual(
+                resolve_configured_asset("default", "canonical", "", root),
+                canonical_default,
+            )
+            self.assertEqual(
+                resolve_configured_asset("nag", "03", "canonical", root),
+                canonical_warning,
             )
 
     def test_missing_asset_is_safe(self):

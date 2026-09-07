@@ -758,19 +758,31 @@ class CompactDesktopApp(DesktopApp):
 
     @staticmethod
     def _builtin_base_label(value: str) -> str:
-        return "랜덤" if str(value) == "random" else str(value)
+        value = str(value)
+        if value == "canonical":
+            return "기본 모델"
+        return "랜덤" if value == "random" else value
 
     @staticmethod
     def _builtin_base_value(label: str) -> str:
-        return "random" if str(label) == "랜덤" else str(label)
+        label = str(label)
+        if label == "기본 모델":
+            return "canonical"
+        return "random" if label == "랜덤" else label
 
     @staticmethod
     def _builtin_override_label(value: str) -> str:
-        return "세트 기본값" if not str(value) else str(value)
+        value = str(value)
+        if value == "canonical":
+            return "기본 모델"
+        return "세트 기본값" if not value else value
 
     @staticmethod
     def _builtin_override_value(label: str) -> str:
-        return "" if str(label) == "세트 기본값" else str(label)
+        label = str(label)
+        if label == "기본 모델":
+            return "canonical"
+        return "" if label == "세트 기본값" else label
 
     def _resolve_builtin_asset(self, role: str, *, controls: bool = False):
         key = self.ROLE_TO_SETTING.get(role, "default")
@@ -1565,7 +1577,7 @@ class CompactDesktopApp(DesktopApp):
         self._label(built_in_row, "기본 내장 세트", size=9, bg=core.PANEL).pack(side="left")
         self.builtin_image_set_var = tk.StringVar(value=self._builtin_base_label(p.builtin_image_set))
         tk.OptionMenu(
-            built_in_row, self.builtin_image_set_var, "랜덤", *built_in_labels,
+            built_in_row, self.builtin_image_set_var, "기본 모델", "랜덤", *built_in_labels,
             command=lambda _value: self._select_settings_preview(self._settings_preview_role),
         ).pack(side="left", padx=(10, 0))
         self._label(
@@ -1636,7 +1648,7 @@ class CompactDesktopApp(DesktopApp):
             options.pack(fill="x", pady=(0, 3), **pad)
             self._label(options, "내장", size=8, fg=core.MUTED, bg=core.PANEL).pack(side="left", padx=(70, 3))
             tk.OptionMenu(
-                options, self.image_builtin_vars[key], "세트 기본값", *self._builtin_set_labels,
+                options, self.image_builtin_vars[key], "세트 기본값", "기본 모델", *self._builtin_set_labels,
                 command=lambda _value, k=key: self._select_settings_preview(k),
             ).pack(side="left", padx=(0, 5))
             self._label(options, "표시", size=8, fg=core.MUTED, bg=core.PANEL).pack(side="left", padx=(5, 3))

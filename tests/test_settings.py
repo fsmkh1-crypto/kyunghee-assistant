@@ -152,6 +152,13 @@ class UserSettingsTests(unittest.TestCase):
         self.assertEqual(parsed.builtin_image_default, "05")
         self.assertEqual(parsed.builtin_image_warning, "")
         self.assertEqual(settings_from_dict({"builtin_image_set": "bad"}).builtin_image_set, "random")
+        canonical = settings_from_dict({
+            "builtin_image_set": "canonical",
+            "builtin_image_warning": "canonical",
+        })
+        self.assertEqual(canonical.builtin_image_set, "canonical")
+        self.assertEqual(canonical.builtin_image_warning, "canonical")
+        canonical.validate_widget_style()
 
 
 if __name__ == "__main__":
