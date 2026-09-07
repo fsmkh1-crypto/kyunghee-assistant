@@ -15,7 +15,7 @@ permissions:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 6
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -32,17 +32,21 @@ jobs:
 
       - name: Collect and rank sample
         run: |
+          rm -rf /tmp/donor-crawler-sample
           mkdir -p /tmp/donor-crawler-sample
-          python tools/donor_crawler/donor_crawler.py \
+          python tools/donor_crawler/openverse_sample.py \
             --queries-file tools/donor_crawler/queries.txt \
             --limit 10 \
-            --candidate-pool 50 \
-            --candidates-per-query 3 \
-            --pages-per-query 8 \
-            --images-per-page 4 \
-            --output-dir /tmp/donor-crawler-sample \
-            --manifest /tmp/donor-crawler-sample/manifest.csv \
-            --dry-run
+            --pool 50 \
+            --per-query 12 \
+            --output-dir /tmp/donor-crawler-sample
+
+      - name: Verify ten-or-fewer outputs
+        run: |
+          count=$(find /tmp/donor-crawler-sample -maxdepth 1 -name 'candidate_*.jpg' | wc -l)
+          echo "candidate_count=$count"
+          test "$count" -le 10
+          test "$count" -gt 0
 
       - name: Upload sample artifact
         uses: actions/upload-artifact@v4
