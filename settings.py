@@ -88,6 +88,24 @@ def _fit_mode(value: object) -> str:
     return str(value) if str(value) in {"fit", "crop"} else "fit"
 
 
+def _builtin_set_choice(value: object, default: str = "random") -> str:
+    value = str(value).strip().lower()
+    if value == "random":
+        return "random"
+    if value.isdigit() and 1 <= int(value) <= 99:
+        return f"{int(value):02d}"
+    return default
+
+
+def _builtin_override_choice(value: object) -> str:
+    value = str(value).strip()
+    if not value:
+        return ""
+    if value.isdigit() and 1 <= int(value) <= 99:
+        return f"{int(value):02d}"
+    return ""
+
+
 def _color_or(value: object, default: str) -> str:
     try:
         return validate_hex_color(str(value))
@@ -134,6 +152,18 @@ class UserSettings:
     time_text_color: str = "#13A45C"
     status_text_color: str = "#11854B"
     message_text_color: str = "#E05A88"
+
+    builtin_image_set: str = "random"
+    builtin_image_default: str = ""
+    builtin_image_cheer: str = ""
+    builtin_image_rest: str = ""
+    builtin_image_away: str = ""
+    builtin_image_warning: str = ""
+    builtin_image_leave: str = ""
+    builtin_image_stats: str = ""
+    builtin_image_settings: str = ""
+    builtin_image_alert: str = ""
+    builtin_image_profile: str = ""
 
     image_default: str = ""
     image_cheer: str = ""
@@ -188,6 +218,15 @@ class UserSettings:
             raise ValueError("메시지 글자 크기는 9~16 사이로 설정해 주세요.")
         if self.personality not in PERSONALITIES:
             raise ValueError("경희 말투 설정이 올바르지 않습니다.")
+        if _builtin_set_choice(self.builtin_image_set, "") != self.builtin_image_set:
+            raise ValueError("기본 내장 이미지 세트 설정이 올바르지 않습니다.")
+        for key in (
+            "default", "cheer", "rest", "away", "warning",
+            "leave", "stats", "settings", "alert", "profile",
+        ):
+            value = getattr(self, f"builtin_image_{key}")
+            if _builtin_override_choice(value) != value:
+                raise ValueError("역할별 내장 이미지 설정이 올바르지 않습니다.")
         validate_custom_dialogue(self.custom_dialogue)
         validate_hex_color(self.time_text_color)
         validate_hex_color(self.status_text_color)
@@ -238,6 +277,17 @@ def settings_from_dict(raw: object) -> UserSettings:
         time_text_color=_color_or(raw.get("time_text_color"), d.time_text_color),
         status_text_color=_color_or(raw.get("status_text_color"), d.status_text_color),
         message_text_color=_color_or(raw.get("message_text_color"), d.message_text_color),
+        builtin_image_set=_builtin_set_choice(raw.get("builtin_image_set", d.builtin_image_set), d.builtin_image_set),
+        builtin_image_default=_builtin_override_choice(raw.get("builtin_image_default", "")),
+        builtin_image_cheer=_builtin_override_choice(raw.get("builtin_image_cheer", "")),
+        builtin_image_rest=_builtin_override_choice(raw.get("builtin_image_rest", "")),
+        builtin_image_away=_builtin_override_choice(raw.get("builtin_image_away", "")),
+        builtin_image_warning=_builtin_override_choice(raw.get("builtin_image_warning", "")),
+        builtin_image_leave=_builtin_override_choice(raw.get("builtin_image_leave", "")),
+        builtin_image_stats=_builtin_override_choice(raw.get("builtin_image_stats", "")),
+        builtin_image_settings=_builtin_override_choice(raw.get("builtin_image_settings", "")),
+        builtin_image_alert=_builtin_override_choice(raw.get("builtin_image_alert", "")),
+        builtin_image_profile=_builtin_override_choice(raw.get("builtin_image_profile", "")),
         image_default=str(raw.get("image_default", "")),
         image_cheer=str(raw.get("image_cheer", "")),
         image_rest=str(raw.get("image_rest", "")),

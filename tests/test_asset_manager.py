@@ -5,6 +5,7 @@ from pathlib import Path
 from asset_manager import (
     available_complete_sets,
     resolve_asset,
+    resolve_configured_asset,
     role_for_dialogue,
     role_for_work_mode,
     set_session_set,
@@ -61,6 +62,30 @@ class AssetManagerTests(unittest.TestCase):
             (root / "default" / "default_08.png").write_bytes(b"x")
             self.assertEqual(available_complete_sets(root), ())
             self.assertEqual(resolve_asset("default", root), canonical)
+
+    def test_configured_set_supports_base_and_role_override(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            folders = ("default", "cheer", "rest", "away", "warning", "leave", "stats", "settings", "alert", "profile")
+            for role in folders:
+                folder = root / role
+                folder.mkdir()
+                for number in (3, 5):
+                    (folder / f"{role}_{number:02d}.png").write_bytes(b"x")
+
+            set_session_set(3, root)
+            self.assertEqual(
+                resolve_configured_asset("default", "05", "", root),
+                root / "default" / "default_05.png",
+            )
+            self.assertEqual(
+                resolve_configured_asset("nag", "03", "05", root),
+                root / "warning" / "warning_05.png",
+            )
+            self.assertEqual(
+                resolve_configured_asset("praise", "random", "", root),
+                root / "leave" / "leave_03.png",
+            )
 
     def test_missing_asset_is_safe(self):
         with tempfile.TemporaryDirectory() as td:

@@ -15,7 +15,7 @@ from PIL import Image, ImageTk
 
 import app as core
 from app import SingleInstance
-from asset_manager import resolve_asset
+from asset_manager import available_complete_sets, resolve_configured_asset
 from desktop_app import DesktopApp
 from image_render import resize_rgba_alpha_safe, threshold_alpha
 from image_sets import ImageSetStore, normalize_alignment
@@ -756,6 +756,32 @@ class CompactDesktopApp(DesktopApp):
             path = USER_IMAGE_DIR / path
         return path
 
+    @staticmethod
+    def _builtin_base_label(value: str) -> str:
+        return "랜덤" if str(value) == "random" else str(value)
+
+    @staticmethod
+    def _builtin_base_value(label: str) -> str:
+        return "random" if str(label) == "랜덤" else str(label)
+
+    @staticmethod
+    def _builtin_override_label(value: str) -> str:
+        return "세트 기본값" if not str(value) else str(value)
+
+    @staticmethod
+    def _builtin_override_value(label: str) -> str:
+        return "" if str(label) == "세트 기본값" else str(label)
+
+    def _resolve_builtin_asset(self, role: str, *, controls: bool = False):
+        key = self.ROLE_TO_SETTING.get(role, "default")
+        if controls and hasattr(self, "builtin_image_set_var") and hasattr(self, "image_builtin_vars"):
+            base_set = self._builtin_base_value(self.builtin_image_set_var.get())
+            role_override = self._builtin_override_value(self.image_builtin_vars[key].get())
+        else:
+            base_set = getattr(self.preferences, "builtin_image_set", "random")
+            role_override = getattr(self.preferences, f"builtin_image_{key}", "")
+        return resolve_configured_asset(role, base_set, role_override)
+
     def _custom_image(self, role: str):
         key = self.ROLE_TO_SETTING.get(role, "default")
         config = self._image_set_store.get(key)
@@ -780,7 +806,7 @@ class CompactDesktopApp(DesktopApp):
 
     def _load_character_image(self, role: str, max_size=(470, 300), preserve_alpha=False):
         custom, mode, centering = self._custom_image(role)
-        path = custom or resolve_asset(role)
+        path = custom or self._resolve_builtin_asset(role)
         if not path:
             return super()._load_character_image(role, max_size, preserve_alpha)
         try:
@@ -1113,8 +1139,8 @@ class CompactDesktopApp(DesktopApp):
         if legacy and legacy.is_file():
             return [legacy], "한 장"
         role = self.SETTING_TO_CANONICAL_ROLE.get(key, "default")
-        canonical = resolve_asset(role)
-        return ([canonical] if canonical else []), "기본 이미지"
+        built_in = self._resolve_builtin_asset(role, controls=True)
+        return ([built_in] if built_in else []), "내장 이미지"
 
     def _settings_preview_style(self, key: str):
         mode_label = self.image_mode_vars[key].get() if hasattr(self, "image_mode_vars") else "자동 맞춤"
@@ -1297,6 +1323,8 @@ class CompactDesktopApp(DesktopApp):
         self.image_mode_vars[key].set("자동 맞춤")
         if hasattr(self, "image_alignment_vars"):
             self.image_alignment_vars[key].set("가운데")
+        if hasattr(self, "image_builtin_vars"):
+            self.image_builtin_vars[key].set("세트 기본값")
         self._image_set_store.clear(key)
         self._image_set_store.set_options(key, fit_mode="fit", alignment="center")
         self._image_set_choices.clear()
@@ -1530,10 +1558,26 @@ class CompactDesktopApp(DesktopApp):
             size=8, fg=core.MUTED, bg=core.PANEL, wraplength=590, justify="left",
         ).pack(anchor="w", pady=(0, 7), **pad)
 
+        built_in_labels = tuple(f"{number:02d}" for number in available_complete_sets())
+        self._builtin_set_labels = built_in_labels
+        built_in_row = tk.Frame(content, bg=core.PANEL)
+        built_in_row.pack(fill="x", pady=(2, 7), **pad)
+        self._label(built_in_row, "기본 내장 세트", size=9, bg=core.PANEL).pack(side="left")
+        self.builtin_image_set_var = tk.StringVar(value=self._builtin_base_label(p.builtin_image_set))
+        tk.OptionMenu(
+            built_in_row, self.builtin_image_set_var, "랜덤", *built_in_labels,
+            command=lambda _value: self._select_settings_preview(self._settings_preview_role),
+        ).pack(side="left", padx=(10, 0))
+        self._label(
+            built_in_row, "역할별 지정이 없으면 이 세트를 사용",
+            size=8, fg=core.MUTED, bg=core.PANEL,
+        ).pack(side="left", padx=(10, 0))
+
         self.image_path_vars = {}
         self.image_name_vars = {}
         self.image_mode_vars = {}
         self.image_alignment_vars = {}
+        self.image_builtin_vars = {}
 
         preview_box = tk.Frame(content, bg=core.PANEL_2, bd=0, highlightthickness=0)
         preview_box.pack(fill="x", padx=14, pady=(2, 9), ipady=8)
@@ -1572,6 +1616,9 @@ class CompactDesktopApp(DesktopApp):
             self.image_name_vars[key] = tk.StringVar(value=self._image_display_name(key, path_value))
             self.image_mode_vars[key] = tk.StringVar(value="가운데 크롭" if mode_value == "crop" else "자동 맞춤")
             self.image_alignment_vars[key] = tk.StringVar(value=alignment_labels.get(config.alignment, "가운데"))
+            self.image_builtin_vars[key] = tk.StringVar(
+                value=self._builtin_override_label(getattr(p, f"builtin_image_{key}", ""))
+            )
 
             row = tk.Frame(content, bg=core.PANEL)
             row.pack(fill="x", pady=(3, 0), **pad)
@@ -1587,7 +1634,12 @@ class CompactDesktopApp(DesktopApp):
             self._button(row, "기본값", lambda k=key: self._reset_image(k)).pack(side="left", padx=(2, 0))
             options = tk.Frame(content, bg=core.PANEL)
             options.pack(fill="x", pady=(0, 3), **pad)
-            self._label(options, "표시", size=8, fg=core.MUTED, bg=core.PANEL).pack(side="left", padx=(70, 3))
+            self._label(options, "내장", size=8, fg=core.MUTED, bg=core.PANEL).pack(side="left", padx=(70, 3))
+            tk.OptionMenu(
+                options, self.image_builtin_vars[key], "세트 기본값", *self._builtin_set_labels,
+                command=lambda _value, k=key: self._select_settings_preview(k),
+            ).pack(side="left", padx=(0, 5))
+            self._label(options, "표시", size=8, fg=core.MUTED, bg=core.PANEL).pack(side="left", padx=(5, 3))
             tk.OptionMenu(
                 options, self.image_mode_vars[key], "자동 맞춤", "가운데 크롭",
                 command=lambda _value, k=key: self._select_settings_preview(k),
@@ -1664,6 +1716,11 @@ class CompactDesktopApp(DesktopApp):
                 time_text_color=validate_hex_color(self.style_color_vars["time"].get()),
                 status_text_color=validate_hex_color(self.style_color_vars["status"].get()),
                 message_text_color=validate_hex_color(self.style_color_vars["message"].get()),
+                builtin_image_set=self._builtin_base_value(self.builtin_image_set_var.get()),
+                **{
+                    f"builtin_image_{k}": self._builtin_override_value(self.image_builtin_vars[k].get())
+                    for k, _ in self.IMAGE_ROWS
+                },
                 **{f"image_{k}": self.image_path_vars[k].get() for k, _ in self.IMAGE_ROWS},
                 **{
                     f"image_{k}_mode": "crop" if self.image_mode_vars[k].get() == "가운데 크롭" else "fit"

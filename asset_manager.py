@@ -186,16 +186,41 @@ def set_session_set(set_number: int | None, asset_dir: Path = ASSET_DIR) -> None
     _SESSION_SET_BY_ROOT[key] = set_number
 
 
+def resolve_asset_for_set(role: str, set_number: int, asset_dir: Path = ASSET_DIR) -> Path | None:
+    """Resolve one explicit built-in numbered set, then fall back safely."""
+    numbered = variant_asset(role, set_number, asset_dir)
+    if numbered is not None:
+        return numbered
+    names = ROLE_FILES.get(role, ROLE_FILES["default"])
+    return first_existing(names, asset_dir)
+
+
 def resolve_asset(role: str, asset_dir: Path = ASSET_DIR) -> Path | None:
     # User-imported image sets are resolved before this function by the desktop
     # UI. Here, prefer one coherent built-in numbered set, then canonical/legacy.
     set_number = select_session_set(asset_dir)
     if set_number is not None:
-        numbered = variant_asset(role, set_number, asset_dir)
-        if numbered is not None:
-            return numbered
+        return resolve_asset_for_set(role, set_number, asset_dir)
     names = ROLE_FILES.get(role, ROLE_FILES["default"])
     return first_existing(names, asset_dir)
+
+
+def resolve_configured_asset(
+    role: str,
+    base_set: str = "random",
+    role_override: str = "",
+    asset_dir: Path = ASSET_DIR,
+) -> Path | None:
+    """Resolve role override > selected base set > process-stable random set."""
+    override_text = str(role_override).strip()
+    if override_text.isdigit() and 1 <= int(override_text) <= 99:
+        return resolve_asset_for_set(role, int(override_text), asset_dir)
+
+    base_text = str(base_set).strip().lower()
+    if base_text != "random" and base_text.isdigit() and 1 <= int(base_text) <= 99:
+        return resolve_asset_for_set(role, int(base_text), asset_dir)
+
+    return resolve_asset(role, asset_dir)
 
 
 def role_for_work_mode(mode: str) -> str:

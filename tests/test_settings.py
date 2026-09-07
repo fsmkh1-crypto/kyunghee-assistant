@@ -39,6 +39,8 @@ class UserSettingsTests(unittest.TestCase):
             window_x=-1420,
             window_y=80,
             image_default="default.png",
+            builtin_image_set="03",
+            builtin_image_warning="05",
             personality="warm",
         )
         with tempfile.TemporaryDirectory() as directory:
@@ -139,6 +141,17 @@ class UserSettingsTests(unittest.TestCase):
     def test_personality_loads_and_invalid_value_falls_back(self):
         self.assertEqual(settings_from_dict({"personality": "playful"}).personality, "playful")
         self.assertEqual(settings_from_dict({"personality": "unknown"}).personality, "balanced")
+
+    def test_builtin_asset_choices_normalize_safely(self):
+        parsed = settings_from_dict({
+            "builtin_image_set": "3",
+            "builtin_image_default": "5",
+            "builtin_image_warning": "bad",
+        })
+        self.assertEqual(parsed.builtin_image_set, "03")
+        self.assertEqual(parsed.builtin_image_default, "05")
+        self.assertEqual(parsed.builtin_image_warning, "")
+        self.assertEqual(settings_from_dict({"builtin_image_set": "bad"}).builtin_image_set, "random")
 
 
 if __name__ == "__main__":
