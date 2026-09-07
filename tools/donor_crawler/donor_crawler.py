@@ -6,6 +6,7 @@ import hashlib
 import io
 import mimetypes
 import re
+import tempfile
 import urllib.parse
 import urllib.robotparser
 from dataclasses import asdict, dataclass
@@ -23,10 +24,10 @@ from googleapiclient.http import MediaIoBaseUpload
 
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 DEFAULT_DRIVE_FOLDER_ID = "1XhlBU1Koa5RhRrhPpHkBoOsT2yPdpr8a"  # GPT/donor_rest
-UA = "KyungheeAssistantDonorCollector/0.2 (+personal reference workflow)"
+UA = "KyungheeAssistantDonorCollector/0.3 (+personal reference workflow)"
 
-# Collection is intentionally broad. These markers only affect usage labels;
-# explicit reuse/AI/derivative prohibitions are skipped automatically.
+# Collection is intentionally broad. Rights classification is kept separate
+# from pose usefulness. Explicit reuse/AI/derivative prohibitions are skipped.
 FREE_MARKERS = (
     "cc0", "public domain", "cc by", "creative commons attribution",
     "pexels license", "free to use", "royalty-free",
@@ -41,17 +42,38 @@ GATED_MARKERS = (
     "subscribe to download", "members only",
 )
 
+POSITIVE_TERMS: tuple[tuple[str, int], ...] = (
+    ("sitting", 4), ("seated", 4), ("floor", 3),
+    ("full body", 4), ("full-body", 4), ("whole body", 4), ("full length", 3),
+    ("knees up", 4), ("bent knees", 3), ("bent knee", 2),
+    ("front view", 3), ("front-facing", 3), ("three quarter", 3), ("3/4", 3),
+    ("low angle", 3), ("low viewpoint", 3),
+    ("figure reference", 3), ("pose reference", 3), ("anatomy reference", 3),
+    ("anatomy", 1), ("studio", 2), ("plain background", 2),
+    ("turnaround", 5), ("multi-angle", 5), ("multi angle", 5), ("multiple angles", 5),
+    ("lower body", 2), ("body proportions", 2),
+)
+NEGATIVE_TERMS: tuple[tuple[str, int], ...] = (
+    ("thumbnail", 4), ("avatar", 4), ("icon", 4), ("logo", 4),
+    ("banner", 3), ("sprite", 4), ("collage", 3), ("contact sheet", 2),
+    ("watermark", 3), ("preview only", 2),
+)
+
 
 @dataclass
 class Candidate:
     query: str
     page_url: str
+    page_title: str
     image_url: str
+    image_context: str
     source_domain: str
     license_state: str
     usage_state: str
     width: int
     height: int
+    score: int
+    score_reasons: str
     sha256: str
     mime_type: str
     drive_file_id: str = ""
@@ -115,23 +137,39 @@ def abs_url(base: str, value: str) -> str:
     return urllib.parse.urljoin(base, value.strip())
 
 
-def extract_images(page_url: str, html: str) -> list[str]:
+def page_title(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
-    vals: list[str] = []
+    if soup.title and soup.title.string:
+        return re.sub(r"\s+", " ", soup.title.string).strip()[:300]
+    og = soup.select_one("meta[property='og:title']")
+    if og and isinstance(og.get("content"), str):
+        return re.sub(r"\s+", " ", og.get("content", "")).strip()[:300]
+    return ""
+
+
+def extract_images(page_url: str, html: str) -> list[tuple[str, str]]:
+    soup = BeautifulSoup(html, "html.parser")
+    vals: list[tuple[str, str]] = []
     for selector, attr in (("meta[property='og:image']", "content"), ("meta[name='twitter:image']", "content")):
         for node in soup.select(selector):
             v = node.get(attr)
             if isinstance(v, str) and v:
-                vals.append(abs_url(page_url, v))
+                vals.append((abs_url(page_url, v), "social preview image"))
     for img in soup.find_all("img"):
+        context = " ".join(
+            str(img.get(x, "")) for x in ("alt", "title", "aria-label") if img.get(x)
+        )
+        context = re.sub(r"\s+", " ", context).strip()[:500]
         for attr in ("src", "data-src", "data-original", "data-lazy-src"):
             v = img.get(attr)
             if isinstance(v, str) and v and not v.startswith("data:"):
-                vals.append(abs_url(page_url, v))
-    out: list[str] = []
-    for v in vals:
-        if v.startswith("http") and v not in out:
-            out.append(v)
+                vals.append((abs_url(page_url, v), context))
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for url, context in vals:
+        if url.startswith("http") and url not in seen:
+            seen.add(url)
+            out.append((url, context))
     return out
 
 
@@ -164,6 +202,49 @@ def image_size(data: bytes) -> tuple[int, int]:
         return im.size
 
 
+def score_candidate(query: str, title: str, context: str, page_url: str, image_url: str, width: int, height: int, usage_state: str) -> tuple[int, str]:
+    text = " ".join((query, title, context, page_url, image_url)).lower()
+    score = 0
+    reasons: list[str] = []
+
+    for term, weight in POSITIVE_TERMS:
+        if term in text:
+            score += weight
+            reasons.append(f"+{weight}:{term}")
+    for term, weight in NEGATIVE_TERMS:
+        if term in text:
+            score -= weight
+            reasons.append(f"-{weight}:{term}")
+
+    short = min(width, height)
+    if short >= 2500:
+        score += 7
+        reasons.append("+7:2500px+")
+    elif short >= 1600:
+        score += 5
+        reasons.append("+5:1600px+")
+    elif short >= 1000:
+        score += 3
+        reasons.append("+3:1000px+")
+    elif short >= 700:
+        score += 1
+        reasons.append("+1:700px+")
+
+    ratio = width / max(height, 1)
+    if 0.45 <= ratio <= 1.8:
+        score += 2
+        reasons.append("+2:usable-aspect")
+    elif ratio < 0.3 or ratio > 2.5:
+        score -= 3
+        reasons.append("-3:extreme-aspect")
+
+    if usage_state == "candidate":
+        score += 2
+        reasons.append("+2:permissive-marker")
+
+    return score, ";".join(reasons[:24])
+
+
 def drive_service(client_secret: Path, token_path: Path):
     creds = None
     if token_path.exists():
@@ -179,8 +260,8 @@ def drive_service(client_secret: Path, token_path: Path):
     return build("drive", "v3", credentials=creds)
 
 
-def upload_bytes(drive, folder_id: str, name: str, data: bytes, mime: str, props: dict[str, str]):
-    media = MediaIoBaseUpload(io.BytesIO(data), mimetype=mime, resumable=False)
+def upload_file(drive, folder_id: str, name: str, path: Path, mime: str, props: dict[str, str]):
+    media = MediaIoBaseUpload(path.open("rb"), mimetype=mime, resumable=False)
     meta = {"name": name, "parents": [folder_id], "appProperties": props}
     return drive.files().create(body=meta, media_body=media, fields="id,webViewLink,name").execute()
 
@@ -207,111 +288,139 @@ def crawl(queries: Iterable[str], args) -> list[Candidate]:
     s = make_session()
     drive = None if args.dry_run else drive_service(args.client_secret, args.token)
     seen_hashes: set[str] = set()
-    rows: list[Candidate] = []
-    uploaded = 0
+    uploaded_rows: list[Candidate] = []
+    staged: list[tuple[Candidate, Path]] = []
 
-    for query in queries:
-        if uploaded >= args.limit:
-            break
-        try:
-            pages = ddg_search(s, query, args.pages_per_query)
-        except Exception as exc:
-            print(f"[search-failed] {query}: {exc}")
-            continue
-
-        for page_url in pages:
-            if uploaded >= args.limit:
+    with tempfile.TemporaryDirectory(prefix="donor-crawler-") as temp_root:
+        temp_root_path = Path(temp_root)
+        for query in queries:
+            if len(staged) >= args.candidate_pool:
                 break
-            if not robots_allows(s, page_url):
-                print(f"[robots-skip] {page_url}")
-                continue
             try:
-                r = s.get(page_url, timeout=20, allow_redirects=True)
-                r.raise_for_status()
-                html = r.text
-            except requests.RequestException as exc:
-                print(f"[page-failed] {page_url}: {exc}")
+                pages = ddg_search(s, query, args.pages_per_query)
+            except Exception as exc:
+                print(f"[search-failed] {query}: {exc}")
                 continue
 
-            license_state, usage_state, note = classify_license(html)
-            if usage_state == "skip":
-                print(f"[rights-skip] {page_url}")
-                continue
-
-            domain = urllib.parse.urlsplit(page_url).netloc.lower().removeprefix("www.")
-            for image_url in extract_images(page_url, html):
-                if uploaded >= args.limit:
+            accepted_this_query = 0
+            for page_url in pages:
+                if len(staged) >= args.candidate_pool or accepted_this_query >= args.candidates_per_query:
                     break
-                got = download_image(s, image_url, args.max_bytes)
-                if not got:
+                if not robots_allows(s, page_url):
+                    print(f"[robots-skip] {page_url}")
                     continue
-                data, mime = got
-                digest = hashlib.sha256(data).hexdigest()
-                if digest in seen_hashes:
-                    continue
-                seen_hashes.add(digest)
                 try:
-                    width, height = image_size(data)
-                except Exception:
-                    continue
-                if width < args.min_width or height < args.min_height:
+                    r = s.get(page_url, timeout=20, allow_redirects=True)
+                    r.raise_for_status()
+                    html = r.text
+                except requests.RequestException as exc:
+                    print(f"[page-failed] {page_url}: {exc}")
                     continue
 
-                row = Candidate(
-                    query=query,
-                    page_url=page_url,
-                    image_url=image_url,
-                    source_domain=domain,
-                    license_state=license_state,
-                    usage_state=usage_state,
-                    width=width,
-                    height=height,
-                    sha256=digest,
-                    mime_type=mime,
-                    notes=note,
-                )
+                license_state, usage_state, note = classify_license(html)
+                if usage_state == "skip":
+                    print(f"[rights-skip] {page_url}")
+                    continue
 
-                name = safe_name(domain, digest, mime)
-                if args.dry_run:
-                    print(f"[dry-run] {name} {width}x{height} {usage_state} <- {page_url}")
-                else:
-                    try:
-                        created = upload_bytes(
-                            drive,
-                            args.drive_folder_id,
-                            name,
-                            data,
-                            mime,
-                            {
-                                "sourceDomain": domain[:124],
-                                "licenseState": license_state[:124],
-                                "usageState": usage_state[:124],
-                                "sha256": digest[:124],
-                            },
-                        )
-                        row.drive_file_id = created.get("id", "")
-                        row.drive_web_view_link = created.get("webViewLink", "")
-                        uploaded += 1
-                        print(f"[uploaded {uploaded}/{args.limit}] {name}")
-                    except Exception as exc:
-                        print(f"[upload-failed] {name}: {exc}")
+                title = page_title(html)
+                domain = urllib.parse.urlsplit(page_url).netloc.lower().removeprefix("www.")
+                page_images = extract_images(page_url, html)[: args.images_per_page]
+                for image_url, context in page_images:
+                    if len(staged) >= args.candidate_pool or accepted_this_query >= args.candidates_per_query:
+                        break
+                    got = download_image(s, image_url, args.max_bytes)
+                    if not got:
                         continue
-                rows.append(row)
+                    data, mime = got
+                    digest = hashlib.sha256(data).hexdigest()
+                    if digest in seen_hashes:
+                        continue
+                    seen_hashes.add(digest)
+                    try:
+                        width, height = image_size(data)
+                    except Exception:
+                        continue
+                    if width < args.min_width or height < args.min_height:
+                        continue
 
-    write_manifest(args.manifest, rows)
-    print(f"done: uploaded={uploaded}, manifest_rows={len(rows)}, stop_limit={args.limit}")
-    return rows
+                    score, score_reasons = score_candidate(
+                        query, title, context, page_url, image_url, width, height, usage_state
+                    )
+                    row = Candidate(
+                        query=query,
+                        page_url=page_url,
+                        page_title=title,
+                        image_url=image_url,
+                        image_context=context,
+                        source_domain=domain,
+                        license_state=license_state,
+                        usage_state=usage_state,
+                        width=width,
+                        height=height,
+                        score=score,
+                        score_reasons=score_reasons,
+                        sha256=digest,
+                        mime_type=mime,
+                        notes=note,
+                    )
+                    staged_path = temp_root_path / f"{digest}.bin"
+                    staged_path.write_bytes(data)
+                    staged.append((row, staged_path))
+                    accepted_this_query += 1
+                    print(f"[staged {len(staged)}/{args.candidate_pool}] score={score} {width}x{height} <- {page_url}")
+
+        ranked = sorted(staged, key=lambda item: (item[0].score, min(item[0].width, item[0].height)), reverse=True)
+        print(f"[ranking] staged={len(ranked)} upload_limit={args.limit}")
+
+        if args.dry_run:
+            for rank, (row, _) in enumerate(ranked[: args.limit], 1):
+                print(f"[top {rank}] score={row.score} {row.width}x{row.height} {row.usage_state} <- {row.page_url}")
+                uploaded_rows.append(row)
+        else:
+            for rank, (row, staged_path) in enumerate(ranked, 1):
+                if len(uploaded_rows) >= args.limit:
+                    break
+                name = safe_name(row.source_domain, row.sha256, row.mime_type)
+                try:
+                    created = upload_file(
+                        drive,
+                        args.drive_folder_id,
+                        name,
+                        staged_path,
+                        row.mime_type,
+                        {
+                            "sourceDomain": row.source_domain[:124],
+                            "licenseState": row.license_state[:124],
+                            "usageState": row.usage_state[:124],
+                            "sha256": row.sha256[:124],
+                            "score": str(row.score)[:124],
+                        },
+                    )
+                    row.drive_file_id = created.get("id", "")
+                    row.drive_web_view_link = created.get("webViewLink", "")
+                    uploaded_rows.append(row)
+                    print(f"[uploaded {len(uploaded_rows)}/{args.limit}] rank={rank} score={row.score} {name}")
+                except Exception as exc:
+                    print(f"[upload-failed] {name}: {exc}")
+                    continue
+
+    write_manifest(args.manifest, uploaded_rows)
+    print(f"done: uploaded={0 if args.dry_run else len(uploaded_rows)}, selected={len(uploaded_rows)}, stop_limit={args.limit}")
+    return uploaded_rows
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Collect web image references and upload a bounded set to Google Drive.")
+    p = argparse.ArgumentParser(description="Collect broad web pose/image references, rank them, and upload a bounded set to Google Drive.")
     p.add_argument("--query", action="append", dest="queries", help="Search query. Repeatable.")
     p.add_argument("--queries-file", type=Path, help="UTF-8 file with one query per line.")
     p.add_argument("--limit", type=int, default=10, help="Hard stop after this many successful Drive uploads.")
-    p.add_argument("--pages-per-query", type=int, default=15)
+    p.add_argument("--candidate-pool", type=int, default=60, help="Maximum number of valid unique candidates staged before ranking.")
+    p.add_argument("--candidates-per-query", type=int, default=4, help="Maximum staged candidates contributed by one query.")
+    p.add_argument("--pages-per-query", type=int, default=12)
+    p.add_argument("--images-per-page", type=int, default=5)
     p.add_argument("--min-width", type=int, default=700)
     p.add_argument("--min-height", type=int, default=700)
-    p.add_argument("--max-bytes", type=int, default=15 * 1024 * 1024)
+    p.add_argument("--max-bytes", type=int, default=10 * 1024 * 1024)
     p.add_argument("--drive-folder-id", default=DEFAULT_DRIVE_FOLDER_ID)
     p.add_argument("--client-secret", type=Path, default=Path("client_secret.json"))
     p.add_argument("--token", type=Path, default=Path(".secrets/drive_token.json"))
@@ -329,14 +438,23 @@ def main():
             if line.strip() and not line.lstrip().startswith("#")
         )
     if not queries:
+        default_queries = Path(__file__).with_name("queries.txt")
+        if default_queries.exists():
+            queries = [
+                line.strip() for line in default_queries.read_text(encoding="utf-8").splitlines()
+                if line.strip() and not line.lstrip().startswith("#")
+            ]
+    if not queries:
         queries = [
-            "adult female seated floor pose reference front view full body",
-            "adult female sitting pose anatomy reference knees up",
-            "female seated figure reference front low angle",
-            "female anatomy seated pose reference",
-            "female body pose reference sitting floor",
+            "female seated pose reference full body",
+            "woman sitting on floor studio full body",
+            "female floor sitting pose reference",
         ]
+
     args.limit = max(1, min(args.limit, 100))
+    args.candidate_pool = max(args.limit, min(args.candidate_pool, 300))
+    args.candidates_per_query = max(1, min(args.candidates_per_query, 20))
+    args.images_per_page = max(1, min(args.images_per_page, 20))
     crawl(queries, args)
 
 
