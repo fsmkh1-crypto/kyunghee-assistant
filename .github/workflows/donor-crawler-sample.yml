@@ -15,7 +15,7 @@ permissions:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 4
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,11 +34,12 @@ jobs:
         run: |
           rm -rf /tmp/donor-crawler-sample
           mkdir -p /tmp/donor-crawler-sample
+          head -n 6 tools/donor_crawler/queries.txt > /tmp/donor-queries.txt
           python tools/donor_crawler/openverse_sample.py \
-            --queries-file tools/donor_crawler/queries.txt \
+            --queries-file /tmp/donor-queries.txt \
             --limit 10 \
-            --pool 50 \
-            --per-query 12 \
+            --pool 20 \
+            --per-query 8 \
             --output-dir /tmp/donor-crawler-sample
 
       - name: Verify ten-or-fewer outputs
