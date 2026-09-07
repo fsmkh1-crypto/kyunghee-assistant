@@ -30,12 +30,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r tools/donor_crawler/requirements.txt
 
-      - name: Collect ten page samples
+      - name: Collect ten direct samples
         run: |
           rm -rf /tmp/donor-crawler-sample
           mkdir -p /tmp/donor-crawler-sample
-          python tools/donor_crawler/page_sample.py \
-            --pages-file tools/donor_crawler/sample_pages.txt \
+          python tools/donor_crawler/direct_sample.py \
+            --list tools/donor_crawler/direct_images.txt \
             --limit 10 \
             --output-dir /tmp/donor-crawler-sample
 
