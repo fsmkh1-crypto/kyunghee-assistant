@@ -12,7 +12,7 @@ import requests
 from PIL import Image
 
 API = "https://api.openverse.org/v1/images/"
-UA = "KyungheeAssistantReferenceSampler/0.1"
+UA = "KyungheeAssistantReferenceSampler/0.2"
 
 POS = (
     ("sitting", 5), ("seated", 5), ("floor", 4), ("full body", 5),
@@ -70,7 +70,7 @@ def score(query: str, item: dict) -> tuple[int, str]:
     for term, weight in OBSTRUCTION:
         if term in text:
             penalty += weight
-            reasons.append(f"-{weight}:{term}")
+            reasons.append(f"-{weight}:obstruction:{term}")
     total -= min(penalty, 18)
     try:
         w = int(item.get("width") or 0)
@@ -93,28 +93,37 @@ def score(query: str, item: dict) -> tuple[int, str]:
 
 
 def search(session: requests.Session, query: str, size: int) -> list[dict]:
-    r = session.get(API, params={"q": query, "page_size": size, "mature": "false"}, timeout=20)
+    r = session.get(API, params={"q": query, "page_size": size, "mature": "false"}, timeout=12)
     r.raise_for_status()
     data = r.json()
-    return [x for x in data.get("results", []) if isinstance(x, dict)]
+    results = [x for x in data.get("results", []) if isinstance(x, dict)]
+    print(f"[search] {query!r}: {len(results)} results")
+    return results
 
 
-def download_preview(session: requests.Session, url: str, max_bytes: int = 4_000_000) -> bytes | None:
-    try:
-        with session.get(url, timeout=15, stream=True) as r:
-            r.raise_for_status()
-            buf = io.BytesIO()
-            for chunk in r.iter_content(65536):
-                if chunk:
-                    buf.write(chunk)
-                    if buf.tell() > max_bytes:
-                        return None
-            data = buf.getvalue()
-        with Image.open(io.BytesIO(data)) as im:
-            im.verify()
-        return data
-    except Exception:
-        return None
+def download_preview(session: requests.Session, urls: list[str], max_bytes: int = 5_000_000) -> bytes | None:
+    for url in urls:
+        if not url.startswith("http"):
+            continue
+        try:
+            with session.get(url, timeout=8, stream=True, allow_redirects=True) as r:
+                r.raise_for_status()
+                ctype = (r.headers.get("content-type") or "").lower()
+                if ctype and "image" not in ctype:
+                    continue
+                buf = io.BytesIO()
+                for chunk in r.iter_content(65536):
+                    if chunk:
+                        buf.write(chunk)
+                        if buf.tell() > max_bytes:
+                            raise ValueError("image too large")
+                data = buf.getvalue()
+            with Image.open(io.BytesIO(data)) as im:
+                im.verify()
+            return data
+        except Exception:
+            continue
+    return None
 
 
 def save_jpeg(data: bytes, path: Path, max_side: int = 1600) -> None:
@@ -124,20 +133,48 @@ def save_jpeg(data: bytes, path: Path, max_side: int = 1600) -> None:
         im.save(path, "JPEG", quality=88, optimize=True)
 
 
+def row_from_item(query: str, item: dict) -> Row | None:
+    thumb = str(item.get("thumbnail") or "")
+    original = str(item.get("url") or "")
+    if not thumb.startswith("http") and not original.startswith("http"):
+        return None
+    try:
+        w = int(item.get("width") or 0)
+        h = int(item.get("height") or 0)
+    except Exception:
+        w = h = 0
+    s, reasons = score(query, item)
+    return Row(
+        query=query,
+        title=str(item.get("title") or "")[:300],
+        creator=str(item.get("creator") or "")[:300],
+        source=str(item.get("source") or item.get("provider") or "")[:120],
+        landing_url=str(item.get("foreign_landing_url") or item.get("detail_url") or ""),
+        original_url=original,
+        thumbnail_url=thumb,
+        license=str(item.get("license") or ""),
+        license_version=str(item.get("license_version") or ""),
+        width=w,
+        height=h,
+        score=s,
+        reasons=reasons,
+    )
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--queries-file", type=Path, required=True)
     ap.add_argument("--output-dir", type=Path, required=True)
     ap.add_argument("--limit", type=int, default=10)
-    ap.add_argument("--pool", type=int, default=60)
-    ap.add_argument("--per-query", type=int, default=12)
+    ap.add_argument("--pool", type=int, default=40)
+    ap.add_argument("--per-query", type=int, default=10)
     args = ap.parse_args()
 
     queries = [x.strip() for x in args.queries_file.read_text(encoding="utf-8").splitlines() if x.strip() and not x.lstrip().startswith("#")]
     session = requests.Session()
     session.headers.update({"User-Agent": UA, "Accept-Language": "en-US,en;q=0.8"})
 
-    pool: dict[str, tuple[Row, bytes]] = {}
+    pool: dict[str, Row] = {}
     for query in queries:
         if len(pool) >= args.pool:
             break
@@ -149,57 +186,39 @@ def main() -> None:
         for item in items:
             if len(pool) >= args.pool:
                 break
-            thumb = str(item.get("thumbnail") or "")
-            original = str(item.get("url") or "")
-            if not thumb.startswith("http"):
+            key = str(item.get("id") or item.get("url") or item.get("thumbnail") or "")
+            if not key or key in pool:
                 continue
-            key = str(item.get("id") or original or thumb)
-            if key in pool:
+            row = row_from_item(query, item)
+            if not row:
                 continue
-            data = download_preview(session, thumb)
-            if not data:
-                continue
-            try:
-                with Image.open(io.BytesIO(data)) as im:
-                    pw, ph = im.size
-            except Exception:
-                continue
-            if min(pw, ph) < 300:
-                continue
-            try:
-                w = int(item.get("width") or pw)
-                h = int(item.get("height") or ph)
-            except Exception:
-                w, h = pw, ph
-            s, reasons = score(query, item)
-            row = Row(
-                query=query,
-                title=str(item.get("title") or "")[:300],
-                creator=str(item.get("creator") or "")[:300],
-                source=str(item.get("source") or item.get("provider") or "")[:120],
-                landing_url=str(item.get("foreign_landing_url") or item.get("detail_url") or ""),
-                original_url=original,
-                thumbnail_url=thumb,
-                license=str(item.get("license") or ""),
-                license_version=str(item.get("license_version") or ""),
-                width=w,
-                height=h,
-                score=s,
-                reasons=reasons,
-            )
-            pool[key] = (row, data)
-            print(f"[pool {len(pool)}/{args.pool}] score={s} {row.title[:70]}")
+            pool[key] = row
+            print(f"[meta {len(pool)}/{args.pool}] score={row.score} {row.title[:70]}")
 
-    ranked = sorted(pool.values(), key=lambda x: (x[0].score, min(x[0].width, x[0].height)), reverse=True)
+    ranked = sorted(pool.values(), key=lambda x: (x.score, min(x.width, x.height)), reverse=True)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     selected: list[Row] = []
-    for idx, (row, data) in enumerate(ranked[: args.limit], 1):
+    for rank, row in enumerate(ranked, 1):
+        if len(selected) >= args.limit:
+            break
+        data = download_preview(session, [row.thumbnail_url, row.original_url])
+        if not data:
+            print(f"[download-skip] rank={rank} {row.title[:70]}")
+            continue
+        try:
+            with Image.open(io.BytesIO(data)) as im:
+                pw, ph = im.size
+        except Exception:
+            continue
+        if min(pw, ph) < 250:
+            continue
         digest = hashlib.sha256(data).hexdigest()[:12]
+        idx = len(selected) + 1
         name = f"candidate_{idx:02d}_{digest}.jpg"
         save_jpeg(data, args.output_dir / name)
         row.file_name = name
         selected.append(row)
-        print(f"[selected {idx}/{args.limit}] score={row.score} {row.title[:80]}")
+        print(f"[selected {idx}/{args.limit}] rank={rank} score={row.score} {row.title[:80]}")
 
     with (args.output_dir / "manifest.csv").open("w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=list(Row.__dataclass_fields__.keys()))
