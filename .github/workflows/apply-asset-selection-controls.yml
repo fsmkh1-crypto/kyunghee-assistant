@@ -22,11 +22,11 @@ jobs:
           python-version: '3.12'
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
-      - name: Apply asset selection patch
-        run: python tools/apply_asset_selection_controls.py
+      - name: Apply canonical asset selection fix
+        run: python tools/apply_canonical_asset_selection_fix.py
       - name: Compile and test
         run: |
-          python -m py_compile asset_manager.py settings.py desktop_compact.py
+          python -m py_compile asset_manager.py settings.py desktop_compact.py tools/import_asset_sheet.py
           python -m unittest discover -s tests -v
       - name: Commit changes
         run: |
@@ -34,5 +34,5 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add asset_manager.py settings.py desktop_compact.py tests/test_asset_manager.py tests/test_settings.py
           git diff --cached --quiet && exit 0
-          git commit -m "Add built-in asset set and role selection"
+          git commit -m "Restore canonical Kyunghee asset selection"
           git push origin HEAD:ui/dark-kyunghee-redesign
