@@ -30,24 +30,20 @@ jobs:
       - name: Install dependencies
         run: pip install -r tools/donor_crawler/requirements.txt
 
-      - name: Collect and rank sample
+      - name: Collect ten page samples
         run: |
           rm -rf /tmp/donor-crawler-sample
           mkdir -p /tmp/donor-crawler-sample
-          head -n 6 tools/donor_crawler/queries.txt > /tmp/donor-queries.txt
-          python tools/donor_crawler/openverse_sample.py \
-            --queries-file /tmp/donor-queries.txt \
+          python tools/donor_crawler/page_sample.py \
+            --pages-file tools/donor_crawler/sample_pages.txt \
             --limit 10 \
-            --pool 20 \
-            --per-query 8 \
             --output-dir /tmp/donor-crawler-sample
 
-      - name: Verify ten-or-fewer outputs
+      - name: Verify ten outputs
         run: |
           count=$(find /tmp/donor-crawler-sample -maxdepth 1 -name 'candidate_*.jpg' | wc -l)
           echo "candidate_count=$count"
-          test "$count" -le 10
-          test "$count" -gt 0
+          test "$count" -eq 10
 
       - name: Upload sample artifact
         uses: actions/upload-artifact@v4
