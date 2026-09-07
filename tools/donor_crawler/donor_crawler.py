@@ -6,7 +6,6 @@ import hashlib
 import io
 import mimetypes
 import re
-import shutil
 import tempfile
 import urllib.parse
 import urllib.robotparser
@@ -25,16 +24,19 @@ from googleapiclient.http import MediaIoBaseUpload
 
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 DEFAULT_DRIVE_FOLDER_ID = "1XhlBU1Koa5RhRrhPpHkBoOsT2yPdpr8a"  # GPT/donor_rest
-UA = "KyungheeAssistantDonorCollector/0.4 (+personal reference workflow)"
+OPENVERSE_API = "https://api.openverse.org/v1/images/"
+UA = "KyungheeAssistantReferenceCollector/0.5 (+personal reference workflow)"
 
 FREE_MARKERS = (
     "cc0", "public domain", "cc by", "creative commons attribution",
     "pexels license", "free to use", "royalty-free",
 )
-RESTRICTED_MARKERS = (
+AI_RESTRICTED_MARKERS = (
+    "noai", "may not use these resources for llms", "may not use these resources for ai",
+)
+REFERENCE_ONLY_MARKERS = (
     "all rights reserved", "no derivatives", "cc by-nd", "cc by-nc-nd",
     "do not redistribute", "no redistribution", "editorial use only",
-    "noai", "may not use these resources for llms", "may not use these resources for ai",
 )
 GATED_MARKERS = (
     "sign in to download", "log in to download", "purchase to download",
@@ -42,31 +44,41 @@ GATED_MARKERS = (
 )
 
 POSITIVE_TERMS: tuple[tuple[str, int], ...] = (
-    ("sitting", 4), ("seated", 4), ("floor", 3),
-    ("full body", 4), ("full-body", 4), ("whole body", 4), ("full length", 3),
-    ("knees up", 4), ("bent knees", 3), ("bent knee", 2),
-    ("front view", 3), ("front-facing", 3), ("three quarter", 3), ("3/4", 3),
+    ("sitting", 5), ("seated", 5), ("floor", 4),
+    ("full body", 5), ("full-body", 5), ("whole body", 4), ("full length", 4),
+    ("knees up", 5), ("bent knees", 4), ("bent knee", 3),
+    ("front view", 4), ("front-facing", 4), ("front facing", 4),
+    ("three quarter", 3), ("3/4", 3),
     ("low angle", 3), ("low viewpoint", 3),
-    ("figure reference", 3), ("pose reference", 3), ("anatomy reference", 3),
-    ("anatomy", 1), ("studio", 2), ("plain background", 2),
-    ("turnaround", 5), ("multi-angle", 5), ("multi angle", 5), ("multiple angles", 5),
-    ("lower body", 2), ("body proportions", 2),
+    ("figure reference", 4), ("pose reference", 4), ("anatomy reference", 4),
+    ("anatomy", 2), ("studio", 2), ("plain background", 3),
+    ("turnaround", 6), ("multi-angle", 6), ("multi angle", 6), ("multiple angles", 6),
+    ("lower body", 3), ("body proportions", 3), ("legs", 2), ("knee", 2),
 )
 NEGATIVE_TERMS: tuple[tuple[str, int], ...] = (
-    ("thumbnail", 4), ("avatar", 4), ("icon", 4), ("logo", 4),
-    ("banner", 3), ("sprite", 4), ("collage", 3), ("contact sheet", 2),
-    ("watermark", 3), ("preview only", 2),
+    ("thumbnail", 4), ("avatar", 5), ("icon", 5), ("logo", 5),
+    ("banner", 4), ("sprite", 5), ("collage", 4), ("contact sheet", 3),
+    ("watermark", 4), ("preview only", 3),
+)
+# These are soft penalties only. Search remains broad; potentially useful poses are not
+# rejected just because clothing is present.
+OBSTRUCTION_TERMS: tuple[tuple[str, int], ...] = (
+    ("long dress", 7), ("gown", 6), ("long skirt", 6), ("maxi dress", 7),
+    ("jeans", 5), ("trousers", 5), ("pants", 4), ("coat", 5), ("jacket", 4),
+    ("robe", 5), ("blanket", 7), ("costume", 3), ("armor", 6),
 )
 
 
 @dataclass
 class Candidate:
     query: str
+    backend: str
     page_url: str
     page_title: str
     image_url: str
     image_context: str
     source_domain: str
+    creator: str
     license_state: str
     usage_state: str
     width: int
@@ -108,29 +120,46 @@ def ddg_search(s: requests.Session, query: str, limit: int) -> list[str]:
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "html.parser")
     out: list[str] = []
-    for a in soup.select("a.result__a"):
-        href = a.get("href")
-        if not href:
-            continue
-        p = urllib.parse.urlsplit(href)
-        target = urllib.parse.parse_qs(p.query).get("uddg", [href])[0]
-        target = urllib.parse.unquote(target)
-        if target.startswith("http") and target not in out:
-            out.append(target)
-        if len(out) >= limit:
-            break
+    selectors = ("a.result__a", "a.result-link", "a[href*='uddg=']")
+    for selector in selectors:
+        for a in soup.select(selector):
+            href = a.get("href")
+            if not isinstance(href, str) or not href:
+                continue
+            p = urllib.parse.urlsplit(href)
+            target = urllib.parse.parse_qs(p.query).get("uddg", [href])[0]
+            target = urllib.parse.unquote(target)
+            if target.startswith("http") and target not in out:
+                out.append(target)
+            if len(out) >= limit:
+                return out
     return out
 
 
-def classify_license(page_text: str) -> tuple[str, str, str]:
+def classify_page_license(page_text: str) -> tuple[str, str, str]:
     t = re.sub(r"\s+", " ", page_text.lower())[:250000]
-    if any(x in t for x in RESTRICTED_MARKERS):
-        return "restricted", "skip", "explicit reuse/AI/derivative restriction detected"
+    if any(x in t for x in AI_RESTRICTED_MARKERS):
+        return "ai_restricted", "skip", "explicit AI/LLM restriction detected"
+    if any(x in t for x in REFERENCE_ONLY_MARKERS):
+        return "restricted_or_unclear", "reference_only", "reuse restriction detected; keep only as reference metadata/candidate"
     if any(x in t for x in GATED_MARKERS):
         return "unknown", "reference_only", "download appears gated; no gate bypass attempted"
     if any(x in t for x in FREE_MARKERS):
         return "explicit_free_or_permissive", "candidate", "permissive marker detected; verify exact terms before final app use"
     return "unknown", "reference_only", "no clear license marker found"
+
+
+def classify_openverse_license(license_code: str, license_version: str) -> tuple[str, str, str]:
+    code = (license_code or "").lower().strip()
+    version = (license_version or "").lower().strip()
+    label = f"{code}-{version}".strip("-") or "unknown"
+    if code in {"cc0", "pdm"}:
+        return label, "candidate", "Openverse metadata indicates CC0/public-domain material; verify source record before final use"
+    if code in {"by", "by-sa"}:
+        return label, "candidate", "Openverse metadata indicates attribution-capable CC license; retain attribution metadata"
+    if code in {"by-nc", "by-nc-sa", "by-nd", "by-nc-nd"}:
+        return label, "reference_only", "Openverse metadata indicates NC/ND restrictions; reference-only unless separately cleared"
+    return label, "reference_only", "Openverse license metadata not recognized; verify source record"
 
 
 def abs_url(base: str, value: str) -> str:
@@ -171,9 +200,43 @@ def extract_images(page_url: str, html: str) -> list[tuple[str, str]]:
     return out
 
 
+def openverse_search(s: requests.Session, query: str, page_size: int) -> list[dict]:
+    try:
+        r = s.get(
+            OPENVERSE_API,
+            params={"q": query, "page_size": max(1, min(page_size, 50)), "mature": "false"},
+            timeout=30,
+        )
+        r.raise_for_status()
+        payload = r.json()
+        results = payload.get("results", []) if isinstance(payload, dict) else []
+        return [x for x in results if isinstance(x, dict)]
+    except Exception as exc:
+        print(f"[openverse-search-failed] {query}: {exc}")
+        return []
+
+
+def openverse_context(item: dict) -> str:
+    parts: list[str] = []
+    for key in ("title", "creator", "category", "source", "provider"):
+        value = item.get(key)
+        if isinstance(value, str) and value:
+            parts.append(value)
+    tags = item.get("tags")
+    if isinstance(tags, list):
+        for tag in tags[:40]:
+            if isinstance(tag, dict):
+                name = tag.get("name")
+                if isinstance(name, str):
+                    parts.append(name)
+            elif isinstance(tag, str):
+                parts.append(tag)
+    return re.sub(r"\s+", " ", " ".join(parts)).strip()[:1500]
+
+
 def download_image(s: requests.Session, url: str, max_bytes: int) -> tuple[bytes, str] | None:
     try:
-        with s.get(url, timeout=25, stream=True, allow_redirects=True) as r:
+        with s.get(url, timeout=30, stream=True, allow_redirects=True) as r:
             r.raise_for_status()
             ctype = (r.headers.get("content-type") or "").split(";")[0].strip().lower()
             if ctype and not ctype.startswith("image/"):
@@ -185,6 +248,8 @@ def download_image(s: requests.Session, url: str, max_bytes: int) -> tuple[bytes
                     if buf.tell() > max_bytes:
                         return None
             data = buf.getvalue()
+        if not data:
+            return None
         with Image.open(io.BytesIO(data)) as im:
             im.verify()
         if not ctype:
@@ -212,10 +277,19 @@ def score_candidate(query: str, title: str, context: str, page_url: str, image_u
         if term in text:
             score -= weight
             reasons.append(f"-{weight}:{term}")
+    obstruction = 0
+    for term, weight in OBSTRUCTION_TERMS:
+        if term in text:
+            obstruction += weight
+            reasons.append(f"-{weight}:obstruction:{term}")
+    score -= min(obstruction, 18)
     short = min(width, height)
-    if short >= 2500:
-        score += 7
-        reasons.append("+7:2500px+")
+    if short >= 3000:
+        score += 8
+        reasons.append("+8:3000px+")
+    elif short >= 2200:
+        score += 6
+        reasons.append("+6:2200px+")
     elif short >= 1600:
         score += 5
         reasons.append("+5:1600px+")
@@ -226,16 +300,19 @@ def score_candidate(query: str, title: str, context: str, page_url: str, image_u
         score += 1
         reasons.append("+1:700px+")
     ratio = width / max(height, 1)
-    if 0.45 <= ratio <= 1.8:
-        score += 2
-        reasons.append("+2:usable-aspect")
+    if 0.45 <= ratio <= 1.5:
+        score += 3
+        reasons.append("+3:portrait-or-balanced")
+    elif 1.5 < ratio <= 1.9:
+        score += 1
+        reasons.append("+1:usable-aspect")
     elif ratio < 0.3 or ratio > 2.5:
-        score -= 3
-        reasons.append("-3:extreme-aspect")
+        score -= 4
+        reasons.append("-4:extreme-aspect")
     if usage_state == "candidate":
-        score += 2
-        reasons.append("+2:permissive-marker")
-    return score, ";".join(reasons[:24])
+        score += 3
+        reasons.append("+3:reusable-metadata")
+    return score, ";".join(reasons[:30])
 
 
 def drive_service(client_secret: Path, token_path: Path):
@@ -285,6 +362,114 @@ def export_preview(src: Path, dst: Path, max_side: int, quality: int) -> None:
         im.save(dst, "JPEG", quality=quality, optimize=True)
 
 
+def stage_openverse(s: requests.Session, query: str, args, seen_hashes: set[str], staged: list[tuple[Candidate, Path]], temp_root: Path) -> int:
+    accepted = 0
+    items = openverse_search(s, query, args.openverse_per_query)
+    for item in items:
+        if len(staged) >= args.candidate_pool or accepted >= args.candidates_per_query:
+            break
+        image_url = item.get("url") or item.get("thumbnail")
+        if not isinstance(image_url, str) or not image_url.startswith("http"):
+            continue
+        fallback = item.get("thumbnail")
+        got = download_image(s, image_url, args.max_bytes)
+        if not got and isinstance(fallback, str) and fallback.startswith("http") and fallback != image_url:
+            got = download_image(s, fallback, args.max_bytes)
+            if got:
+                image_url = fallback
+        if not got:
+            continue
+        data, mime = got
+        digest = hashlib.sha256(data).hexdigest()
+        if digest in seen_hashes:
+            continue
+        try:
+            width, height = image_size(data)
+        except Exception:
+            continue
+        if width < args.min_width or height < args.min_height:
+            continue
+        seen_hashes.add(digest)
+        title = str(item.get("title") or "")[:300]
+        context = openverse_context(item)
+        page_url = str(item.get("foreign_landing_url") or item.get("detail_url") or image_url)
+        domain = urllib.parse.urlsplit(page_url).netloc.lower().removeprefix("www.") or "openverse"
+        license_state, usage_state, note = classify_openverse_license(str(item.get("license") or ""), str(item.get("license_version") or ""))
+        creator = str(item.get("creator") or "")[:300]
+        score, reasons = score_candidate(query, title, context, page_url, image_url, width, height, usage_state)
+        row = Candidate(
+            query=query, backend="openverse", page_url=page_url, page_title=title,
+            image_url=image_url, image_context=context, source_domain=domain,
+            creator=creator, license_state=license_state, usage_state=usage_state,
+            width=width, height=height, score=score, score_reasons=reasons,
+            sha256=digest, mime_type=mime, notes=note,
+        )
+        staged_path = temp_root / f"{digest}.bin"
+        staged_path.write_bytes(data)
+        staged.append((row, staged_path))
+        accepted += 1
+        print(f"[openverse staged {len(staged)}/{args.candidate_pool}] score={score} {width}x{height} {title[:70]}")
+    return accepted
+
+
+def stage_web_fallback(s: requests.Session, query: str, args, seen_hashes: set[str], staged: list[tuple[Candidate, Path]], temp_root: Path, already: int) -> int:
+    accepted = already
+    if accepted >= args.candidates_per_query:
+        return accepted
+    try:
+        pages = ddg_search(s, query, args.pages_per_query)
+    except Exception as exc:
+        print(f"[web-search-failed] {query}: {exc}")
+        return accepted
+    for page_url in pages:
+        if len(staged) >= args.candidate_pool or accepted >= args.candidates_per_query:
+            break
+        if not robots_allows(s, page_url):
+            continue
+        try:
+            r = s.get(page_url, timeout=20, allow_redirects=True)
+            r.raise_for_status()
+            html = r.text
+        except requests.RequestException:
+            continue
+        license_state, usage_state, note = classify_page_license(html)
+        if usage_state == "skip":
+            continue
+        title = page_title(html)
+        domain = urllib.parse.urlsplit(page_url).netloc.lower().removeprefix("www.")
+        for image_url, context in extract_images(page_url, html)[: args.images_per_page]:
+            if len(staged) >= args.candidate_pool or accepted >= args.candidates_per_query:
+                break
+            got = download_image(s, image_url, args.max_bytes)
+            if not got:
+                continue
+            data, mime = got
+            digest = hashlib.sha256(data).hexdigest()
+            if digest in seen_hashes:
+                continue
+            try:
+                width, height = image_size(data)
+            except Exception:
+                continue
+            if width < args.min_width or height < args.min_height:
+                continue
+            seen_hashes.add(digest)
+            score, reasons = score_candidate(query, title, context, page_url, image_url, width, height, usage_state)
+            row = Candidate(
+                query=query, backend="web", page_url=page_url, page_title=title,
+                image_url=image_url, image_context=context, source_domain=domain,
+                creator="", license_state=license_state, usage_state=usage_state,
+                width=width, height=height, score=score, score_reasons=reasons,
+                sha256=digest, mime_type=mime, notes=note,
+            )
+            staged_path = temp_root / f"{digest}.bin"
+            staged_path.write_bytes(data)
+            staged.append((row, staged_path))
+            accepted += 1
+            print(f"[web staged {len(staged)}/{args.candidate_pool}] score={score} {width}x{height} <- {page_url}")
+    return accepted
+
+
 def crawl(queries: Iterable[str], args) -> list[Candidate]:
     s = make_session()
     drive = None if args.dry_run else drive_service(args.client_secret, args.token)
@@ -292,77 +477,14 @@ def crawl(queries: Iterable[str], args) -> list[Candidate]:
     selected_rows: list[Candidate] = []
     staged: list[tuple[Candidate, Path]] = []
 
-    with tempfile.TemporaryDirectory(prefix="donor-crawler-") as temp_root:
-        temp_root_path = Path(temp_root)
+    with tempfile.TemporaryDirectory(prefix="reference-crawler-") as temp_root_name:
+        temp_root = Path(temp_root_name)
         for query in queries:
             if len(staged) >= args.candidate_pool:
                 break
-            try:
-                pages = ddg_search(s, query, args.pages_per_query)
-            except Exception as exc:
-                print(f"[search-failed] {query}: {exc}")
-                continue
-            accepted_this_query = 0
-            for page_url in pages:
-                if len(staged) >= args.candidate_pool or accepted_this_query >= args.candidates_per_query:
-                    break
-                if not robots_allows(s, page_url):
-                    print(f"[robots-skip] {page_url}")
-                    continue
-                try:
-                    r = s.get(page_url, timeout=20, allow_redirects=True)
-                    r.raise_for_status()
-                    html = r.text
-                except requests.RequestException as exc:
-                    print(f"[page-failed] {page_url}: {exc}")
-                    continue
-                license_state, usage_state, note = classify_license(html)
-                if usage_state == "skip":
-                    print(f"[rights-skip] {page_url}")
-                    continue
-                title = page_title(html)
-                domain = urllib.parse.urlsplit(page_url).netloc.lower().removeprefix("www.")
-                page_images = extract_images(page_url, html)[: args.images_per_page]
-                for image_url, context in page_images:
-                    if len(staged) >= args.candidate_pool or accepted_this_query >= args.candidates_per_query:
-                        break
-                    got = download_image(s, image_url, args.max_bytes)
-                    if not got:
-                        continue
-                    data, mime = got
-                    digest = hashlib.sha256(data).hexdigest()
-                    if digest in seen_hashes:
-                        continue
-                    seen_hashes.add(digest)
-                    try:
-                        width, height = image_size(data)
-                    except Exception:
-                        continue
-                    if width < args.min_width or height < args.min_height:
-                        continue
-                    score, score_reasons = score_candidate(query, title, context, page_url, image_url, width, height, usage_state)
-                    row = Candidate(
-                        query=query,
-                        page_url=page_url,
-                        page_title=title,
-                        image_url=image_url,
-                        image_context=context,
-                        source_domain=domain,
-                        license_state=license_state,
-                        usage_state=usage_state,
-                        width=width,
-                        height=height,
-                        score=score,
-                        score_reasons=score_reasons,
-                        sha256=digest,
-                        mime_type=mime,
-                        notes=note,
-                    )
-                    staged_path = temp_root_path / f"{digest}.bin"
-                    staged_path.write_bytes(data)
-                    staged.append((row, staged_path))
-                    accepted_this_query += 1
-                    print(f"[staged {len(staged)}/{args.candidate_pool}] score={score} {width}x{height} <- {page_url}")
+            accepted = stage_openverse(s, query, args, seen_hashes, staged, temp_root)
+            if args.web_fallback and len(staged) < args.candidate_pool:
+                stage_web_fallback(s, query, args, seen_hashes, staged, temp_root, accepted)
 
         ranked = sorted(staged, key=lambda item: (item[0].score, min(item[0].width, item[0].height)), reverse=True)
         print(f"[ranking] staged={len(ranked)} select_limit={args.limit}")
@@ -373,31 +495,27 @@ def crawl(queries: Iterable[str], args) -> list[Candidate]:
             if len(selected_rows) >= args.limit:
                 break
             base_name = safe_name(row.source_domain, row.sha256, row.mime_type)
-            local_name = f"candidate_{len(selected_rows)+1:02d}_{Path(base_name).stem}.jpg"
-
+            preview_name = f"candidate_{len(selected_rows)+1:02d}_{Path(base_name).stem}.jpg"
             if args.output_dir:
-                preview_path = args.output_dir / local_name
+                preview_path = args.output_dir / preview_name
                 export_preview(staged_path, preview_path, args.preview_max_side, args.preview_quality)
-                row.local_name = local_name
+                row.local_name = preview_name
 
             if args.dry_run:
                 selected_rows.append(row)
-                print(f"[top {len(selected_rows)}] rank={rank} score={row.score} {row.width}x{row.height} {row.usage_state} <- {row.page_url}")
+                print(f"[top {len(selected_rows)}] rank={rank} score={row.score} {row.width}x{row.height} {row.usage_state} {row.backend} <- {row.page_url}")
                 continue
 
             try:
                 created = upload_file(
-                    drive,
-                    args.drive_folder_id,
-                    base_name,
-                    staged_path,
-                    row.mime_type,
+                    drive, args.drive_folder_id, base_name, staged_path, row.mime_type,
                     {
                         "sourceDomain": row.source_domain[:124],
                         "licenseState": row.license_state[:124],
                         "usageState": row.usage_state[:124],
                         "sha256": row.sha256[:124],
                         "score": str(row.score)[:124],
+                        "backend": row.backend[:124],
                     },
                 )
                 row.drive_file_id = created.get("id", "")
@@ -406,7 +524,6 @@ def crawl(queries: Iterable[str], args) -> list[Candidate]:
                 print(f"[uploaded {len(selected_rows)}/{args.limit}] rank={rank} score={row.score} {base_name}")
             except Exception as exc:
                 print(f"[upload-failed] {base_name}: {exc}")
-                continue
 
     write_manifest(args.manifest, selected_rows)
     print(f"done: selected={len(selected_rows)}, stop_limit={args.limit}, dry_run={args.dry_run}")
@@ -414,17 +531,19 @@ def crawl(queries: Iterable[str], args) -> list[Candidate]:
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Collect broad web pose/image references, rank them, and upload a bounded set to Google Drive.")
+    p = argparse.ArgumentParser(description="Collect broad human pose/image references, rank them, and upload a bounded set to Google Drive.")
     p.add_argument("--query", action="append", dest="queries", help="Search query. Repeatable.")
     p.add_argument("--queries-file", type=Path, help="UTF-8 file with one query per line.")
     p.add_argument("--limit", type=int, default=10, help="Hard stop after this many successful selections/uploads.")
-    p.add_argument("--candidate-pool", type=int, default=60, help="Maximum number of valid unique candidates staged before ranking.")
-    p.add_argument("--candidates-per-query", type=int, default=4, help="Maximum staged candidates contributed by one query.")
-    p.add_argument("--pages-per-query", type=int, default=12)
+    p.add_argument("--candidate-pool", type=int, default=80, help="Maximum unique candidate files staged before ranking.")
+    p.add_argument("--candidates-per-query", type=int, default=5, help="Maximum staged candidates contributed by one query.")
+    p.add_argument("--openverse-per-query", type=int, default=20)
+    p.add_argument("--pages-per-query", type=int, default=10)
     p.add_argument("--images-per-page", type=int, default=5)
+    p.add_argument("--web-fallback", action="store_true", help="Use ordinary web-page image extraction if Openverse contributes too few candidates.")
     p.add_argument("--min-width", type=int, default=700)
     p.add_argument("--min-height", type=int, default=700)
-    p.add_argument("--max-bytes", type=int, default=10 * 1024 * 1024)
+    p.add_argument("--max-bytes", type=int, default=12 * 1024 * 1024)
     p.add_argument("--drive-folder-id", default=DEFAULT_DRIVE_FOLDER_ID)
     p.add_argument("--client-secret", type=Path, default=Path("client_secret.json"))
     p.add_argument("--token", type=Path, default=Path(".secrets/drive_token.json"))
@@ -460,6 +579,7 @@ def main():
     args.limit = max(1, min(args.limit, 100))
     args.candidate_pool = max(args.limit, min(args.candidate_pool, 300))
     args.candidates_per_query = max(1, min(args.candidates_per_query, 20))
+    args.openverse_per_query = max(1, min(args.openverse_per_query, 50))
     args.images_per_page = max(1, min(args.images_per_page, 20))
     args.preview_max_side = max(640, min(args.preview_max_side, 3000))
     args.preview_quality = max(60, min(args.preview_quality, 95))
