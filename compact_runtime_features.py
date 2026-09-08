@@ -138,6 +138,15 @@ def _refresh_gallery_controls(app) -> None:
         pass
 
 
+def _refresh_timer_layout(app) -> None:
+    try:
+        app._apply_widget_appearance()
+        if getattr(app, "current_page", None) == "timer":
+            app._resize_for_page("timer")
+    except Exception:
+        core.log.exception("compact timer layout refresh failed")
+
+
 def _show_random_gallery_image(app, _event=None):
     candidates = _gallery_candidates()
     if not candidates:
@@ -161,13 +170,7 @@ def _show_random_gallery_image(app, _event=None):
     app._random_gallery_active = True
     app._random_gallery_last_path = str(selected)
 
-    try:
-        app._apply_widget_appearance()
-        if getattr(app, "current_page", None) == "timer":
-            app._resize_for_page("timer")
-    except Exception:
-        core.log.exception("random gallery layout refresh failed")
-
+    _refresh_timer_layout(app)
     _refresh_gallery_controls(app)
     return "break"
 
@@ -182,15 +185,50 @@ def _restore_state_image(app, _event=None):
     app.character_role = None
     app._random_gallery_original_set_character(role)
 
-    try:
-        app._apply_widget_appearance()
-        if getattr(app, "current_page", None) == "timer":
-            app._resize_for_page("timer")
-    except Exception:
-        core.log.exception("state image restore layout refresh failed")
-
+    _refresh_timer_layout(app)
     _refresh_gallery_controls(app)
     return "break"
+
+
+def _install_dynamic_timer_layout(app) -> None:
+    """Size the compact timer from the currently visible character silhouette.
+
+    The window remains asset-dependent, but a short/seated/profile asset no longer
+    inherits the historical 610px full-body minimum height. The character, status
+    group and message keep the existing anchor rules; only the required window
+    height is recomputed from the rendered image's visible top edge.
+    """
+    if app.__class__.__name__ != "CompactDesktopApp":
+        return
+    if getattr(app, "_dynamic_timer_layout_installed", False):
+        return
+    if not hasattr(app, "_timer_size"):
+        return
+
+    app._dynamic_timer_layout_installed = True
+    original_timer_size = app._timer_size
+    app._dynamic_timer_original_timer_size = original_timer_size
+
+    def dynamic_timer_size(self):
+        width, _historical_height = original_timer_size()
+
+        try:
+            _image_width, image_height = self._character_render_size()
+            _visible_left, visible_top, _visible_right, _visible_bottom = self._character_visible_bounds()
+            bottom_gap = self._character_bottom_gap()
+
+            top_clearance = max(42, self._scale(34))
+            visible_extent_to_label_bottom = max(1, image_height - visible_top)
+            required_height = top_clearance + bottom_gap + visible_extent_to_label_bottom
+
+            minimum_height = max(300, self._scale(250))
+            height = max(minimum_height, round(required_height))
+            return width, height
+        except Exception:
+            core.log.exception("dynamic timer size calculation failed")
+            return original_timer_size()
+
+    app._timer_size = MethodType(dynamic_timer_size, app)
 
 
 def _install_random_gallery(app) -> None:
@@ -213,7 +251,13 @@ def _install_random_gallery(app) -> None:
         if getattr(self, "_random_gallery_active", False):
             self._random_gallery_state_role = role
             return
-        return original_set_character(role)
+
+        before = getattr(self, "character_role", None)
+        result = original_set_character(role)
+        after = getattr(self, "character_role", None)
+        if before != after:
+            _refresh_timer_layout(self)
+        return result
 
     app._set_character = MethodType(random_aware_set_character, app)
 
@@ -254,7 +298,9 @@ def _install_desktop_init_hook() -> None:
 
     def wrapped(self, *args, **kwargs):
         original(self, *args, **kwargs)
+        _install_dynamic_timer_layout(self)
         _install_random_gallery(self)
+        _refresh_timer_layout(self)
 
     wrapped._kyunghee_compact_features = True
     DesktopApp.__init__ = wrapped
