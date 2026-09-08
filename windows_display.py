@@ -3,6 +3,11 @@ from __future__ import annotations
 import ctypes
 import os
 
+from compact_runtime_features import install as install_compact_runtime_features
+
+
+install_compact_runtime_features()
+
 
 QUNS_BUSY = 2
 QUNS_RUNNING_D3D_FULL_SCREEN = 3

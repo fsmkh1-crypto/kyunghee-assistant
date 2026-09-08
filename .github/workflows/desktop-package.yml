@@ -8,6 +8,7 @@ on:
     paths:
       - 'desktop_compact.py'
       - 'desktop_app.py'
+      - 'compact_runtime_features.py'
       - 'app.py'
       - 'asset_manager.py'
       - 'break_reminder.py'
@@ -15,6 +16,7 @@ on:
       - 'settings.py'
       - 'state.py'
       - 'timer_engine.py'
+      - 'windows_display.py'
       - 'windows_idle.py'
       - 'workday.py'
       - 'requirements.txt'
@@ -74,4 +76,4 @@ jobs:
           name: kyunghee-timer-desktop
           path: dist/KyungheeTimer
 
-# Package trigger: canonical-selection build 2026-09-07
+# Package trigger: compact runtime feature build 2026-09-08
