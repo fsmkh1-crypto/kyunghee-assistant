@@ -10,5 +10,5 @@ if errorlevel 1 (
   exit /b 1
 )
 
-start "" pythonw desktop_gallery.py
+start "" pythonw desktop_gallery_final.py
 exit /b 0

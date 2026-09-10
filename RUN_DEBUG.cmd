@@ -9,5 +9,5 @@ if errorlevel 1 (
   exit /b 1
 )
 
-python desktop_gallery.py
+python desktop_gallery_final.py
 pause
