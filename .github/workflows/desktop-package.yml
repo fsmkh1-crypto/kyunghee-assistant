@@ -6,9 +6,11 @@ on:
     branches:
       - ui/dark-kyunghee-redesign
     paths:
+      - 'desktop_gallery.py'
       - 'desktop_compact.py'
       - 'desktop_app.py'
       - 'compact_runtime_features.py'
+      - 'asset_rotation.py'
       - 'app.py'
       - 'asset_manager.py'
       - 'break_reminder.py'
@@ -46,7 +48,7 @@ jobs:
           --windowed
           --name KyungheeTimer
           --add-data "assets;assets"
-          desktop_compact.py
+          desktop_gallery.py
       - name: Smoke-test packaged app
         shell: pwsh
         run: |
@@ -76,4 +78,4 @@ jobs:
           name: kyunghee-timer-desktop
           path: dist/KyungheeTimer
 
-# Package trigger: compact runtime feature build 2026-09-08
+# Package trigger: settings gallery + non-repeating asset rotation 2026-09-10
