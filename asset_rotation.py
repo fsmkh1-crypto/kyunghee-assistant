@@ -11,9 +11,16 @@ from typing import Iterable
 SUPPORTED_IMAGE_SUFFIXES = {'.png', '.jpg', '.jpeg', '.webp'}
 ROLE_FOLDERS = ('default', 'cheer', 'rest', 'away', 'warning', 'leave', 'stats', 'settings', 'alert', 'profile')
 _VARIANT_PATTERN = re.compile(r'^(?P<role>[a-z_]+)_(?P<set>\d{2})\.png$')
+DEFAULT_ASSET_DIR = Path(__file__).resolve().parent / 'assets'
 
 
-def raw_complete_sets(asset_dir: Path) -> tuple[int, ...]:
+def raw_complete_sets(asset_dir: Path = DEFAULT_ASSET_DIR) -> tuple[int, ...]:
+    """Return all physical complete numbered sets.
+
+    The default path intentionally mirrors ``asset_manager.available_complete_sets``
+    so this function can safely be used as a drop-in replacement by the settings
+    gallery without requiring callers to pass ``asset_dir`` explicitly.
+    """
     root = Path(asset_dir)
     per_role: list[set[int]] = []
     for role in ROLE_FOLDERS:
