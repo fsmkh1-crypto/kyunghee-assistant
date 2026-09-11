@@ -3,7 +3,13 @@ import random
 import tempfile
 import unittest
 
-from asset_rotation import ROLE_FOLDERS, next_nonrepeating_ref, next_nonrepeating_set, unique_complete_sets
+from asset_rotation import (
+    ROLE_FOLDERS,
+    next_nonrepeating_ref,
+    next_nonrepeating_set,
+    raw_complete_sets,
+    unique_complete_sets,
+)
 
 
 class AssetRotationTests(unittest.TestCase):
@@ -14,6 +20,12 @@ class AssetRotationTests(unittest.TestCase):
             for number in range(1, count + 1):
                 payload_number = 3 if number == 4 else number
                 (folder / f'{role}_{number:02d}.png').write_bytes(f'{role}:{payload_number}'.encode())
+
+    def test_raw_complete_sets_can_be_called_without_argument(self):
+        # desktop_gallery_final installs this function as a drop-in replacement
+        # for asset_manager.available_complete_sets(), whose callers use no args.
+        result = raw_complete_sets()
+        self.assertIsInstance(result, tuple)
 
     def test_identical_complete_set_is_collapsed(self):
         with tempfile.TemporaryDirectory() as temp:
