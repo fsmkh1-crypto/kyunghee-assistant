@@ -3,9 +3,9 @@ name: Collect All Historical Character Assets
 on:
   push:
     branches:
-      - tools/collect-all-assets-20260930
+      - "tools/collect-all-assets-20260930"
     paths:
-      - .github/workflows/collect-all-historical-assets.yml
+      - ".github/workflows/collect-all-historical-assets.yml"
 
 permissions:
   contents: read
@@ -14,136 +14,21 @@ jobs:
   collect:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout full repository history
+      - name: Checkout full history
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Fetch every branch and tag
-        run: |
-          git fetch origin '+refs/heads/*:refs/remotes/origin/*' --tags --force --prune
+        run: git fetch origin '+refs/heads/*:refs/remotes/origin/*' --tags --force --prune
 
-      - name: Collect unique image blobs under assets
-        shell: bash
-        run: |
-          python - <<'PY'
-          import csv, json, os, pathlib, shutil, subprocess, hashlib
-
-          ROOT = pathlib.Path("asset_archive")
-          ALL = ROOT / "ALL_UNIQUE"
-          CUR = ROOT / "CURRENT_CANONICAL"
-          HIST = ROOT / "HISTORICAL_ONLY"
-          for p in (ALL, CUR, HIST):
-              p.mkdir(parents=True, exist_ok=True)
-
-          exts = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
-          canonical_ref = "origin/ui/dark-kyunghee-redesign"
-
-          def run(*args, text=True):
-              return subprocess.check_output(args, text=text)
-
-          commits = run("git", "rev-list", "--all").splitlines()
-          blobs = {}
-          for commit in commits:
-              lines = run("git", "ls-tree", "-r", "--full-tree", commit).splitlines()
-              for line in lines:
-                  meta, path = line.split("\t", 1)
-                  mode, typ, sha = meta.split()
-                  if typ != "blob" or not path.startswith("assets/"):
-                      continue
-                  if pathlib.Path(path).suffix.lower() not in exts:
-                      continue
-                  rec = blobs.setdefault(sha, {"paths": set(), "commits": set()})
-                  rec["paths"].add(path)
-                  rec["commits"].add(commit)
-
-          current = {}
-          lines = run("git", "ls-tree", "-r", "--full-tree", canonical_ref).splitlines()
-          for line in lines:
-              meta, path = line.split("\t", 1)
-              mode, typ, sha = meta.split()
-              if typ != "blob" or not path.startswith("assets/"):
-                  continue
-              if pathlib.Path(path).suffix.lower() not in exts:
-                  continue
-              current[path] = sha
-
-          current_shas = set(current.values())
-
-          manifest = []
-          used_names = set()
-          for sha, rec in sorted(blobs.items()):
-              paths = sorted(rec["paths"])
-              first = paths[0]
-              ext = pathlib.Path(first).suffix.lower()
-              base = pathlib.Path(first).stem
-              safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in base)[:80]
-              name = f"{sha[:12]}__{safe}{ext}"
-              if name in used_names:
-                  name = f"{sha}__{safe}{ext}"
-              used_names.add(name)
-
-              data = subprocess.check_output(["git", "cat-file", "blob", sha])
-              (ALL / name).write_bytes(data)
-              if sha not in current_shas:
-                  (HIST / name).write_bytes(data)
-
-              manifest.append({
-                  "blob_sha": sha,
-                  "size": len(data),
-                  "is_in_current_canonical": sha in current_shas,
-                  "first_path": first,
-                  "all_paths": paths,
-                  "commit_count": len(rec["commits"]),
-                  "commits": sorted(rec["commits"]),
-                  "archive_name": name,
-              })
-
-          for path, sha in sorted(current.items()):
-              out = CUR / path.removeprefix("assets/")
-              out.parent.mkdir(parents=True, exist_ok=True)
-              out.write_bytes(subprocess.check_output(["git", "cat-file", "blob", sha]))
-
-          summary = {
-              "canonical_ref": canonical_ref,
-              "current_canonical_image_files": len(current),
-              "current_canonical_unique_blobs": len(current_shas),
-              "all_historical_unique_blobs": len(blobs),
-              "historical_only_unique_blobs": len(set(blobs) - current_shas),
-              "extensions": sorted(exts),
-          }
-          (ROOT / "SUMMARY.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-          (ROOT / "MANIFEST.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-
-          with (ROOT / "MANIFEST.csv").open("w", encoding="utf-8-sig", newline="") as f:
-              w = csv.writer(f)
-              w.writerow(["blob_sha","size","is_in_current_canonical","first_path","all_paths","commit_count","archive_name"])
-              for m in manifest:
-                  w.writerow([m["blob_sha"],m["size"],m["is_in_current_canonical"],m["first_path"]," | ".join(m["all_paths"]),m["commit_count"],m["archive_name"]])
-
-          readme = f"""# Kyunghee Assistant Asset Archive
-
-Canonical source branch: `ui/dark-kyunghee-redesign`
-
-- Current canonical image files: {len(current)}
-- Current canonical unique blobs: {len(current_shas)}
-- All unique historical image blobs under `assets/`: {len(blobs)}
-- Historical-only unique blobs: {len(set(blobs) - current_shas)}
-
-Folders:
-- `CURRENT_CANONICAL/`: exact current canonical branch image files.
-- `ALL_UNIQUE/`: every unique historical image blob found anywhere in reachable Git history under `assets/`.
-- `HISTORICAL_ONLY/`: blobs not present in the current canonical branch.
-- `MANIFEST.json` and `MANIFEST.csv`: SHA/path/commit provenance.
-"""
-          (ROOT / "README.md").write_text(readme, encoding="utf-8")
-          PY
+      - name: Collect assets
+        run: python tools/collect_all_historical_assets.py
 
       - name: Create ZIP
-        run: |
-          zip -r kyunghee-assistant-all-assets-20260930.zip asset_archive
+        run: zip -r kyunghee-assistant-all-assets-20260930.zip asset_archive
 
-      - name: Upload archive artifact
+      - name: Upload archive
         uses: actions/upload-artifact@v4
         with:
           name: kyunghee-assistant-all-assets-20260930
