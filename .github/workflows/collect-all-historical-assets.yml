@@ -24,8 +24,9 @@ jobs:
           git fetch origin '+refs/heads/*:refs/remotes/origin/*' --tags --force --prune
 
       - name: Collect unique image blobs under assets
-        shell: python
+        shell: bash
         run: |
+          python - <<'PY'
           import csv, json, os, pathlib, shutil, subprocess, hashlib
 
           ROOT = pathlib.Path("asset_archive")
@@ -136,6 +137,7 @@ Folders:
 - `MANIFEST.json` and `MANIFEST.csv`: SHA/path/commit provenance.
 """
           (ROOT / "README.md").write_text(readme, encoding="utf-8")
+          PY
 
       - name: Create ZIP
         run: |
