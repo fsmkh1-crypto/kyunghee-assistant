@@ -42,6 +42,7 @@ class MinimalMainSurfaceTests(unittest.TestCase):
             patch("app.load_user_settings", return_value=self.legacy),
             patch("app.load_state", side_effect=lambda _path: fresh_state()),
             patch("app.App._start_tray"),
+            patch("windows_idle.last_input_info", return_value=(0.0, 1)),
             patch("desktop_compact.USER_IMAGE_DIR", self.data / "images"),
             patch("desktop_compact.USER_IMAGE_SET_DIR", self.data / "image_sets"),
             patch("desktop_compact.CompactDesktopApp._start_global_hotkey"),

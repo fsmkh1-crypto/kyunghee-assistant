@@ -95,6 +95,9 @@ class GalleryAITests(unittest.TestCase):
             raise unittest.SkipTest("A display is needed for the real Tk gallery integration")
 
     def setUp(self):
+        idle = patch("windows_idle.last_input_info", return_value=(0.0, 1))
+        idle.start()
+        self.addCleanup(idle.stop)
         presentation = patch("desktop_compact.should_suppress_overlay_notifications", return_value=False)
         presentation.start()
         self.addCleanup(presentation.stop)
