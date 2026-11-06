@@ -96,20 +96,14 @@ if not result.wasSuccessful() or result.skipped or result.testsRun < 5:
 
 from ai_credentials import AICredentials
 from ai_desktop import AIService
-from ai_dialogue import AssetToolCall
-from chat_asset_commands import AssetCommand
 from desktop_gallery_final import FinalGalleryDesktopApp
 import app as core
 
 class OfflineClient:
     calls = 0
-    next_command = None
     def generate(self, _key, **_kwargs):
         self.calls += 1
-        if self.next_command is not None:
-            command, self.next_command = self.next_command, None
-            return SimpleNamespace(text='', error_code='', tool_calls=(AssetToolCall('native_ci_call', command),))
-        assert _kwargs.get('asset_catalog') is None, 'Ordinary chat must not advertise asset controls.'
+        assert 'asset_catalog' not in _kwargs, 'Chat must not receive asset capabilities.'
         return SimpleNamespace(text='잘 왔어. 오늘도 옆에서 응원할게.', error_code='')
 
 # Existing test imports cached app.DATA_DIR; explicitly isolate this native panel
@@ -185,37 +179,19 @@ with tempfile.TemporaryDirectory(prefix='kyunghee-native-review-') as temp:
                 app.root.update_idletasks()
                 time.sleep(0.005)
             assert client.calls == 1 and app._chat_messages[-1][0] == '승아 · AI'
-            previous_photo = str(app.character_photo)
-            client.next_command = AssetCommand('set', number=2)
-            app._chat_entry.insert(0, '세트 2번으로 바꿔줘')
-            app._send_chat()
-            deadline = time.monotonic() + 1
-            while service._in_flight is not None and time.monotonic() < deadline:
-                app._ai_poll()
-                app.root.update_idletasks()
-                time.sleep(0.005)
-            assert app.preferences.builtin_image_set == '02'
-            assert app.builtin_image_set_var.get() == '02'
-            assert str(app.character_photo) != previous_photo
-            assert app._custom_image(app.character_role)[0].name.endswith('_02.png')
-            assert json.loads(core.SETTINGS_FILE.read_text(encoding='utf-8'))['builtin_image_set'] == '02'
-            assert (data / 'manual_asset_overrides.json').is_file()
-            assert app._chat_messages[-1][0] == '승아 · 설정'
             app.state.daily.active_seconds = 3661
             app.state.session.continuous_seconds = 123
-            timer_before = (app.state.daily.active_seconds, app.state.session.continuous_seconds)
+            app.state.daily.away_seconds = 61
+            timer_before = (app.state.daily.active_seconds, app.state.session.continuous_seconds, app.state.daily.away_seconds)
+            preferences_before = app.preferences
             speech_before_status = app.speech.cget('text')
-            client.next_command = AssetCommand('status')
-            app._chat_entry.insert(0, '연속 사용 시간 알려줘')
+            app._chat_entry.insert(0, '타이머 상태 알려줘')
             app._send_chat()
-            deadline = time.monotonic() + 1
-            while service._in_flight is not None and time.monotonic() < deadline:
-                app._ai_poll()
-                app.root.update_idletasks()
-                time.sleep(0.005)
-            assert client.calls == 3 and app._chat_messages[-1][0] == '승아 · 타이머'
-            assert core.fmt(3661) in app._chat_messages[-1][1] and core.fmt(123) in app._chat_messages[-1][1]
-            assert (app.state.daily.active_seconds, app.state.session.continuous_seconds) == timer_before
+            assert client.calls == 1 and app._chat_messages[-1][0] == '승아 · 타이머'
+            assert '1시간 1분 1초' in app._chat_messages[-1][1]
+            assert '2분 3초' in app._chat_messages[-1][1]
+            assert (app.state.daily.active_seconds, app.state.session.continuous_seconds, app.state.daily.away_seconds) == timer_before
+            assert app.preferences == preferences_before
             assert app.speech.cget('text') == speech_before_status
             panel.clear_key()
             assert not panel.credentials.has_key and not panel.credentials.path.exists()
@@ -241,7 +217,8 @@ summary = {'native_gui_tests': result.testsRun - 1, 'native_gui_or_DPAPI_skips':
            'bubble_click_opens_chat': True, 'separate_chat_button_removed': True,
            'character_click_opens_settings': True, 'ordinary_AI_chat_has_no_control_tools': True,
            'main_timer_metrics_hidden': True, 'chat_visible_on_startup': True,
-           'mocked_API_asset_tool_saved_and_rendered': True, 'actual_timer_status_read_only': True,
+           'chat_settings_control_removed': True, 'timer_queries_local_immediate_without_API': True,
+           'actual_timer_status_read_only': True,
            'timer_always_on_top': True, 'chat_always_on_top': True, 'visible_name_Seunga': True,
            'real_API_requests': 0, 'real_API_key_used': False}
 (evidence / 'native-windows-checks.json').write_text(json.dumps(summary, indent=2) + '\n', encoding='utf-8')
@@ -364,6 +341,8 @@ public static class KyungheeReviewSmokeWindows {
             if (-not (Test-Path $statePath)) { throw 'The timer did not periodically save isolated review state.' }
             $state = Get-Content $statePath -Raw | ConvertFrom-Json
             if (-not $state.daily.day -or $state.session.last_seen_wall -le 0) { throw 'The isolated timer state is invalid.' }
+            $trackedSeconds = [double]$state.daily.active_seconds + [double]$state.daily.away_seconds
+            if ($trackedSeconds -lt 3) { throw 'The hidden timer did not accumulate time during the actual EXE smoke test.' }
             $errors = Select-String -Path $logPath -Pattern 'tick failed|Traceback|asset failed| ERROR |font registration failed'
             if ($errors) { throw 'The isolated review log contains a startup, timer or asset error.' }
             if (Test-Path (Join-Path $reviewData 'openai_api_key.dpapi')) { throw 'The fresh package unexpectedly created credentials.' }
@@ -376,6 +355,7 @@ public static class KyungheeReviewSmokeWindows {
             }
             @{ alive_seconds_after_window = 8; visible_native_Tk_window = $true; native_topmost_timer_window = $true;
                native_topmost_chat_window = $true; companion_windows_separate = $true; periodic_state_saved = $true;
+               tracked_seconds_at_save = $trackedSeconds; hidden_timer_time_accumulation_verified = $true;
                isolated_log_checked = $true; default_profile_unchanged = $true; native_tray_backend = $true;
                real_API_key_used = $false; review_data_relative = 'KyungheeTimer_AI_Review/KyungheeAssistant' } |
                 ConvertTo-Json | Set-Content (Join-Path $evidenceRoot 'packaged-smoke.json') -Encoding utf8

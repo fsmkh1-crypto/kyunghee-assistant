@@ -6,29 +6,19 @@ import ctypes
 from ctypes import wintypes
 from dataclasses import dataclass, replace
 from datetime import datetime
-import hashlib
 import os
-from pathlib import Path
-import re
-import tempfile
 import time
 import tkinter as tk
 from tkinter import filedialog
 
-from PIL import Image
-
 import app as core
-import asset_manager
 from ai_credentials import AICredentials
 from ai_dialogue import AIService, HTTPClient, error_message
 from ai_settings_ui import AISettingsPanel
 from asset_pack_import import import_numbered_pack
-from chat_asset_commands import (
-    MAX_CATALOG_IMAGES, AssetCatalog, AssetChoice, allowed_asset_tools,
-    classify_chat_intent, guard_asset_command, is_timer_status_query,
-)
 from font_support import ui_font
 from messages import pick
+from timer_status import TimerSnapshot, classify_timer_query, format_timer_status, is_timer_status_query
 
 
 CHAT_REPLY_TIMEOUT_SECONDS = 5.0
@@ -78,7 +68,6 @@ class PendingChat:
     user_text: str
     token: tuple
     deadline: float
-    asset_catalog: AssetCatalog | None = None
 
 
 def timer_context(state, mode: str, personality: str, now: datetime, **recent) -> dict:
@@ -95,6 +84,9 @@ def timer_context(state, mode: str, personality: str, now: datetime, **recent) -
         "active_minutes": int(max(0, state.daily.active_seconds) // 60),
         "continuous_minutes": int(max(0, state.session.continuous_seconds) // 60),
         "away_minutes": int(max(0, state.daily.away_seconds) // 60),
+        "active_seconds": int(max(0, state.daily.active_seconds)),
+        "continuous_seconds": int(max(0, state.session.continuous_seconds)),
+        "away_seconds": int(max(0, state.daily.away_seconds)),
         "away_count": state.daily.away_count,
         "workday_stage": "working" if mode == "normal" else mode,
         **{key: value for key, value in recent.items() if key in {
@@ -119,6 +111,7 @@ class OptionalAIDesktopMixin:
     """Adds AI to the actual gallery entrypoint without replacing its handlers."""
 
     def __init__(self):
+        self._app_started_monotonic = time.monotonic()
         self.ai_service = AIService()
         self.ai_credentials = AICredentials(core.DATA_DIR)
         self._ai_loaded_credentials = False
@@ -263,28 +256,12 @@ class OptionalAIDesktopMixin:
             return
         self._chat_pending = None
         self._chat_ai_note = "상태가 바뀌어 답변 대기를 취소했어요. 다시 말해 주세요."
-        if self._chat_messages and self._chat_messages[-1][0] == "승아 · 대기 중":
-            self._chat_messages[-1] = ("승아 · 안내", self._chat_ai_note)
+        self._replace_pending_chat_row("안내", self._chat_ai_note)
         self._refresh_chat()
 
     def _ai_token(self):
-        selection = [self.preferences.builtin_image_set, self.character_role,
-                     tuple(sorted(self._manual_asset_overrides.items()))]
-        for key, _caption in self.IMAGE_ROWS:
-            selection.extend((getattr(self.preferences, f"image_{key}", ""),
-                              getattr(self.preferences, f"image_{key}_mode", "fit")))
-        for name in ("image_path_vars", "image_mode_vars", "image_alignment_vars"):
-            selection.append(tuple((key, variable.get()) for key, variable in sorted(getattr(self, name, {}).items())))
-        selection.append(getattr(self, "builtin_image_set_var", None).get()
-                         if hasattr(self, "builtin_image_set_var") else "")
-        try:
-            info = self._image_set_store.manifest_path.stat()
-            selection.append((info.st_mtime_ns, info.st_size))
-        except OSError:
-            selection.append(None)
-        asset_signature = hashlib.sha256(repr(selection).encode("utf-8")).hexdigest()
         return (self._ai_revision, self.state.daily.day, self.state.session.is_away,
-                self._current_workday_state().mode, self.preferences.personality, asset_signature)
+                self._current_workday_state().mode, self.preferences.personality)
 
     def _ai_context(self):
         now_mono = time.monotonic()
@@ -298,98 +275,34 @@ class OptionalAIDesktopMixin:
                   "recent_break_minutes": self._ai_recent_break}
         if self._ai_returned_at is not None:
             recent["seconds_since_return"] = int(now_mono - self._ai_returned_at)
-        return timer_context(self.state, self._current_workday_state().mode,
-                             self.preferences.personality, datetime.now(), **recent)
+        context = timer_context(self.state, self._current_workday_state().mode,
+                                self.preferences.personality, datetime.now(), **recent)
+        context["app_elapsed_seconds"] = int(max(0, now_mono - self._app_started_monotonic))
+        return context
 
-    def _request_ai(self, event, user_text="", *, asset_catalog=None):
+    def _request_ai(self, event, user_text=""):
         if not self._ai_ready or self._ai_closed:
             return False
-        options = {"asset_catalog": asset_catalog} if asset_catalog is not None else {}
         return self.ai_service.request(event, self._ai_context(), user_text=user_text,
-                                       token=self._ai_token(), **options)
-
-    def _chat_asset_catalog(self):
-        """Send pathless capabilities; retain all filesystem references locally."""
-        choices, paths = [], {}
-        roles = dict(self.IMAGE_ROWS)
-        for role, _label, path in self._catalog():
-            if role not in roles:
-                continue
-            ref = self._encode_asset_ref(path)
-            if not ref.startswith(("builtin:", "user:", "userset:")):
-                continue
-            asset_id = "img_" + hashlib.sha256(ref.encode("utf-8")).hexdigest()[:24]
-            builtin = ref.startswith("builtin:")
-            match = re.fullmatch(r"[a-z]+_(\d{2})\.png", path.name, re.I) if builtin else None
-            try:
-                choice = AssetChoice(asset_id, role, int(match.group(1)) if match else None,
-                                     path.name if builtin else "")
-            except ValueError:
-                continue
-            choices.append(choice)
-            paths[asset_id] = path
-            if len(choices) >= MAX_CATALOG_IMAGES:
-                break
-        current = self._manual_asset_overrides.get(self.ROLE_TO_SETTING.get(self.character_role, "default"), "")
-        current_id = "img_" + hashlib.sha256(current.encode("utf-8")).hexdigest()[:24] if current else None
-        if current_id not in paths:
-            current_id = None
-        number = self.preferences.builtin_image_set
-        catalog = AssetCatalog(tuple(asset_manager.available_complete_sets(asset_manager.ASSET_DIR)), tuple(choices),
-                               int(number) if str(number).isdigit() else None, current_id)
-        return catalog, paths
+                                       token=self._ai_token())
 
     @staticmethod
     def _is_timer_question(text):
         return is_timer_status_query(text)
 
-    def _timer_chat_reply(self):
-        return (f"지금은 {datetime.now():%H:%M:%S}이고 오늘 실제 사용은 {core.fmt(self.state.daily.active_seconds)}, "
-                f"자리비움은 {core.fmt(self.state.daily.away_seconds)}이야. "
-                f"지금 연속 사용은 {core.fmt(self.state.session.continuous_seconds)}이고 "
-                + ("자리비움 중이야." if self.state.session.is_away else "사용 중이야."))
-
-    def _apply_chat_tool_result(self, result, pending):
-        calls = getattr(result, "tool_calls", ())
-        intent = classify_chat_intent(pending.user_text)
-        tool_names = {"set": "select_asset_set", "file": "select_asset_image",
-                      "list": "list_assets", "status": "get_timer_status"}
-        # Defense in depth after the HTTP/service scope checks: an ordinary
-        # conversation never enters the image executor or image-error history.
-        if (intent in {"chat", "asset_ambiguous"} or len(calls) != 1 or
-                tool_names.get(getattr(calls[0].command, "kind", None)) not in allowed_asset_tools(pending.user_text)):
-            self._fallback_pending_chat("invalid_response")
-            return
-        update_speech = True
-        try:
-            if calls[0].command.kind == "status":
-                catalog, paths = AssetCatalog(), {}
-            else:
-                if pending.asset_catalog is None:
-                    raise ValueError
-                catalog, paths = self._chat_asset_catalog()
-            command = guard_asset_command(calls[0].command, pending.user_text, catalog)
-            if pending.token != self._ai_token() or time.monotonic() >= pending.deadline:
-                self._cancel_pending_chat()
-                return
-            if command.kind == "set":
-                _ok, message = self._select_chat_asset(number=command.number)
-            elif command.kind == "file":
-                _ok, message = self._select_chat_asset(path=paths.get(command.asset_id))
-            elif command.kind == "list":
-                numbers = ", ".join(f"{value:02d}" for value in catalog.sets) or "없음"
-                message = f"설치된 전체 세트는 {numbers}이야. '03번 세트로 바꿔줘'처럼 요청하면 지금 화면의 이미지와 전체 기본 세트를 바꿀 수 있어. 다른 수동 이미지는 유지해."
-            elif command.kind == "status":
-                message, update_speech = self._timer_chat_reply(), False
-            else:
-                raise ValueError
-        except Exception:
-            message = "어떤 이미지로 바꿀까? 설치된 세트 번호나 파일 이름 하나를 알려 줘. 아직 설정은 바꾸지 않았어."
-        self.ai_service.record_tool_result(result, message)
-        self._chat_pending = None
-        self._ai_invalidate()
-        self._finish_chat_reply(message, "타이머" if not update_speech else "설정", "앱에서 요청 결과를 확인했어요.",
-                                update_speech=update_speech)
+    def _timer_chat_reply(self, text):
+        # The existing one-second timer loop owns accounting and transitions.
+        # Reading a snapshot here neither consumes a transition nor schedules a
+        # second timer loop. Runtime is the distinct current-process duration.
+        snapshot = TimerSnapshot(
+            current_time=datetime.now(),
+            active_seconds=int(max(0, self.state.daily.active_seconds)),
+            continuous_seconds=int(max(0, self.state.session.continuous_seconds)),
+            away_seconds=int(max(0, self.state.daily.away_seconds)),
+            runtime_seconds=int(max(0, time.monotonic() - self._app_started_monotonic)),
+            is_away=self.state.session.is_away,
+        )
+        return format_timer_status(snapshot, classify_timer_query(text))
 
     def _say(self, kind, text=None, work_mode="normal"):
         super()._say(kind, text, work_mode)
@@ -407,117 +320,6 @@ class OptionalAIDesktopMixin:
 
     def _cycle_message(self, event=None):
         return self._open_chat(event)
-
-    @staticmethod
-    def _restore_chat_selection_file(path, content):
-        """Restore only our two known selection files after a partial save."""
-        current = path.read_bytes() if path.is_file() else None
-        if current == content:
-            return
-        if content is None:
-            path.unlink(missing_ok=True)
-            return
-        fd, name = tempfile.mkstemp(prefix=f".{path.name}.restore-", dir=path.parent)
-        temporary = Path(name)
-        try:
-            with os.fdopen(fd, "wb") as output:
-                output.write(content)
-                output.flush()
-                os.fsync(output.fileno())
-            os.replace(temporary, path)
-        finally:
-            temporary.unlink(missing_ok=True)
-
-    def _select_chat_asset(self, *, number=None, path=None):
-        """Apply a verified selection to the visible role; never delete artwork.
-
-        A whole-set command also changes the global built-in selector. Other
-        manually selected slots and imported image lists remain untouched.
-        """
-        role = self.character_role or "default"
-        key = self.ROLE_TO_SETTING.get(role, "default")
-        if number is not None:
-            complete = asset_manager.available_complete_sets(asset_manager.ASSET_DIR)
-            if type(number) is not int or number not in complete:
-                return False, "그 번호의 완성 세트가 설치되어 있지 않아. 설치된 세트 목록을 확인해 줘."
-            canonical_role = self.SETTING_TO_CANONICAL_ROLE.get(key, "default")
-            path = asset_manager.variant_asset(canonical_role, number, asset_manager.ASSET_DIR)
-        if path is None:
-            return False, "선택할 이미지를 찾지 못했어. 설치된 이미지에서 다시 골라 줘."
-        path = Path(path)
-        try:
-            catalog = {entry[2].resolve() for entry in self._catalog()}
-            if path.resolve() not in catalog:
-                raise ValueError
-            ref = self._encode_asset_ref(path)
-            if not ref.startswith(("builtin:", "user:", "userset:")):
-                raise ValueError
-            self._validate_image_source(path)
-            with Image.open(path) as image:
-                image.convert("RGBA").load()
-        except Exception:
-            return False, "그 이미지를 안전하게 열 수 없어 변경하지 않았어. 갤러리에서 다른 이미지를 골라 줘."
-
-        previous_preferences = self.preferences
-        previous_overrides = dict(self._manual_asset_overrides)
-        previous_gallery = dict(self._gallery_previous)
-        previous_photo = self.character_photo
-        previous_bbox = getattr(self, "_character_alpha_bbox", None)
-        selection_paths = (Path(self.MANUAL_OVERRIDE_FILE), Path(core.SETTINGS_FILE))
-        try:
-            previous_files = {item: item.read_bytes() if item.is_file() else None for item in selection_paths}
-            variables = [self.builtin_image_set_var, self.image_name_vars[key], self.image_builtin_vars[key]]
-            previous_variables = [(variable, variable.get()) for variable in variables]
-        except Exception:
-            return False, "기존 설정을 확인할 수 없어 이미지 변경을 시작하지 않았어."
-        try:
-            self._gallery_previous[key] = previous_overrides.get(key, self.FOLLOW_SENTINEL)
-            self._manual_asset_overrides[key] = ref
-            self._save_manual_overrides()
-            candidate = replace(previous_preferences, builtin_image_set=f"{number:02d}") if number is not None else previous_preferences
-            self.apply_preferences(candidate)
-            self.builtin_image_set_var.set(self._builtin_base_label(self.preferences.builtin_image_set))
-            self.image_name_vars[key].set(path.name)
-            self.image_builtin_vars[key].set("세트 기본값")
-            self._image_cache.clear()
-            self._invalidate_settings_preview(key)
-            self._settings_preview_indices[key] = 0
-            self._select_settings_preview(key)
-            self.character_role = None
-            self._set_character(role)
-            if self.character_role != role or self.character_photo is previous_photo:
-                raise RuntimeError("render_failed")
-            self._apply_widget_appearance()
-            if self.current_page == "timer":
-                self._resize_for_page("timer")
-        except Exception:
-            self.preferences = previous_preferences
-            self._manual_asset_overrides = previous_overrides
-            self._gallery_previous = previous_gallery
-            restored = True
-            for item, content in previous_files.items():
-                try:
-                    self._restore_chat_selection_file(item, content)
-                except Exception:
-                    restored = False
-            for variable, value in previous_variables:
-                variable.set(value)
-            self._image_cache.clear()
-            self.character_photo = previous_photo
-            self.character.configure(image=previous_photo)
-            self.character_role = role
-            self._character_alpha_bbox = previous_bbox
-            self._apply_widget_appearance()
-            if restored:
-                return False, "이미지 변경을 저장하거나 표시하지 못해 취소했어. 기존 설정과 이미지를 유지했어."
-            return False, "이미지 변경을 완료하지 못했어. 설정의 저장 상태를 확인해 줘."
-        caption = dict(self.IMAGE_ROWS).get(key, key)
-        if number is not None:
-            return True, f"전체 기본 세트를 {number:02d}번으로 바꾸고 지금 화면의 {caption} 이미지를 선택했어. 다른 수동 이미지와 원본 파일은 그대로 뒀어."
-        # This acknowledgement can enter bounded API chat memory. Custom file
-        # names remain local just like the opaque catalog's custom metadata.
-        selected = path.name if ref.startswith("builtin:") else "선택한 이미지"
-        return True, f"지금 화면의 {caption} 이미지를 {selected}로 바꿨어. 다른 상황의 이미지와 원본 파일은 그대로 뒀어."
 
     def show_break_toast(self, text, allow_snooze=True):
         super().show_break_toast(text, allow_snooze)
@@ -579,13 +381,6 @@ class OptionalAIDesktopMixin:
                     continue
                 if time.monotonic() >= pending.deadline:
                     self._fallback_pending_chat("timeout")
-                elif getattr(result, "tool_calls", ()):
-                    self._apply_chat_tool_result(result, pending)
-                elif self._is_timer_question(pending.user_text):
-                    self._finish_chat_reply(self._timer_chat_reply(), "타이머", "현재 타이머 기록이에요.", update_speech=False)
-                elif classify_chat_intent(pending.user_text) in {"asset_change", "asset_ambiguous"}:
-                    self._finish_chat_reply("어떤 이미지로 바꿀까? 설치된 세트 번호나 파일 이름 하나를 알려 줘. 아직 설정은 그대로야.",
-                                            "설정", "실제 이미지 변경은 적용하지 않았어요.")
                 elif result.text:
                     self._finish_chat_reply(result.text, "AI", "AI 답변이 도착했어요.")
                 else:
@@ -675,35 +470,32 @@ class OptionalAIDesktopMixin:
         self._start_chat_reply("daily_close", "오늘 하루 마무리하자.")
 
     def _start_chat_reply(self, event, text):
+        if event == "chat" and self._is_timer_question(text):
+            reply = self._timer_chat_reply(text)
+            self._chat_messages.extend((("나", text), ("승아 · 타이머", reply)))
+            self.last_dialogue_at = time.monotonic()
+            self._chat_ai_note = ("현재 타이머 기록이에요. 대화 답변은 계속 기다리고 있어요."
+                                  if self._chat_pending else "현재 타이머 기록이에요.")
+            self._refresh_chat()
+            return True
         if self._chat_pending is not None:
             self._chat_ai_note = "답변을 기다리고 있어요. 답변이 도착하면 다음 말을 보내 주세요."
             self._refresh_chat()
             return False
         self._ai_invalidate()
         enabled = self.preferences.ai_enabled and bool(self.ai_credentials.api_key)
-        intent = classify_chat_intent(text) if event == "chat" else "chat"
-        catalog = None
-        if enabled and intent in {"asset_change", "asset_list"}:
-            catalog = self._chat_asset_catalog()[0]
-        elif enabled and intent == "timer_status":
-            catalog = AssetCatalog()
-        if enabled and not self._request_ai(event, user_text=text if event == "chat" else "", asset_catalog=catalog):
+        if enabled and not self._request_ai(event, user_text=text if event == "chat" else ""):
             self._chat_ai_note = "지금은 AI 요청을 시작할 수 없어요. 잠시 후 다시 보내 주세요."
             self._refresh_chat()
             return False
         self._chat_messages.extend((("나", text), ("승아 · 대기 중", "답변을 생각하고 있어요…")))
         self._chat_pending = PendingChat(event, text, self._ai_token(),
-                                         time.monotonic() + CHAT_REPLY_TIMEOUT_SECONDS, catalog)
+                                         time.monotonic() + CHAT_REPLY_TIMEOUT_SECONDS)
         # Prevent periodic idle dialogue from replacing the existing speech
         # while this explicit chat is waiting. Timer and meaningful events run on.
         self.last_dialogue_at = time.monotonic()
         if enabled:
             self._chat_ai_note = "AI 답변을 기다리고 있어요."
-        elif event == "chat" and self._is_timer_question(text):
-            self._finish_chat_reply(self._timer_chat_reply(), "타이머", "현재 타이머 기록이에요.", update_speech=False)
-        elif event == "chat" and intent in {"asset_change", "asset_ambiguous"}:
-            self._finish_chat_reply("이미지를 바꾸려면 AI 설정에서 API를 켜 줘. 지금은 설정을 바꾸지 않았어.",
-                                    "설정", "AI 연결이 꺼져 있어 이미지 선택을 유지했어요.")
         else:
             self._fallback_pending_chat()
         self._refresh_chat()
@@ -711,8 +503,8 @@ class OptionalAIDesktopMixin:
 
     def _finish_chat_reply(self, text, source, note, *, update_speech=True):
         self._chat_pending = None
-        if self._chat_messages and self._chat_messages[-1][0] == "승아 · 대기 중":
-            self._chat_messages[-1] = (f"승아 · {source}", text)
+        if not self._replace_pending_chat_row(source, text):
+            self._chat_messages.append((f"승아 · {source}", text))
         # Explicit chat still completes in its window during fullscreen mode;
         # the timer overlay continues to respect presentation suppression.
         if update_speech and not self._break_notifications_suppressed():
@@ -722,23 +514,21 @@ class OptionalAIDesktopMixin:
         self._chat_ai_note = note
         self._refresh_chat()
 
+    def _replace_pending_chat_row(self, source, text):
+        # Local time queries may arrive while an ordinary AI answer is pending.
+        # Resolve its own earlier row without overwriting the factual reply.
+        for index in range(len(self._chat_messages) - 1, -1, -1):
+            if self._chat_messages[index][0] == "승아 · 대기 중":
+                self._chat_messages[index] = (f"승아 · {source}", text)
+                return True
+        return False
+
     def _fallback_pending_chat(self, error_code=""):
         pending = self._chat_pending
         if pending is None:
             return
         self._chat_pending = None
         self._ai_invalidate()
-        if pending.event == "chat" and self._is_timer_question(pending.user_text):
-            self._finish_chat_reply(self._timer_chat_reply(), "타이머", "연결 대신 현재 타이머 기록을 확인했어요.", update_speech=False)
-            return
-        intent = classify_chat_intent(pending.user_text) if pending.event == "chat" else "chat"
-        if pending.event == "chat" and intent in {"asset_change", "asset_ambiguous"}:
-            message = ("어떤 이미지로 바꿀까? 설치된 세트 번호나 파일 이름 하나를 알려 줘. 아직 설정은 바꾸지 않았어."
-                       if intent == "asset_ambiguous" else
-                       "이미지 변경 요청을 완료하지 못했어. 설정은 그대로 두었으니 잠시 후 다시 요청해 줘.")
-            self._finish_chat_reply(message,
-                                    "설정", error_message(error_code) if error_code else "이미지 선택을 유지했어요.")
-            return
         if pending.event == "chat" and error_code == "invalid_response":
             self._finish_chat_reply("대화 답변을 제대로 받지 못했어. 한 번만 다시 말해 줄래?",
                                     "안내", error_message(error_code))
@@ -763,8 +553,8 @@ class OptionalAIDesktopMixin:
             return
         enabled = self.preferences.ai_enabled and bool(self.ai_credentials.api_key)
         self._chat_status.configure(text=(
-            "AI 사용 중 · 필요한 타이머 정보와 보낸 대화가 OpenAI로 전송됩니다. 이미지 변경과 사용 시간 확인을 요청할 수 있어요."
-            if enabled else "로컬 대화 중 · '사용 시간 알려줘'로 현재 기록을 확인할 수 있어요. AI 설정에서 API를 켜면 더 자연스럽게 답해요.")
+            "AI 대화 중 · 보낸 대화와 필요한 타이머 정보가 OpenAI로 전송됩니다. 시간 질문은 앱이 바로 확인해요. 설정은 이미지 클릭으로 열 수 있어요."
+            if enabled else "로컬 대화 중 · '몇 분째야?'로 현재 기록을 바로 확인할 수 있어요. 설정은 이미지 클릭으로 열 수 있어요.")
             + ("\n" + self._chat_ai_note if self._chat_ai_note else ""))
         self._chat_history.configure(state="normal")
         self._chat_history.delete("1.0", "end")
