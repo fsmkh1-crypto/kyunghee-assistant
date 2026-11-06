@@ -31,6 +31,10 @@ def response(name="select_asset_set", arguments=None, *, call_id="call_test", ou
     return json.dumps({"status": "completed", "output": output}, ensure_ascii=False).encode()
 
 
+def parse_tool_response(raw, allowed=("select_asset_set", "select_asset_image", "list_assets", "get_timer_status")):
+    return HTTPClient._parse(raw, asset_catalog=catalog(), allowed_tool_names=allowed)
+
+
 class ToolHTTPTests(unittest.TestCase):
     def test_real_responses_request_declares_bounded_tools_and_suppresses_speculative_ack(self):
         remote = Mock(status=200)
@@ -45,14 +49,12 @@ class ToolHTTPTests(unittest.TestCase):
         self.assertIs(body["store"], False)
         self.assertIs(body["parallel_tool_calls"], False)
         tools = {tool["name"]: tool for tool in body["tools"]}
-        self.assertEqual(set(tools), {"select_asset_set", "select_asset_image", "list_assets", "get_timer_status"})
+        self.assertEqual(set(tools), {"select_asset_set"})
         for tool in tools.values():
             self.assertIs(tool["strict"], True)
             self.assertIs(tool["parameters"]["additionalProperties"], False)
             self.assertEqual(set(tool["parameters"]["required"]), set(tool["parameters"]["properties"]))
         self.assertEqual(tools["select_asset_set"]["parameters"]["properties"]["number"]["enum"], [1, 2])
-        self.assertEqual(set(tools["select_asset_image"]["parameters"]["properties"]["asset_id"]["enum"]),
-                         {"img_000000000001", "img_000000000002"})
         self.assertEqual(reply.text, "")
         self.assertEqual(reply.error_code, "")
         self.assertEqual(len(reply.tool_calls), 1)
@@ -90,13 +92,48 @@ class ToolHTTPTests(unittest.TestCase):
         ]
         for raw in bad:
             with self.subTest(raw=raw):
-                reply = HTTPClient._parse(raw, asset_catalog=catalog())
+                reply = parse_tool_response(raw)
                 self.assertEqual(reply.error_code, "invalid_response")
                 self.assertEqual(reply.tool_calls, ())
                 self.assertEqual(reply.text, "")
         self.assertEqual(HTTPClient._parse(response()).error_code, "invalid_response")
-        self.assertFalse(HTTPClient._parse(response(name="list_assets", arguments={}), asset_catalog=catalog()).error_code)
-        self.assertFalse(HTTPClient._parse(response(name="get_timer_status", arguments={}), asset_catalog=catalog()).error_code)
+        self.assertEqual(HTTPClient._parse(response(), asset_catalog=catalog()).error_code, "invalid_response")
+        self.assertFalse(parse_tool_response(response(name="list_assets", arguments={})).error_code)
+        self.assertFalse(parse_tool_response(response(name="get_timer_status", arguments={})).error_code)
+
+    def test_post_exposes_only_request_intent_and_rejects_unsolicited_valid_tools(self):
+        cases = [
+            ("세트 02로 바꿔줘", "select_asset_set", {"number": 2}),
+            ("응원 02번 이미지로 바꿔줘", "select_asset_image", {"asset_id": "img_000000000002"}),
+            ("설치된 이미지 목록 보여줘", "list_assets", {}),
+            ("지금 몇 시야?", "get_timer_status", {}),
+            ("안녕", None, {}),
+            ("이미지 바꿔줘", None, {}),
+        ]
+        for text, name, arguments in cases:
+            with self.subTest(text=text):
+                remote = Mock(status=200)
+                remote.read.return_value = response(name=name, arguments=arguments) if name else response(output=[
+                    {"type": "message", "content": [{"type": "output_text", "text": "어떤 모습이 보고 싶어?"}]},
+                ])
+                connection = Mock()
+                connection.getresponse.return_value = remote
+                with patch("ai_dialogue.http.client.HTTPSConnection", return_value=connection):
+                    reply = HTTPClient().generate("test-key", instructions="짧게 답해", messages=[
+                        {"role": "user", "content": text},
+                    ], asset_catalog=catalog())
+                body = json.loads(connection.request.call_args.kwargs["body"])
+                self.assertEqual([tool["name"] for tool in body.get("tools", [])], [name] if name else [])
+                self.assertEqual(body["tool_choice"], "auto" if name else "none")
+                self.assertEqual(reply.error_code, "")
+                self.assertEqual(len(reply.tool_calls), int(name is not None))
+                if name == "select_asset_image":
+                    self.assertEqual(set(body["tools"][0]["parameters"]["properties"]["asset_id"]["enum"]),
+                                     {"img_000000000001", "img_000000000002"})
+        for allowed in ((), ("get_timer_status",), ("list_assets",)):
+            self.assertEqual(parse_tool_response(response(), allowed=allowed).error_code, "invalid_response")
+        self.assertEqual(parse_tool_response(response(name="get_timer_status", arguments={}),
+                                            allowed=("select_asset_set",)).error_code, "invalid_response")
 
     def test_connection_test_exposes_no_tools(self):
         remote = Mock(status=200)
@@ -110,6 +147,7 @@ class ToolHTTPTests(unittest.TestCase):
         body = json.loads(connection.request.call_args.kwargs["body"])
         self.assertNotIn("tools", body)
         self.assertNotIn("parallel_tool_calls", body)
+        self.assertEqual(body["tool_choice"], "none")
 
 
 class ToolServiceTests(unittest.TestCase):
@@ -139,7 +177,7 @@ class ToolServiceTests(unittest.TestCase):
         return results
 
     def test_only_real_ui_outcome_enters_memory_once_and_is_sanitized(self):
-        proposal = HTTPClient._parse(response(), asset_catalog=catalog())
+        proposal = parse_tool_response(response())
         for outcome in ("세트 02로 바꿨어.", "적용하지 못해 기존 선택을 유지했어."):
             with self.subTest(outcome=outcome):
                 service, client = self.service(proposal)
@@ -166,7 +204,7 @@ class ToolServiceTests(unittest.TestCase):
     def test_stale_disabled_closed_and_next_day_proposals_cannot_record_outcomes(self):
         for change in ("invalidate", "disable", "close", "late", "day"):
             with self.subTest(change=change):
-                service, _ = self.service(HTTPClient._parse(response(), asset_catalog=catalog()))
+                service, _ = self.service(parse_tool_response(response()))
                 self.assertTrue(service.request("chat", {}, "세트 02로 바꿔줘", token="current", asset_catalog=catalog()))
                 result = self.drain(service)[0]
                 if change == "invalidate":
@@ -203,7 +241,8 @@ class ToolServiceTests(unittest.TestCase):
         self.assertEqual(result.text, "옆에서 응원할게.")
         payload = json.loads(client.generate.call_args.kwargs["messages"][0]["content"])
         self.assertEqual(payload["timer"], {"status": "active", "day": self.day})
-        self.assertIn("assets", payload)
+        self.assertNotIn("assets", payload)
+        self.assertNotIn("asset_catalog", client.generate.call_args.kwargs)
         self.assertNotIn("unverified", json.dumps(payload))
         self.assertNotIn("sk-private", json.dumps(payload))
         prompt = client.generate.call_args.kwargs["instructions"]
@@ -211,7 +250,7 @@ class ToolServiceTests(unittest.TestCase):
         self.assertIn("get_timer_status", prompt)
 
     def test_worker_tool_proposals_are_rejected_for_automatic_events(self):
-        service, _ = self.service(HTTPClient._parse(response(), asset_catalog=catalog()))
+        service, _ = self.service(parse_tool_response(response()))
         self.assertTrue(service.request("break", {}, asset_catalog=catalog()))
         result = self.drain(service)[0]
         self.assertEqual(result.error_code, "invalid_response")
@@ -241,6 +280,66 @@ class ToolServiceTests(unittest.TestCase):
         self.assertTrue(service.request("chat", {}, "안녕", asset_catalog=catalog()))
         self.drain(service)
         self.assertNotIn("이미 바꿨어", json.dumps(client.generate.call_args.kwargs["messages"], ensure_ascii=False))
+
+    def test_ordinary_actual_api_text_has_no_asset_metadata_or_tools_and_keeps_multiturn_memory(self):
+        bodies = []
+        texts = ["안녕. 오늘 기분은 어때?", "피곤했구나. 잠깐 쉬어도 괜찮아."]
+        connections = []
+        for text in texts:
+            remote = Mock(status=200)
+            remote.read.return_value = response(output=[
+                {"type": "message", "content": [{"type": "output_text", "text": text}]},
+            ])
+            connection = Mock()
+            connection.getresponse.return_value = remote
+            connections.append(connection)
+        service = AIService(HTTPClient(), today=lambda: "2026-11-06", chat_cooldown_seconds=0)
+        self.addCleanup(self.close_service, service)
+        service.configure(True, "test-key")
+        with patch("ai_dialogue.http.client.HTTPSConnection", side_effect=connections) as create:
+            for utterance, answer in zip(("안녕", "오늘 좀 피곤해"), texts):
+                self.assertTrue(service.request("chat", {"status": "active"}, utterance, asset_catalog=catalog()))
+                result = self.drain(service)[0]
+                self.assertEqual(result.text, answer)
+                self.assertEqual(result.tool_calls, ())
+            self.assertEqual(create.call_count, 2)
+        for connection in connections:
+            body = json.loads(connection.request.call_args.kwargs["body"])
+            bodies.append(body)
+            self.assertEqual(body["tool_choice"], "none")
+            self.assertNotIn("tools", body)
+            self.assertNotIn("parallel_tool_calls", body)
+            self.assertNotIn("assets", json.loads(body["input"][0]["content"]))
+            self.assertNotIn("img_", json.dumps(body["input"]))
+        self.assertIn(texts[0], json.dumps(bodies[1]["input"], ensure_ascii=False))
+        self.assertEqual(len(service._chat), 2)
+
+    def test_ordinary_rogue_tool_proposal_does_not_reach_ui_or_poison_memory(self):
+        service, client = self.service(parse_tool_response(response(name="get_timer_status", arguments={})))
+        self.assertTrue(service.request("chat", {}, "안녕", asset_catalog=catalog()))
+        result = self.drain(service)[0]
+        self.assertEqual(result.error_code, "invalid_response")
+        self.assertEqual(result.tool_calls, ())
+        self.assertEqual(len(service._chat), 0)
+        self.assertNotIn("asset_catalog", client.generate.call_args.kwargs)
+        self.assertNotIn("assets", json.loads(client.generate.call_args.kwargs["messages"][0]["content"]))
+
+    def test_status_scope_uses_empty_catalog_and_has_no_asset_metadata(self):
+        service, client = self.service(parse_tool_response(response(name="get_timer_status", arguments={})))
+        self.assertTrue(service.request("chat", {}, "지금 몇 시야?", asset_catalog=catalog()))
+        result = self.drain(service)[0]
+        self.assertEqual(result.tool_calls[0].command.kind, "status")
+        self.assertEqual(client.generate.call_args.kwargs["asset_catalog"], AssetCatalog())
+        self.assertNotIn("assets", json.loads(client.generate.call_args.kwargs["messages"][0]["content"]))
+
+    def test_ambiguous_asset_request_asks_model_to_clarify_without_tools_or_catalog(self):
+        service, client = self.service(SimpleNamespace(text="어떤 세트나 이미지로 바꿀까?", error_code=""))
+        self.assertTrue(service.request("chat", {}, "이미지 바꿔줘", asset_catalog=catalog()))
+        result = self.drain(service)[0]
+        self.assertEqual(result.text, "어떤 세트나 이미지로 바꿀까?")
+        self.assertNotIn("asset_catalog", client.generate.call_args.kwargs)
+        self.assertNotIn("assets", json.loads(client.generate.call_args.kwargs["messages"][0]["content"]))
+        self.assertIn("선택 대상이 모호", client.generate.call_args.kwargs["instructions"])
 
 
 if __name__ == "__main__":

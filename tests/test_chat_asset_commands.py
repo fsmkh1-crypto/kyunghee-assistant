@@ -6,7 +6,8 @@ from unittest.mock import patch
 
 from chat_asset_commands import (
     AssetCatalog, AssetChoice, AssetCommand, MAX_CATALOG_IMAGES,
-    build_asset_tools, catalog_context, guard_asset_command,
+    allowed_asset_tools, build_asset_tools, build_scoped_asset_tools,
+    catalog_context, classify_chat_intent, guard_asset_command,
     is_asset_change_request, is_timer_status_query, is_timer_status_request,
     validate_asset_call,
 )
@@ -261,6 +262,95 @@ class ReadOnlyStatusTests(unittest.TestCase):
             self.assertEqual(guard_asset_command(AssetCommand("list"), "목록 보여줘", AssetCatalog()), AssetCommand("list"))
             self.assertTrue(is_timer_status_query("지금 몇시야"))
             self.assertEqual(validate_asset_call("get_timer_status", {}, AssetCatalog()), AssetCommand("status"))
+
+
+class ChatIntentRoutingTests(unittest.TestCase):
+    def test_ordinary_conversation_never_exposes_tools_or_looks_like_asset_mutation(self):
+        for text in (
+            "안녕", "오늘 기분 어때", "나 오늘 피곤해", "고마워", "오늘 점심 뭐 먹었어?",
+            "오늘 피곤하니까 쉬는 방법 알려줘", "쉬는 방법 보여줘", "휴식의 기본을 보여줘",
+            "기본 설정해줘", "기본을 설정해줘", "휴식 보여줘", "오늘 작업 어때",
+            "오늘 3번 회의했어", "휴식 3분 보여줘", "세트메뉴 보여줘",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(classify_chat_intent(text), "chat")
+                self.assertEqual(allowed_asset_tools(text), ())
+                self.assertEqual(build_scoped_asset_tools(catalog(), text), [])
+                self.assertFalse(is_asset_change_request(text))
+
+    def test_asset_discussion_negatives_and_hypotheticals_remain_text_conversation(self):
+        for text in (
+            "3번 이미지 어때?", "사진이 마음에 들어", "이미지를 바꾸는 방법 알려줘",
+            "이미지 변경은 어떻게 하는 거야?", "사진 선택 방법 보여줘",
+            "3번 세트로 변경했어?", "3번 세트로 바꿔 주지 마",
+            "3번 세트로 바꿔선 안 돼", "3번 세트로 바꿔 주면 좋을까?",
+            "만약 3번 세트로 바꿔줘", "'3번 세트로 바꿔'라고 말하면 돼?",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(classify_chat_intent(text), "chat")
+                self.assertEqual(allowed_asset_tools(text), ())
+                self.assertFalse(is_asset_change_request(text))
+
+    def test_clear_set_and_image_requests_offer_only_the_matching_selection_tool(self):
+        examples = {
+            "3번 세트로 바꿔": "select_asset_set",
+            "이미지 3번으로 변경": "select_asset_set",
+            "99번 세트로 바꿔": "select_asset_set",
+            "3번 휴식 이미지로 바꿔": "select_asset_image",
+            "휴식03 보여줘": "select_asset_image",
+            "rest_03.png로 바꿔": "select_asset_image",
+            "main_kyunghee.png로 바꿔": "select_asset_image",
+        }
+        for text, name in examples.items():
+            with self.subTest(text=text):
+                self.assertEqual(classify_chat_intent(text), "asset_change")
+                self.assertEqual(allowed_asset_tools(text), (name,))
+                self.assertEqual([tool["name"] for tool in build_scoped_asset_tools(catalog(), text)], [name])
+                self.assertTrue(is_asset_change_request(text))
+
+    def test_ambiguous_asset_mutations_need_clarification_without_tools(self):
+        for text in (
+            "다른 이미지로 바꿔", "이미지 바꿔줘", "이미지좀보여줘", "휴식 이미지 보여줘",
+            "3번 또는 1번 세트로 바꿔", "3번 휴식 응원 이미지로 바꿔",
+            "3번 세트로 바꿔 그리고 1번으로 바꿔", "0번 세트로 바꿔",
+            "003번 세트로 바꿔", "unknown.png로 바꿔",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(classify_chat_intent(text), "asset_ambiguous")
+                self.assertEqual(allowed_asset_tools(text), ())
+                self.assertEqual(build_scoped_asset_tools(catalog(), text), [])
+                self.assertTrue(is_asset_change_request(text))
+
+    def test_installed_asset_list_queries_offer_only_read_only_list_tool(self):
+        for text in (
+            "이미지 목록 보여줘", "세트 목록", "설치된 세트 알려줘", "사용 가능한 이미지 보여줘",
+            "어떤 이미지가 있어?", "무슨 세트가 있니?", "이미지들 목록 보여줘", "이미지가 몇 개야?",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(classify_chat_intent(text), "asset_list")
+                self.assertEqual(allowed_asset_tools(text), ("list_assets",))
+                self.assertEqual([t["name"] for t in build_scoped_asset_tools(AssetCatalog(), text)], ["list_assets"])
+                self.assertFalse(is_asset_change_request(text))
+
+    def test_actual_timer_queries_offer_only_status_without_an_asset_catalog(self):
+        for text in ("지금 몇시야?", "오늘 사용 시간 알려줘", "현재 타이머 상태 알려줘"):
+            with self.subTest(text=text):
+                self.assertEqual(classify_chat_intent(text), "timer_status")
+                self.assertEqual(allowed_asset_tools(text), ("get_timer_status",))
+                self.assertEqual([t["name"] for t in build_scoped_asset_tools(AssetCatalog(), text)], ["get_timer_status"])
+                self.assertFalse(is_asset_change_request(text))
+
+    def test_scoper_preserves_existing_schema_api_and_does_not_replace_write_guard(self):
+        self.assertEqual(len(build_asset_tools(catalog())), 4)
+        self.assertEqual(build_scoped_asset_tools(AssetCatalog(), "3번 세트로 바꿔"), [])
+        # Routing may offer an existing-number enum, but cannot authorize a
+        # substituted model choice when the user explicitly requested 99.
+        proposed = validate_asset_call("select_asset_set", {"number": 3}, catalog())
+        with self.assertRaises(ValueError):
+            guard_asset_command(proposed, "99번 세트로 바꿔", catalog())
+        with patch("builtins.open", side_effect=AssertionError("unexpected file access")):
+            self.assertEqual(classify_chat_intent("안녕"), "chat")
+            self.assertEqual(allowed_asset_tools("안녕"), ())
 
 
 if __name__ == "__main__":

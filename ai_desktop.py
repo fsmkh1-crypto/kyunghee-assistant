@@ -24,8 +24,8 @@ from ai_dialogue import AIService, HTTPClient, error_message
 from ai_settings_ui import AISettingsPanel
 from asset_pack_import import import_numbered_pack
 from chat_asset_commands import (
-    MAX_CATALOG_IMAGES, AssetCatalog, AssetChoice, guard_asset_command,
-    is_asset_change_request, is_timer_status_query,
+    MAX_CATALOG_IMAGES, AssetCatalog, AssetChoice, allowed_asset_tools,
+    classify_chat_intent, guard_asset_command, is_timer_status_query,
 )
 from font_support import ui_font
 from messages import pick
@@ -155,13 +155,22 @@ class OptionalAIDesktopMixin:
     def _build_timer_page(self):
         super()._build_timer_page()
         self.speech.bind("<Button-1>", self._open_chat)
+        # The background and legacy timer surfaces use the same click-or-drag
+        # threshold as the character. The narrow top strip stays drag-only.
+        for widget in (self.timer_page, self.hero, self.clock, self.cont, self.main_status):
+            widget.bind("<ButtonPress-1>", self._start_character_drag)
+            widget.bind("<B1-Motion>", self._drag_character)
+            widget.bind("<ButtonRelease-1>", self._stop_character_drag)
 
     def _stop_character_drag(self, event):
         dragged = self._character_dragged
         self._stop_drag(event)
         self._character_dragged = False
         if not dragged:
-            self._open_chat()
+            self._show_page("settings")
+            self.root.lift()
+            self.root.focus_force()
+        return "break"
 
     def _build_settings_page(self):
         super()._build_settings_page()
@@ -342,11 +351,23 @@ class OptionalAIDesktopMixin:
 
     def _apply_chat_tool_result(self, result, pending):
         calls = getattr(result, "tool_calls", ())
+        intent = classify_chat_intent(pending.user_text)
+        tool_names = {"set": "select_asset_set", "file": "select_asset_image",
+                      "list": "list_assets", "status": "get_timer_status"}
+        # Defense in depth after the HTTP/service scope checks: an ordinary
+        # conversation never enters the image executor or image-error history.
+        if (intent in {"chat", "asset_ambiguous"} or len(calls) != 1 or
+                tool_names.get(getattr(calls[0].command, "kind", None)) not in allowed_asset_tools(pending.user_text)):
+            self._fallback_pending_chat("invalid_response")
+            return
         update_speech = True
         try:
-            if len(calls) != 1 or pending.asset_catalog is None:
-                raise ValueError
-            catalog, paths = self._chat_asset_catalog()
+            if calls[0].command.kind == "status":
+                catalog, paths = AssetCatalog(), {}
+            else:
+                if pending.asset_catalog is None:
+                    raise ValueError
+                catalog, paths = self._chat_asset_catalog()
             command = guard_asset_command(calls[0].command, pending.user_text, catalog)
             if pending.token != self._ai_token() or time.monotonic() >= pending.deadline:
                 self._cancel_pending_chat()
@@ -363,7 +384,7 @@ class OptionalAIDesktopMixin:
             else:
                 raise ValueError
         except Exception:
-            message = "요청할 이미지나 동작을 정확히 확인하지 못했어. 세트 번호나 갤러리 파일을 하나만 지정해 줘. 설정은 바꾸지 않았어."
+            message = "어떤 이미지로 바꿀까? 설치된 세트 번호나 파일 이름 하나를 알려 줘. 아직 설정은 바꾸지 않았어."
         self.ai_service.record_tool_result(result, message)
         self._chat_pending = None
         self._ai_invalidate()
@@ -562,8 +583,8 @@ class OptionalAIDesktopMixin:
                     self._apply_chat_tool_result(result, pending)
                 elif self._is_timer_question(pending.user_text):
                     self._finish_chat_reply(self._timer_chat_reply(), "타이머", "현재 타이머 기록이에요.", update_speech=False)
-                elif is_asset_change_request(pending.user_text):
-                    self._finish_chat_reply("이미지 변경 도구가 호출되지 않아 설정은 그대로야. 설치된 세트 번호나 파일 이름을 하나만 지정해 줘.",
+                elif classify_chat_intent(pending.user_text) in {"asset_change", "asset_ambiguous"}:
+                    self._finish_chat_reply("어떤 이미지로 바꿀까? 설치된 세트 번호나 파일 이름 하나를 알려 줘. 아직 설정은 그대로야.",
                                             "설정", "실제 이미지 변경은 적용하지 않았어요.")
                 elif result.text:
                     self._finish_chat_reply(result.text, "AI", "AI 답변이 도착했어요.")
@@ -585,6 +606,7 @@ class OptionalAIDesktopMixin:
     def _open_chat(self, _event=None):
         if self._chat_window is not None and self._chat_window.winfo_exists():
             self._chat_window.deiconify()
+            self._place_chat_near_main(self._chat_window)
             self._chat_window.attributes("-topmost", True)
             self._chat_window.lift()
             self._chat_entry.focus_set()
@@ -595,12 +617,7 @@ class OptionalAIDesktopMixin:
         win.configure(bg=core.BG)
         win.attributes("-topmost", True)
         win.minsize(340, 360)
-        self.root.update_idletasks()
-        root_rect = (self.root.winfo_x(), self.root.winfo_y(), self.root.winfo_width(), self.root.winfo_height())
-        area = self._best_work_area(*root_rect)
-        x, y, width, height = chat_window_rect(root_rect, area)
-        win.minsize(min(340, width), min(360, height))
-        place_chat_window(win, x, y, width, height)
+        self._place_chat_near_main(win)
         tk.Label(win, text="승아와 잠깐 이야기해요", font=ui_font(self.root, 13, role="title"),
                  fg=core.TEXT, bg=core.BG).pack(anchor="w", padx=16, pady=(14, 4))
         self._chat_status = tk.Label(win, text="", font=ui_font(self.root, 9),
@@ -635,6 +652,14 @@ class OptionalAIDesktopMixin:
         self._chat_entry.focus_set()
         return "break"
 
+    def _place_chat_near_main(self, window):
+        self.root.update_idletasks()
+        root_rect = (self.root.winfo_x(), self.root.winfo_y(), self.root.winfo_width(), self.root.winfo_height())
+        area = self._best_work_area(*root_rect)
+        x, y, width, height = chat_window_rect(root_rect, area)
+        window.minsize(min(340, width), min(360, height))
+        place_chat_window(window, x, y, width, height)
+
     def _send_chat(self, _event=None):
         text = self._chat_entry.get().strip()
         if not text:
@@ -656,7 +681,12 @@ class OptionalAIDesktopMixin:
             return False
         self._ai_invalidate()
         enabled = self.preferences.ai_enabled and bool(self.ai_credentials.api_key)
-        catalog = self._chat_asset_catalog()[0] if enabled and event == "chat" else None
+        intent = classify_chat_intent(text) if event == "chat" else "chat"
+        catalog = None
+        if enabled and intent in {"asset_change", "asset_list"}:
+            catalog = self._chat_asset_catalog()[0]
+        elif enabled and intent == "timer_status":
+            catalog = AssetCatalog()
         if enabled and not self._request_ai(event, user_text=text if event == "chat" else "", asset_catalog=catalog):
             self._chat_ai_note = "지금은 AI 요청을 시작할 수 없어요. 잠시 후 다시 보내 주세요."
             self._refresh_chat()
@@ -671,7 +701,7 @@ class OptionalAIDesktopMixin:
             self._chat_ai_note = "AI 답변을 기다리고 있어요."
         elif event == "chat" and self._is_timer_question(text):
             self._finish_chat_reply(self._timer_chat_reply(), "타이머", "현재 타이머 기록이에요.", update_speech=False)
-        elif event == "chat" and is_asset_change_request(text):
+        elif event == "chat" and intent in {"asset_change", "asset_ambiguous"}:
             self._finish_chat_reply("이미지를 바꾸려면 AI 설정에서 API를 켜 줘. 지금은 설정을 바꾸지 않았어.",
                                     "설정", "AI 연결이 꺼져 있어 이미지 선택을 유지했어요.")
         else:
@@ -701,9 +731,17 @@ class OptionalAIDesktopMixin:
         if pending.event == "chat" and self._is_timer_question(pending.user_text):
             self._finish_chat_reply(self._timer_chat_reply(), "타이머", "연결 대신 현재 타이머 기록을 확인했어요.", update_speech=False)
             return
-        if pending.event == "chat" and is_asset_change_request(pending.user_text):
-            self._finish_chat_reply("이미지 변경 요청을 완료하지 못했어. 설정은 그대로 두었으니 잠시 후 다시 요청해 줘.",
+        intent = classify_chat_intent(pending.user_text) if pending.event == "chat" else "chat"
+        if pending.event == "chat" and intent in {"asset_change", "asset_ambiguous"}:
+            message = ("어떤 이미지로 바꿀까? 설치된 세트 번호나 파일 이름 하나를 알려 줘. 아직 설정은 바꾸지 않았어."
+                       if intent == "asset_ambiguous" else
+                       "이미지 변경 요청을 완료하지 못했어. 설정은 그대로 두었으니 잠시 후 다시 요청해 줘.")
+            self._finish_chat_reply(message,
                                     "설정", error_message(error_code) if error_code else "이미지 선택을 유지했어요.")
+            return
+        if pending.event == "chat" and error_code == "invalid_response":
+            self._finish_chat_reply("대화 답변을 제대로 받지 못했어. 한 번만 다시 말해 줄래?",
+                                    "안내", error_message(error_code))
             return
         reply = (pick("leave", personality=self.preferences.personality) if pending.event == "daily_close"
                  else local_chat_reply(pending.user_text, self.preferences.personality))

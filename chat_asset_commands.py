@@ -91,6 +91,24 @@ _ROLE_TARGETS = (
     re.compile(r"(?P<number>[0-9]{1,2})(?:번|호)?(?P<role>" + _ROLE_TOKEN + r")(?:이미지|사진|그림|포즈)?\Z"),
     re.compile(r"(?P<role>" + _ROLE_TOKEN + r")(?:이미지|사진|그림|포즈)?(?P<number>[0-9]{1,2})(?:번|호)?(?:이미지|사진|그림|포즈)?\Z"),
 )
+_ASSET_NOUN = re.compile(r"(?:이미지|사진|그림|에셋|세트)(?=$|[\s0-9]|으로|로|을|를|이|가|은|는|의|들|목록|리스트|바꿔|변경|보여|선택|적용|설정|좀|한번)")
+_DISCUSSION_OR_REFUSAL = re.compile(
+    r"만약|예를\s*들|예시|가정|한다면|라면|하면|바꾸면|바꾼다면|"
+    r"바꾸는|변경하는|어떻게|방법|라고|라는|냐고|"
+    r"바꿨|변경했|선택했|적용했|설정했|보여줬|"
+    r"않|말고|말아|말라|마세요|마요|하지\s*마|바꾸지\s*마|주지\s*마|"
+    r"안\s*(?:바꾸|바꿔|변경|보여)|안\s*돼|아니|싫|취소|그대로|유지|"
+    r"필요\s*없|좋을까|될까|어떨까|괜찮을까"
+)
+_LIST_NOUN = r"(?:이미지세트|사진세트|이미지|사진|그림|에셋|세트)(?:들)?"
+_LIST_PREFIX = r"(?:(?:현재|지금|설치된|사용가능한|사용할수있는|내장|전체|등록된))*"
+_LIST_ENDING = r"(?:보여줘|보여주세요|알려줘|알려주세요|보고싶어|확인해줘)?"
+_LIST_REQUESTS = (
+    re.compile(_LIST_PREFIX + _LIST_NOUN + r"(?:목록|리스트)(?:을|를)?" + _LIST_ENDING + r"\Z"),
+    re.compile(r"(?:설치된|사용가능한|사용할수있는|내장)" + _LIST_NOUN + r"(?:을|를)?" + _LIST_ENDING + r"\Z"),
+    re.compile(r"(?:어떤|무슨)" + _LIST_NOUN + r"(?:이|가)?(?:있어|있니|있나요|있는지알려줘|사용가능해)\Z"),
+    re.compile(_LIST_PREFIX + _LIST_NOUN + r"(?:이|가|은|는)?(?:뭐가있어|어떤게있어|몇개야|몇개있어|몇종류야|몇종류있어)\Z"),
+)
 
 
 def _valid_number(value: object) -> bool:
@@ -299,7 +317,7 @@ def is_timer_status_query(user_text: str) -> bool:
     patterns = (
         r"(?:(?:지금|현재)\s*)?몇\s*시(?:야|예요|에요|지|인지\s*알려\s*(?:줘|주세요))?",
         r"(?:(?:지금|현재)\s*)?(?:시간|시각)(?:을|이|은)?\s*(?:알려\s*줘|알려\s*주세요|보여\s*줘|몇\s*시야|얼마야)",
-        r"(?:(?:지금|현재|오늘)\s*)?(?:타이머|업무|작업|근무|집중|휴식|연속\s*사용|자리\s*비움|사용)(?:\s*(?:시간|상태))?(?:를|을|가|는)?\s*(?:알려\s*줘|알려\s*주세요|보여\s*줘|어때|얼마나\s*됐어|얼마야)",
+        r"(?:(?:지금|현재|오늘)\s*)?(?:타이머(?:\s*(?:시간|상태))?|(?:업무|작업|근무|집중|휴식|연속\s*사용|자리\s*비움|사용)\s*(?:시간|상태))(?:를|을|가|는)?\s*(?:알려\s*줘|알려\s*주세요|보여\s*줘|어때|얼마나\s*됐어|얼마야)",
         r"(?:(?:지금|현재)\s*)?상태(?:를|가|는)?\s*(?:알려\s*줘|알려\s*주세요|어때)",
         r"(?:(?:지금|현재|오늘)\s*)?(?:얼마나|몇\s*분|몇\s*시간)\s*(?:일했어|작업했어|쉬었어|썼어|사용했어)",
         r"(?:(?:지금|현재|오늘)\s*)?(?:일한|작업한|쉰|사용한)\s*시간(?:이|은)?\s*(?:얼마야|얼마나\s*됐어|알려\s*줘)",
@@ -312,12 +330,8 @@ is_timer_status_request = is_timer_status_query
 
 
 def is_asset_change_request(user_text: str) -> bool:
-    """Broad UI hint for missing-tool acknowledgements; never authorizes a write."""
-    text = _normalized_text(user_text)
-    if not text or not _REQUEST.search(text):
-        return False
-    return bool(re.search(r"세트|이미지|사진|그림", text) or _FILE_TOKEN.search(text) or
-                any(pattern.search(text) for patterns in _ROLE_PATTERNS.values() for pattern in patterns))
+    """Compatibility UI hint for mutations only, excluding lists and discussion."""
+    return classify_chat_intent(user_text) in {"asset_change", "asset_ambiguous"}
 
 
 def _explicit_selection(user_text: str):
@@ -344,6 +358,71 @@ def _explicit_selection(user_text: str):
             if match and _valid_number(int(match["number"])):
                 return ("role", int(match["number"]), _COMPACT_ROLE[match["role"]], None)
     return None
+
+
+def _is_known_filename(filename: str) -> bool:
+    numbered = _NUMBERED_FILE.fullmatch(filename)
+    return filename in _KNOWN_FILES or bool(numbered and numbered[2] != "00")
+
+
+def classify_chat_intent(user_text: str) -> str:
+    """Route tools without treating ordinary conversation as an asset command.
+
+    Categories: chat, asset_change, asset_ambiguous, asset_list, timer_status.
+    This exposes no catalog and authorizes no write; the API call and original
+    intent still pass the strict validator and fresh local selection guard.
+    """
+    text = _normalized_text(user_text).rstrip(".!?~ ")
+    if not text:
+        return "chat"
+    if is_timer_status_query(user_text):
+        return "timer_status"
+    if _DISCUSSION_OR_REFUSAL.search(text):
+        return "chat"
+    compact = "".join(re.sub(r"^(?:승아야|경희야)[,\s]*", "", text).split())
+    if any(pattern.fullmatch(compact) for pattern in _LIST_REQUESTS):
+        return "asset_list"
+    selection = _explicit_selection(user_text)
+    if selection is not None:
+        if selection[0] == "file" and not _is_known_filename(selection[3]):
+            return "asset_ambiguous"
+        return "asset_change"
+    if not _REQUEST.search(text):
+        return "chat"
+    if _ASSET_NOUN.search(text):
+        return "asset_ambiguous"
+    filenames = _FILE_TOKEN.findall(text)
+    if any(_is_known_filename(filename) for filename in filenames):
+        return "asset_ambiguous"
+    # A role alone is ordinary speech (휴식, 기본, 설정). Only a role plus a
+    # numbered image identifier can imply image selection without an asset noun.
+    has_role = any(pattern.search(text) for patterns in _ROLE_PATTERNS.values() for pattern in patterns)
+    has_number = bool(re.search(r"[0-9]+", text))
+    has_units = bool(re.search(r"[0-9]+\s*(?:분|초|시간|시|일|월|년|회|개)", text))
+    if has_role and has_number and not has_units:
+        return "asset_ambiguous"
+    return "chat"
+
+
+def allowed_asset_tools(user_text: str) -> tuple[str, ...]:
+    """Request-scoped tool names; ordinary/unclear requests expose no tools."""
+    intent = classify_chat_intent(user_text)
+    if intent == "timer_status":
+        return ("get_timer_status",)
+    if intent == "asset_list":
+        return ("list_assets",)
+    if intent == "asset_change":
+        selection = _explicit_selection(user_text)
+        return ("select_asset_set",) if selection[0] == "set" else ("select_asset_image",)
+    return ()
+
+
+def build_scoped_asset_tools(catalog: AssetCatalog, user_text: str) -> list[dict]:
+    """Offer only tools relevant to this original user message."""
+    names = allowed_asset_tools(user_text)
+    if not names:
+        return []
+    return [tool for tool in build_asset_tools(catalog) if tool["name"] in names]
 
 
 def guard_asset_command(command: AssetCommand, user_text: str, catalog: AssetCatalog) -> AssetCommand:

@@ -19,8 +19,8 @@ import time
 from typing import Callable, Mapping
 
 from chat_asset_commands import (
-    AssetCatalog, AssetCommand, build_asset_tools, catalog_context, is_asset_change_request,
-    is_timer_status_request, validate_asset_call,
+    AssetCatalog, AssetCommand, allowed_asset_tools, build_asset_tools, catalog_context,
+    classify_chat_intent, is_asset_change_request, is_timer_status_request, validate_asset_call,
 )
 
 
@@ -36,6 +36,8 @@ MAX_USER_TEXT = 400
 MAX_REPLY_TEXT = 280
 ALLOWED_EVENTS = frozenset({"break", "return", "long_use", "workday", "leave", "daily_close", "chat"})
 PERSONALITIES = frozenset({"balanced", "warm", "playful", "strict"})
+_COMMAND_TOOL_NAMES = {"set": "select_asset_set", "file": "select_asset_image",
+                       "list": "list_assets", "status": "get_timer_status"}
 
 _ERROR_MESSAGES = {
     "invalid_key": "API 키를 확인해 주세요.",
@@ -199,14 +201,19 @@ class HTTPClient:
             "reasoning": {"effort": "none"},
             "text": {"verbosity": "low"},
             "max_output_tokens": 180,
+            "tool_choice": "none",
         }
+        offered_names: tuple[str, ...] = ()
         if asset_catalog is not None:
             try:
-                tools = build_asset_tools(asset_catalog)
+                user_text = messages[-1].get("content", "") if messages and messages[-1].get("role") == "user" else ""
+                scope = allowed_asset_tools(user_text)
+                tools = [tool for tool in build_asset_tools(asset_catalog) if tool["name"] in scope]
             except (TypeError, ValueError):
                 return _Reply(error_code="request_error")
             if tools:
-                request.update(tools=tools, parallel_tool_calls=False)
+                offered_names = tuple(tool["name"] for tool in tools)
+                request.update(tools=tools, parallel_tool_calls=False, tool_choice="auto")
         body = json.dumps(request, ensure_ascii=False).encode("utf-8")
         connection = None
         try:
@@ -224,7 +231,7 @@ class HTTPClient:
             raw = response.read(MAX_RESPONSE_BYTES + 1)
             if len(raw) > MAX_RESPONSE_BYTES:
                 return _Reply(error_code="invalid_response")
-            return self._parse(raw, asset_catalog=asset_catalog)
+            return self._parse(raw, asset_catalog=asset_catalog, allowed_tool_names=offered_names)
         except (socket.timeout, TimeoutError):
             return _Reply(error_code="timeout")
         except (OSError, http.client.HTTPException):
@@ -240,7 +247,8 @@ class HTTPClient:
                     pass
 
     @staticmethod
-    def _parse(raw: bytes, *, asset_catalog: AssetCatalog | None = None) -> _Reply:
+    def _parse(raw: bytes, *, asset_catalog: AssetCatalog | None = None,
+               allowed_tool_names: tuple[str, ...] = ()) -> _Reply:
         try:
             data = json.loads(raw)
             if not isinstance(data, dict) or data.get("status") != "completed" or data.get("error"):
@@ -254,7 +262,8 @@ class HTTPClient:
                 if not isinstance(item, dict):
                     continue
                 if item.get("type") == "function_call":
-                    if asset_catalog is None or calls or item.get("status") not in (None, "completed"):
+                    if (asset_catalog is None or item.get("name") not in allowed_tool_names
+                            or calls or item.get("status") not in (None, "completed")):
                         return _Reply(error_code="invalid_response")
                     call_id, arguments = item.get("call_id"), item.get("arguments")
                     if (not isinstance(call_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", call_id)
@@ -313,6 +322,7 @@ class _Job:
     instructions: str = ""
     messages: list[dict[str, str]] = field(default_factory=list)
     asset_catalog: AssetCatalog | None = field(default=None, repr=False)
+    allowed_tool_names: tuple[str, ...] = ()
 
 
 _UNSET = object()
@@ -408,20 +418,31 @@ class AIService:
         self._context_token = token
         payload = {"event": event, "timer": safe, "today_events": list(self._events),
                    "recent_ai_lines": list(self._recent_ai)}
-        catalog = asset_catalog if event == "chat" else None
+        intent = classify_chat_intent(clean_user) if event == "chat" else "chat"
+        scope = allowed_asset_tools(clean_user) if event == "chat" else ()
+        catalog = None
+        offered_names: tuple[str, ...] = ()
+        if scope:
+            catalog = AssetCatalog() if intent == "timer_status" else asset_catalog
         if catalog is not None:
             try:
-                payload["assets"] = catalog_context(catalog)
+                offered_names = tuple(tool["name"] for tool in build_asset_tools(catalog) if tool["name"] in scope)
+                if intent in {"asset_change", "asset_list"} and offered_names:
+                    payload["assets"] = catalog_context(catalog)
             except (TypeError, ValueError):
                 return False
+            if not offered_names:
+                catalog = None
         messages = [{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
         if event == "chat":
             for user, assistant in self._chat:
                 messages.extend([{"role": "user", "content": user}, {"role": "assistant", "content": assistant}])
             messages.append({"role": "user", "content": clean_user})
         instructions = _BASE_INSTRUCTIONS + "\n" + _PERSONALITY_INSTRUCTIONS[safe.get("personality", "balanced")]
+        if intent == "asset_ambiguous":
+            instructions += "\n이번 이미지 요청은 선택 대상이 모호합니다. 변경을 주장하지 말고 필요한 세트 번호나 이미지 역할을 짧게 물어보세요."
         job = _Job(event, safe, clean_user, token, self._generation, now,
-                   self._api_key, instructions, messages, catalog)
+                   self._api_key, instructions, messages, catalog, offered_names)
         self._pending_tool_result = None
         self._in_flight = job
         self._last_request[channel] = now
@@ -471,6 +492,7 @@ class AIService:
             calls = getattr(reply, "tool_calls", ())
             if (not isinstance(calls, tuple) or len(calls) > 1
                     or any(not isinstance(call, AssetToolCall) for call in calls)
+                    or any(_COMMAND_TOOL_NAMES.get(call.command.kind) not in job.allowed_tool_names for call in calls)
                     or (calls and (job.event != "chat" or job.asset_catalog is None))):
                 calls = ()
                 reply = _Reply(error_code="invalid_response")

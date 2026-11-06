@@ -1,6 +1,7 @@
 """Integration with the real gallery shell, using only isolated data and fake HTTP."""
 from dataclasses import replace
 from datetime import datetime
+import gc
 import json
 import os
 from pathlib import Path
@@ -17,7 +18,7 @@ os.environ["APPDATA"] = _DATA.name
 os.environ.setdefault("PYSTRAY_BACKEND", "dummy")
 
 from ai_desktop import chat_window_rect, local_chat_reply, place_chat_window, timer_context
-from ai_dialogue import AIService, AssetToolCall
+from ai_dialogue import AIResult, AIService, AssetToolCall, HTTPClient
 import asset_manager
 from chat_asset_commands import AssetCommand, catalog_context
 from image_sets import ImageSetStore
@@ -95,6 +96,10 @@ class GalleryAITests(unittest.TestCase):
             raise unittest.SkipTest("A display is needed for the real Tk gallery integration")
 
     def setUp(self):
+        # Tk widgets/Variables form cycles through registered callbacks. Collect
+        # earlier test roots here, before a worker can trigger cyclic GC.
+        gc.collect()
+        self.addCleanup(self._collect_tk_cycles)
         idle = patch("windows_idle.last_input_info", return_value=(0.0, 1))
         idle.start()
         self.addCleanup(idle.stop)
@@ -113,13 +118,20 @@ class GalleryAITests(unittest.TestCase):
         self.client.release.set()
         self.app._ai_closed = True
         self.service.close()
+        if self.service._worker:
+            self.service._worker.join(timeout=1)
+            self.assertFalse(self.service._worker.is_alive())
         for pending in self.app.root.tk.call("after", "info"):
             # Tcl cancellation leaves each child widget's registered command
             # for that widget to delete during destruction.
             self.app.root.tk.call("after", "cancel", pending)
         self.app.root.destroy()
-        if self.service._worker:
-            self.service._worker.join(timeout=1)
+
+    def _collect_tk_cycles(self):
+        # Registered first, so this runs after file restorations and patches.
+        # Release destroyed Tk objects and finalize them on the Tk main thread.
+        self.app = self.service = self.client = None
+        gc.collect()
 
     def enable(self):
         self.app.ai_credentials.configure_key("test-key-no-network", False)
@@ -383,24 +395,122 @@ class GalleryAITests(unittest.TestCase):
         request.assert_not_called()
         note_local.assert_not_called()
 
-    def test_character_click_focuses_chat_and_drag_never_cycles_or_opens_stats(self):
+    def test_ordinary_chat_uses_actual_HTTP_AI_text_without_asset_tools_or_settings_changes(self):
+        self.enable()
+        self.service._client = HTTPClient()
+        preferences = self.app.preferences
+        manual = dict(self.app._manual_asset_overrides)
+        exchanges = (
+            ("안녕", "안녕. 오늘도 옆에서 같이 보낼게."),
+            ("오늘 기분 어때", "차분하고 좋아. 너는 오늘 어떤 기분이야?"),
+            ("나 오늘 피곤해", "많이 지쳤구나. 잠깐 숨을 돌려도 괜찮아."),
+        )
+        connection = MagicMock()
+        remote = connection.getresponse.return_value
+        remote.status = 200
+        remote.read.side_effect = [json.dumps({"status": "completed", "output": [
+            {"type": "message", "content": [{"type": "output_text", "text": reply}]},
+        ]}, ensure_ascii=False).encode() for _text, reply in exchanges]
+        with patch("ai_dialogue.http.client.HTTPSConnection", return_value=connection), \
+             patch("ai_desktop.local_chat_reply") as local_reply:
+            for text, reply in exchanges:
+                with self.subTest(text=text):
+                    self.send(text)
+                    self.flush()
+                    self.assertEqual(self.app._chat_messages[-1], ("승아 · AI", reply))
+                    body = json.loads(connection.request.call_args.kwargs["body"])
+                    self.assertNotIn("tools", body)
+                    self.assertEqual(body["tool_choice"], "none")
+                    self.assertNotIn('"assets"', body["input"][0]["content"])
+            local_reply.assert_not_called()
+        self.assertEqual(connection.request.call_count, len(exchanges))
+        self.assertEqual(self.app.preferences, preferences)
+        self.assertEqual(self.app._manual_asset_overrides, manual)
+
+    def test_unsolicited_HTTP_tool_on_greeting_never_enters_asset_executor_or_generic_reply(self):
+        self.enable()
+        self.service._client = HTTPClient()
+        preferences = self.app.preferences
+        manual = dict(self.app._manual_asset_overrides)
+        connection = MagicMock()
+        remote = connection.getresponse.return_value
+        remote.status = 200
+        remote.read.return_value = json.dumps({"status": "completed", "output": [
+            {"type": "function_call", "call_id": "call_wrong", "name": "get_timer_status", "arguments": "{}"},
+        ]}).encode()
+        with patch("ai_dialogue.http.client.HTTPSConnection", return_value=connection), \
+             patch.object(self.app, "_apply_chat_tool_result") as apply_tool, \
+             patch("ai_desktop.local_chat_reply") as local_reply:
+            self.send("안녕")
+            self.flush()
+            apply_tool.assert_not_called()
+            local_reply.assert_not_called()
+        self.assertEqual(connection.request.call_count, 1)
+        self.assertEqual(self.app._chat_messages[-1][0], "승아 · 안내")
+        self.assertNotIn("이미지", self.app._chat_messages[-1][1])
+        self.assertNotIn("설정", self.app._chat_messages[-1][1])
+        self.assertFalse(self.service._chat)
+        self.assertEqual(self.app.preferences, preferences)
+        self.assertEqual(self.app._manual_asset_overrides, manual)
+
+    def test_UI_defends_against_out_of_scope_proposal_without_reading_asset_catalog(self):
+        self.enable()
+        self.send("안녕")
+        self.assertTrue(self.client.started.wait(.5))
+        pending = self.app._chat_pending
+        proposal = AIResult("", "chat", pending.token, self.service._generation, "",
+                            (AssetToolCall("call_wrong", AssetCommand("status")),))
+        with patch.object(self.app, "_chat_asset_catalog") as catalog, \
+             patch("ai_desktop.guard_asset_command") as guard:
+            self.app._apply_chat_tool_result(proposal, pending)
+            catalog.assert_not_called()
+            guard.assert_not_called()
+        self.assertEqual(self.app._chat_messages[-1][0], "승아 · 안내")
+        self.assertNotIn("이미지", self.app._chat_messages[-1][1])
+        self.assertFalse(self.service._chat)
+        self.client.release.set()
+        self.flush()
+        self.assertEqual(self.app._chat_messages[-1][0], "승아 · 안내")
+
+    def test_character_click_opens_settings_and_drag_never_navigates_or_cycles(self):
         before = self.app.speech.cget("text")
         origin = SimpleNamespace(x_root=100, y_root=100)
         moved = SimpleNamespace(x_root=115, y_root=100)
         with patch.object(self.app, "_open_chat") as open_chat, \
+             patch.object(self.app, "_show_page") as show_page, \
              patch.object(self.app, "show_stats") as stats, \
              patch.object(self.app, "_pick_dialogue") as dialogue:
             self.app._start_character_drag(origin)
             self.app._stop_character_drag(origin)
-            open_chat.assert_called_once()
-            open_chat.reset_mock()
+            show_page.assert_called_once_with("settings")
+            show_page.reset_mock()
             self.app._start_character_drag(origin)
             self.app._drag_character(moved)
             self.app._stop_character_drag(moved)
             open_chat.assert_not_called()
+            show_page.assert_not_called()
             stats.assert_not_called()
             dialogue.assert_not_called()
         self.assertEqual(self.app.speech.cget("text"), before)
+
+    def test_timer_background_click_opens_settings_but_bubble_and_drag_strip_keep_their_actions(self):
+        before = self.app.speech.cget("text")
+        self.app.hero.event_generate("<ButtonPress-1>", x=25, y=25)
+        self.app.hero.event_generate("<ButtonRelease-1>", x=25, y=25)
+        self.app.root.update()
+        self.assertEqual(self.app.current_page, "settings")
+        self.assertEqual(self.app.speech.cget("text"), before)
+        self.app._show_page("timer")
+        self.app._chat_window.withdraw()
+        self.app.speech.event_generate("<Button-1>", x=5, y=5)
+        self.app.root.update()
+        self.assertEqual(self.app.current_page, "timer")
+        self.assertEqual(self.app._chat_window.state(), "normal")
+        with patch.object(self.app, "_show_page") as show_page:
+            self.app.drag_strip.event_generate("<ButtonPress-1>", x=5, y=5)
+            self.app.drag_strip.event_generate("<ButtonRelease-1>", x=5, y=5)
+            self.app.root.update()
+            show_page.assert_not_called()
 
     def test_chat_opens_left_of_main_window_at_right_work_area_edge_without_overlap(self):
         left, top, right, bottom = self.app._work_areas()[0]
@@ -416,6 +526,22 @@ class GalleryAITests(unittest.TestCase):
         self.assertGreaterEqual(chat.winfo_x(), left)
         self.assertGreaterEqual(chat.winfo_y(), top)
         self.assertLessEqual(chat.winfo_y() + chat.winfo_height(), bottom)
+
+    def test_bubble_repositions_existing_chat_after_settings_and_timer_resize(self):
+        chat = self.app._chat_window
+        self.app._show_page("settings")
+        self.app._show_page("timer")
+        self.app.root.update_idletasks()
+        # Reproduce a chat still sitting where it overlapped the resized main.
+        chat.geometry(f"410x500+{max(0, self.app.root.winfo_x())}+{max(0, self.app.root.winfo_y())}")
+        self.app.speech.event_generate("<Button-1>", x=5, y=5)
+        self.app.root.update_idletasks()
+        self.assertIs(self.app._chat_window, chat)
+        main_left = self.app.root.winfo_x()
+        main_right = main_left + self.app.root.winfo_width()
+        chat_left = chat.winfo_x()
+        chat_right = chat_left + chat.winfo_width()
+        self.assertTrue(chat_right <= main_left - 8 or chat_left >= main_right + 8)
 
     def test_tool_set_persists_and_renders_now_and_after_restart_without_deleting_imports(self):
         self.preserve_selection_files()
@@ -502,7 +628,7 @@ class GalleryAITests(unittest.TestCase):
         self.assertEqual(self.app._manual_override_path("default").name, "rest_03.png")
         self.assertEqual(self.app._chat_messages[-1][0], "승아 · 설정")
 
-    def test_ambiguous_or_different_user_number_cannot_apply_model_proposal(self):
+    def test_ambiguous_asset_request_asks_for_target_without_changing_settings(self):
         self.preserve_selection_files()
         self.enable()
         preferences = self.app.preferences
@@ -510,7 +636,8 @@ class GalleryAITests(unittest.TestCase):
         self.complete_tool("이미지 바꿔줘", AssetCommand("set", number=3))
         self.assertEqual(self.app.preferences, preferences)
         self.assertEqual(self.app._manual_asset_overrides, manual)
-        self.assertIn("바꾸지 않았어", self.app._chat_messages[-1][1])
+        self.assertIn("설정은 그대로", self.app._chat_messages[-1][1])
+        self.assertIn("어떤 이미지", self.app._chat_messages[-1][1])
 
     def test_nonexistent_or_external_image_selection_never_writes_settings(self):
         before = self.app.preferences
@@ -595,6 +722,15 @@ class GalleryAITests(unittest.TestCase):
         self.assertEqual(self.app.preferences, before)
         self.assertEqual(self.app._manual_asset_overrides, manual)
         self.assertEqual(self.app.speech.cget("text"), speech)
+
+    def test_status_query_and_tool_do_not_depend_on_image_catalog(self):
+        self.enable()
+        self.app.state.daily.active_seconds = 37
+        with patch.object(self.app, "_chat_asset_catalog", side_effect=OSError("private catalog path")) as catalog:
+            self.complete_tool("사용 시간 알려줘", AssetCommand("status"))
+            catalog.assert_not_called()
+        self.assertEqual(self.app._chat_messages[-1][0], "승아 · 타이머")
+        self.assertIn("37초", self.app._chat_messages[-1][1])
 
     def test_offline_status_query_reports_zero_and_seconds_without_API_or_random_reply(self):
         self.app.apply_preferences(replace(self.app.preferences, ai_enabled=False))

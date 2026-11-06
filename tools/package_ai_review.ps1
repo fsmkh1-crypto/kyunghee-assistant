@@ -109,6 +109,7 @@ class OfflineClient:
         if self.next_command is not None:
             command, self.next_command = self.next_command, None
             return SimpleNamespace(text='', error_code='', tool_calls=(AssetToolCall('native_ci_call', command),))
+        assert _kwargs.get('asset_catalog') is None, 'Ordinary chat must not advertise asset controls.'
         return SimpleNamespace(text='잘 왔어. 오늘도 옆에서 응원할게.', error_code='')
 
 # Existing test imports cached app.DATA_DIR; explicitly isolate this native panel
@@ -157,6 +158,13 @@ with tempfile.TemporaryDirectory(prefix='kyunghee-native-review-') as temp:
                 assert not metric.winfo_ismapped(), 'Main timer metrics must stay hidden.'
             assert app.character.winfo_ismapped() and app.speech.winfo_ismapped()
             assert not hasattr(app, 'chat_control'), 'The separate chat control must be removed.'
+            before_settings_click = app.speech.cget('text')
+            app.character.event_generate('<ButtonPress-1>', x=10, y=10)
+            app.character.event_generate('<ButtonRelease-1>', x=10, y=10)
+            app.root.update_idletasks()
+            assert app.current_page == 'settings', 'Character click must open settings.'
+            assert app.speech.cget('text') == before_settings_click
+            app._show_page('timer')
             speech_before_open = app.speech.cget('text')
             app.speech.event_generate('<Button-1>', x=10, y=10)
             app.root.update_idletasks()
@@ -231,6 +239,7 @@ summary = {'native_gui_tests': result.testsRun - 1, 'native_gui_or_DPAPI_skips':
            'encrypted_remember_load_clear': True, 'settings_exclude_key': True,
            'mocked_AI_chat': True, 'no_local_message_before_AI_reply': True,
            'bubble_click_opens_chat': True, 'separate_chat_button_removed': True,
+           'character_click_opens_settings': True, 'ordinary_AI_chat_has_no_control_tools': True,
            'main_timer_metrics_hidden': True, 'chat_visible_on_startup': True,
            'mocked_API_asset_tool_saved_and_rendered': True, 'actual_timer_status_read_only': True,
            'timer_always_on_top': True, 'chat_always_on_top': True, 'visible_name_Seunga': True,
