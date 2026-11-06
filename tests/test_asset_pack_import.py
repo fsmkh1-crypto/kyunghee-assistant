@@ -55,7 +55,7 @@ class AdditivePackTests(unittest.TestCase):
             target.write_bytes(png(color))
 
     def snapshot(self):
-        return {str(path.relative_to(self.assets)): path.read_bytes()
+        return {path.relative_to(self.assets).as_posix(): path.read_bytes()
                 for path in self.assets.rglob("*") if path.is_file()}
 
     def make_link(self, link, target, directory=False):
