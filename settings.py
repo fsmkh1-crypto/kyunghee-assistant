@@ -147,10 +147,12 @@ class UserSettings:
     show_message: bool = True
     personality: str = "balanced"
     custom_dialogue: str = ""
+    ai_enabled: bool = False
+    ai_remember_key: bool = False
 
     time_text_size: int = 16
     status_text_size: int = 9
-    message_text_size: int = 11
+    message_text_size: int = 13
     time_text_color: str = "#13A45C"
     status_text_color: str = "#11854B"
     message_text_color: str = "#E05A88"
@@ -273,6 +275,8 @@ def settings_from_dict(raw: object) -> UserSettings:
         show_message=_coerce_bool(raw.get("show_message"), d.show_message),
         personality=_personality(raw.get("personality", d.personality)),
         custom_dialogue=normalize_custom_dialogue(raw.get("custom_dialogue", d.custom_dialogue)),
+        ai_enabled=_coerce_bool(raw.get("ai_enabled"), d.ai_enabled),
+        ai_remember_key=_coerce_bool(raw.get("ai_remember_key"), d.ai_remember_key),
         time_text_size=_bounded_int(raw.get("time_text_size"), d.time_text_size, 14, 24),
         status_text_size=_bounded_int(raw.get("status_text_size"), d.status_text_size, 7, 12),
         message_text_size=_bounded_int(raw.get("message_text_size"), d.message_text_size, 9, 16),

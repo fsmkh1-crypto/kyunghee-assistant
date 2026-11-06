@@ -9,6 +9,7 @@ import asset_manager
 import desktop_compact as compact
 import desktop_gallery as gallery
 from asset_rotation import raw_complete_sets
+from ai_desktop import OptionalAIDesktopMixin
 
 
 # The global set dropdown is a manual selector, so it must still expose every
@@ -18,7 +19,7 @@ asset_manager.available_complete_sets = raw_complete_sets
 compact.available_complete_sets = raw_complete_sets
 
 
-class FinalGalleryDesktopApp(gallery.GalleryDesktopApp):
+class FinalGalleryDesktopApp(OptionalAIDesktopMixin, gallery.GalleryDesktopApp):
     """Final settings-gallery entry point with manual duplicate visibility."""
 
     def __init__(self):

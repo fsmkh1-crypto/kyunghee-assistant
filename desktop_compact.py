@@ -17,6 +17,7 @@ import app as core
 from app import SingleInstance
 from asset_manager import available_complete_sets, resolve_configured_asset
 from desktop_app import DesktopApp
+from font_support import resolve_font_family, ui_font
 from image_render import resize_rgba_alpha_safe, threshold_alpha
 from image_sets import ImageSetStore, normalize_alignment
 from messages import habit_dialogue_kind, maybe_pick_custom, maybe_pick_daily_temperament, maybe_pick_rare, pick, time_of_day_kind
@@ -70,7 +71,7 @@ class OutlinedText(tk.Canvas):
             relief="flat",
             cursor=cursor or "arrow",
         )
-        self._font = tkfont.Font(family=family, size=size, weight="normal")
+        self._font = tkfont.Font(root=self, family=family, size=size, weight=weight)
         self._text = text
         self._fg = fg
         self._outline = outline
@@ -115,6 +116,7 @@ class OutlinedText(tk.Canvas):
             self._wraplength,
             self._font.actual("family"),
             self._font.actual("size"),
+            self._font.actual("weight"),
         )
         if not force and geometry_key == self._last_geometry_key:
             return
@@ -127,12 +129,14 @@ class OutlinedText(tk.Canvas):
         height = max(1, bbox[3] - bbox[1] + 6)
         tk.Canvas.configure(self, width=width, height=height)
 
-    def set_style(self, *, size=None, fg=None, outline=None):
-        size_changed = False
-        if size is not None:
-            new_size = int(size)
-            size_changed = int(self._font.actual("size")) != new_size
-            self._font.configure(size=new_size, weight="normal")
+    def set_style(self, *, size=None, fg=None, outline=None, weight=None, family=None):
+        font_changes = {}
+        for key, value in (("size", int(size) if size is not None else None),
+                           ("weight", weight), ("family", family)):
+            if value is not None and self._font.actual(key) != value:
+                font_changes[key] = value
+        if font_changes:
+            self._font.configure(**font_changes)
             for item in self._outline_items:
                 self.itemconfigure(item, font=self._font)
             self.itemconfigure(self._main_item, font=self._font)
@@ -143,7 +147,7 @@ class OutlinedText(tk.Canvas):
             self._outline = outline
             for item in self._outline_items:
                 self.itemconfigure(item, fill=outline)
-        if size_changed:
+        if font_changes:
             self._refresh_geometry(force=True)
 
     def configure(self, cnf=None, **kwargs):
@@ -182,6 +186,98 @@ class OutlinedText(tk.Canvas):
     __getitem__ = cget
 
 
+class SpeechBubble(tk.Canvas):
+    """Opaque text surface with colour-key corners and a small downward tail."""
+
+    def __init__(self, parent, text, *, family, size, fg, bg, wraplength, cursor="hand2"):
+        super().__init__(parent, bg=bg, bd=0, highlightthickness=0, cursor=cursor)
+        self._font = tkfont.Font(root=self, family=family, size=size, weight="normal")
+        self._text = str(text)
+        self._fg = fg
+        self._wraplength = int(wraplength)
+        self._last_geometry_key = None
+        self._geometry_callback = None
+        self._refresh_geometry()
+
+    def _refresh_geometry(self):
+        key = (self._text, self._fg, self._wraplength, tuple(sorted(self._font.actual().items())))
+        if key == self._last_geometry_key:
+            return
+        self._last_geometry_key = key
+        self.delete("all")
+        pad_x, pad_y, tail, radius = 16, 12, 9, 12
+        # Text remains solid and unoutlined on a contrasting surface. In
+        # particular, dark custom text remains readable on the light surface.
+        rgb = [int(self._fg[i:i + 2], 16) for i in (1, 3, 5)]
+        luminance = sum(c * k for c, k in zip(rgb, (0.2126, 0.7152, 0.0722)))
+        surface, border = ("#171C2F", "#465171") if luminance >= 120 else ("#FFF8FC", "#D6C8D8")
+        text_item = self.create_text(
+            pad_x + 1, pad_y + 1, text=self._text, font=self._font,
+            fill=self._fg, width=self._wraplength, justify="left", anchor="nw",
+        )
+        bbox = self.bbox(text_item)
+        text_height = bbox[3] - bbox[1] if bbox else self._font.metrics("linespace")
+        width = self._wraplength + pad_x * 2 + 2
+        body_height = text_height + pad_y * 2 + 2
+        right, bottom, r = width - 1, body_height - 1, radius
+        body = self.create_polygon(
+            1 + r, 1, right - r, 1, right, 1, right, 1 + r,
+            right, bottom - r, right, bottom, right - r, bottom,
+            1 + r, bottom, 1, bottom, 1, bottom - r, 1, 1 + r, 1, 1,
+            smooth=True, splinesteps=16, fill=surface, outline=border, width=1,
+        )
+        center = round(width * 0.56)
+        self.create_polygon(
+            center - 9, bottom - 1, center + 1, bottom + tail,
+            center + 11, bottom - 1, fill=surface, outline=border, width=1,
+        )
+        self.create_line(center - 8, bottom - 1, center + 10, bottom - 1, fill=surface, width=2)
+        self.tag_lower(body)
+        self.tag_raise(text_item)
+        old_size = (self.winfo_reqwidth(), self.winfo_reqheight())
+        new_size = (width + 1, body_height + tail + 1)
+        tk.Canvas.configure(self, width=new_size[0], height=new_size[1])
+        callback = self._geometry_callback
+        if callback and old_size != new_size:
+            self.after_idle(callback)
+
+    def set_style(self, *, size=None, fg=None, wraplength=None, outline=None):
+        if size is not None:
+            self._font.configure(size=int(size))
+        if fg is not None:
+            self._fg = fg
+        if wraplength is not None:
+            self._wraplength = int(wraplength)
+        self._refresh_geometry()
+
+    def configure(self, cnf=None, **kwargs):
+        if cnf:
+            kwargs.update(cnf)
+        if "text" in kwargs:
+            self._text = str(kwargs.pop("text"))
+        for key in ("fg", "foreground"):
+            if key in kwargs:
+                self._fg = kwargs.pop(key)
+        if "wraplength" in kwargs:
+            self._wraplength = int(kwargs.pop("wraplength"))
+        if kwargs:
+            tk.Canvas.configure(self, **kwargs)
+        self._refresh_geometry()
+
+    config = configure
+
+    def cget(self, key):
+        if key == "text":
+            return self._text
+        if key in ("fg", "foreground"):
+            return self._fg
+        if key == "wraplength":
+            return self._wraplength
+        return tk.Canvas.cget(self, key)
+
+    __getitem__ = cget
+
+
 def _outline_for(color: str) -> str:
     """Pick a contrasting outline automatically from the chosen text colour."""
     color = validate_hex_color(color)
@@ -210,7 +306,7 @@ class CompactDesktopApp(DesktopApp):
     DETAIL_SIZE = (410, 430)
     SETTINGS_SIZE = (650, 700)
     CHARACTER_MAX = (346, 384)
-    BUBBLE_WRAP = 270
+    BUBBLE_WRAP = 300
     FONT_FAMILY = "Pretendard"
     ESCAPE_TEXT = "#6B7280"
 
@@ -273,8 +369,9 @@ class CompactDesktopApp(DesktopApp):
 
     def _check_font_available(self):
         try:
-            if self.FONT_FAMILY not in tkfont.families(self.root):
-                core.log.warning("Pretendard not installed; Tk will use a system fallback font")
+            family = resolve_font_family(self.root)
+            if not family.casefold().startswith("pretendard"):
+                core.log.info("Pretendard unavailable; using %s", family)
         except tk.TclError:
             core.log.warning("font availability check failed")
 
@@ -456,8 +553,10 @@ class CompactDesktopApp(DesktopApp):
                     return req
             except tk.TclError:
                 pass
-        wrap = min(360, max(250, self._scale(self.BUBBLE_WRAP)))
-        return wrap + 8
+        return self._message_wrap_width() + 35
+
+    def _message_wrap_width(self) -> int:
+        return min(450, max(280, self._scale(self.BUBBLE_WRAP)))
 
     def _horizontal_union_bounds(self) -> tuple[float, float, int, int]:
         visible_left, _visible_top, visible_right, _visible_bottom = self._character_visible_bounds()
@@ -509,33 +608,24 @@ class CompactDesktopApp(DesktopApp):
         return 36
 
     def _character_bottom_gap(self) -> int:
-        # Keep Kyunghee's *visible* feet above the message even when narrower
-        # scales make the message wrap to extra lines. The message remains pinned
-        # near the bottom; only the artwork rises when more vertical clearance is
-        # actually required. Transparent padding below the visible silhouette is
-        # excluded so custom images and all widget scales behave consistently.
-        base_gap = 72
-        message_height = self._message_render_height()
-        if not message_height:
-            return base_gap
-        _image_width, image_height = self._character_render_size()
-        _visible_left, _visible_top, _visible_right, visible_bottom = self._character_visible_bounds()
-        transparent_bottom = max(0, image_height - visible_bottom)
-        visible_clearance = 6
-        needed_gap = (
-            self._message_bottom_gap()
-            + message_height
-            + visible_clearance
-            - transparent_bottom
-        )
-        return max(base_gap, round(needed_gap))
+        return max(14, self._scale(20))
 
     def _message_x_offset(self) -> int:
-        # Center the message directly under Kyunghee rather than under the canvas.
-        return self._character_x_offset()
+        image_width, _height = self._character_render_size()
+        visible_left, _top, visible_right, _bottom = self._character_visible_bounds()
+        return self._character_x_offset() + round((visible_left + visible_right - image_width) / 2)
 
     def _message_bottom_gap(self) -> int:
-        return 10
+        # Anchor the bubble above the visible head, including padded/custom PNGs.
+        _width, image_height = self._character_render_size()
+        _left, visible_top, _right, _bottom = self._character_visible_bounds()
+        return self._character_bottom_gap() + image_height - visible_top + max(8, self._scale(10))
+
+    def _message_top_clearance(self) -> int:
+        controls = max(34, self._scale(28))
+        if not self._effective_display_flag("show_message"):
+            return max(42, controls)
+        return controls + self._message_render_height() + max(8, self._scale(10))
 
     def _clock_offset(self) -> tuple[int, int]:
         # Follow the rendered artwork both horizontally and vertically. This
@@ -550,16 +640,16 @@ class CompactDesktopApp(DesktopApp):
     def _timer_size(self):
         # Size from the actual visible horizontal union. Transparent PNG padding
         # is excluded, so large widget scales no longer reserve invisible width.
-        growth = self._layout_growth()
-        height = self.MIN_TIMER_SIZE[1] + round(growth * 3.40)
         union_left, union_right, _clock_width, _visible_gap = self._horizontal_union_bounds()
         union_width = max(1.0, union_right - union_left)
         left_margin = 24
         right_margin = 8
         required_width = round(union_width + left_margin + right_margin)
         width = max(360, required_width)
-        required_height = self._scale(self.CHARACTER_MAX[1]) + 130
-        return width, max(height, required_height)
+        _image_width, image_height = self._character_render_size()
+        _left, visible_top, _right, _bottom = self._character_visible_bounds()
+        required_height = self._message_top_clearance() + self._character_bottom_gap() + image_height - visible_top
+        return width, max(300, self._scale(250), required_height)
 
     def _resize_for_page(self, name: str):
         if name == "timer":
@@ -617,7 +707,7 @@ class CompactDesktopApp(DesktopApp):
         return tk.Label(
             parent,
             text=text,
-            font=(self.FONT_FAMILY, size, "normal"),
+            font=ui_font(self.root, size, weight=weight),
             fg=fg,
             bg=bg or parent.cget("bg"),
             **kwargs,
@@ -625,7 +715,7 @@ class CompactDesktopApp(DesktopApp):
 
     def _button(self, parent, text, command, primary=False, width=None):
         button = super()._button(parent, text, command, primary=primary, width=width)
-        button.configure(font=(self.FONT_FAMILY, 9, "normal"))
+        button.configure(font=ui_font(self.root, 9, "controls"))
         return button
 
     @staticmethod
@@ -942,6 +1032,7 @@ class CompactDesktopApp(DesktopApp):
         return pick(kind, personality=personality)
 
     def _build_timer_page(self):
+        self.FONT_FAMILY = resolve_font_family(self.root, "controls")
         page = self.timer_page
         page.configure(bg=self.TRANSPARENT_KEY)
         hero = tk.Frame(page, bg=self.TRANSPARENT_KEY, bd=0, highlightthickness=0)
@@ -964,14 +1055,15 @@ class CompactDesktopApp(DesktopApp):
         self.clock = clock
         clock_x, clock_y = self._clock_offset()
         clock.place(x=clock_x, y=clock_y)
+        timer_family, _size, timer_weight = ui_font(self.root, p.time_text_size, "timer")
         self.cont = OutlinedText(
-            clock, "00:00:00", family=self.FONT_FAMILY, size=p.time_text_size,
+            clock, "00:00:00", family=timer_family, size=p.time_text_size, weight=timer_weight,
             fg=p.time_text_color, outline=_outline_for(p.time_text_color),
             bg=self.TRANSPARENT_KEY, cursor="fleur",
         )
         self.cont.pack(anchor="w")
         self.main_status = OutlinedText(
-            clock, "집중 중", family=self.FONT_FAMILY, size=p.status_text_size,
+            clock, "집중 중", family=resolve_font_family(self.root, "status"), size=p.status_text_size,
             fg=p.status_text_color, outline=_outline_for(p.status_text_color),
             bg=self.TRANSPARENT_KEY, cursor="fleur",
         )
@@ -987,11 +1079,11 @@ class CompactDesktopApp(DesktopApp):
         self.escape_control.place(relx=1.0, x=-self._scale(8), y=self._scale(5), anchor="ne")
         self.escape_control.bind("<Button-1>", self._emergency_hide)
 
-        self.speech = OutlinedText(
-            hero, self._pick_dialogue("playful", time_sensitive=True), family=self.FONT_FAMILY, size=p.message_text_size,
-            fg=p.message_text_color, outline=_outline_for(p.message_text_color),
-            bg=self.TRANSPARENT_KEY, wraplength=min(360, max(250, self._scale(self.BUBBLE_WRAP))),
-            justify="center", cursor="hand2",
+        self.speech = SpeechBubble(
+            hero, self._pick_dialogue("playful", time_sensitive=True),
+            family=resolve_font_family(self.root), size=p.message_text_size,
+            fg=p.message_text_color, bg=self.TRANSPARENT_KEY,
+            wraplength=self._message_wrap_width(), cursor="hand2",
         )
         self.speech.place(
             relx=0.5, x=self._message_x_offset(), rely=1.0,
@@ -1002,7 +1094,15 @@ class CompactDesktopApp(DesktopApp):
         self.character.bind("<B1-Motion>", self._drag_character)
         self.character.bind("<ButtonRelease-1>", self._stop_character_drag)
         self.speech.bind("<Button-1>", self._cycle_message)
+        self.speech._geometry_callback = self._refresh_speech_layout
         self._apply_widget_appearance()
+
+    def _refresh_speech_layout(self):
+        # Timer ticks and AI replies also change text outside _cycle_message.
+        # Reserve the new bubble height before placing it above the artwork.
+        if getattr(self, "current_page", None) == "timer" and self.root.winfo_exists():
+            self._apply_widget_appearance()
+            self._resize_for_page("timer")
 
     def _cycle_message(self, _event=None):
         mode = self._current_workday_state().mode
@@ -1080,7 +1180,7 @@ class CompactDesktopApp(DesktopApp):
         )
         self.speech.set_style(
             size=p.message_text_size, fg=p.message_text_color,
-            outline=_outline_for(p.message_text_color),
+            wraplength=self._message_wrap_width(),
         )
 
         if self._effective_display_flag("show_time"):
@@ -1382,6 +1482,7 @@ class CompactDesktopApp(DesktopApp):
         canvas.bind("<MouseWheel>", _settings_mousewheel)
         self.root.bind_all("<MouseWheel>", _settings_mousewheel, add="+")
         content = tk.Frame(canvas, bg=core.PANEL)
+        self.settings_content = content
         window_id = canvas.create_window((0, 0), window=content, anchor="nw")
         content.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window_id, width=e.width))
@@ -1704,6 +1805,8 @@ class CompactDesktopApp(DesktopApp):
     def _save_settings(self):
         try:
             candidate = UserSettings(
+                ai_enabled=getattr(self.preferences, "ai_enabled", False),
+                ai_remember_key=getattr(self.preferences, "ai_remember_key", False),
                 start_with_windows=self.settings_bool_vars["start_with_windows"].get(),
                 always_on_top=self.settings_bool_vars["always_on_top"].get(),
                 break_reminders=self.settings_bool_vars["break_reminders"].get(),

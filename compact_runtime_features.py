@@ -217,7 +217,7 @@ def _install_dynamic_timer_layout(app) -> None:
             _visible_left, visible_top, _visible_right, _visible_bottom = self._character_visible_bounds()
             bottom_gap = self._character_bottom_gap()
 
-            top_clearance = max(42, self._scale(34))
+            top_clearance = max(42, self._scale(34), self._message_top_clearance())
             visible_extent_to_label_bottom = max(1, image_height - visible_top)
             required_height = top_clearance + bottom_gap + visible_extent_to_label_bottom
 

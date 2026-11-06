@@ -1,0 +1,51 @@
+name: Build AI review Windows EXE
+
+on:
+  push:
+    branches:
+      - build/ai-review-exe
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-review-exe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-review:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PYTHONUTF8: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install runtime and build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if ($LASTEXITCODE -ne 0) { throw 'pip upgrade failed.' }
+          python -m pip install -r requirements.txt pyinstaller
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
+      - name: Compile, run full unit suite, and require native Windows integration
+        run: ./tools/package_ai_review.ps1 -Stage Validate
+      - name: Build isolated onedir Windows EXE
+        run: ./tools/package_ai_review.ps1 -Stage Build
+      - name: Smoke-test native EXE for eight seconds and preserve existing data
+        run: ./tools/package_ai_review.ps1 -Stage Smoke
+      - name: Add Korean quickstart and verification summaries
+        run: ./tools/package_ai_review.ps1 -Stage Prepare
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kyunghee-ai-review-windows
+          path: dist/KyungheeTimerAIReview/
+          if-no-files-found: error
+          retention-days: 30

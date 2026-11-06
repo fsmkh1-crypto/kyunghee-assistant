@@ -8,6 +8,7 @@ from PIL import Image, ImageTk
 import app as core
 from app import App, SingleInstance
 from asset_manager import resolve_asset
+from font_support import register_bundled_fonts, ui_font
 from messages import pick
 from settings import UserSettings, set_windows_startup
 
@@ -20,6 +21,7 @@ class DesktopApp(App):
     DETAIL_SIZE = (560, 430)
 
     def __init__(self):
+        register_bundled_fonts()
         super().__init__()
         self._enable_compact_transparency()
         self._resize_for_page(self.current_page)
@@ -87,8 +89,14 @@ class DesktopApp(App):
 
     def _button(self, parent, text, command, primary=False, width=None):
         button = super()._button(parent, text, command, primary=primary, width=width)
-        button.configure(font=("Malgun Gothic", 9, "bold"), padx=9, pady=5)
+        button.configure(font=ui_font(self.root, 9, "controls"), padx=9, pady=5)
         return button
+
+    def _label(self, parent, text="", size=10, weight="normal", fg=core.TEXT, bg=None, **kwargs):
+        return tk.Label(
+            parent, text=text, font=ui_font(self.root, size, weight=weight),
+            fg=fg, bg=bg or parent.cget("bg"), **kwargs,
+        )
 
     def _build_header(self, parent, title, back_command=None, settings_command=None):
         row = tk.Frame(parent, bg=core.BG, height=38)
@@ -136,7 +144,7 @@ class DesktopApp(App):
             text=pick("playful"),
             wraplength=400,
             justify="center",
-            font=("Malgun Gothic", 9, "bold"),
+            font=ui_font(self.root, 13),
             fg=core.TEXT,
             bg="#211644",
             padx=8,
@@ -368,6 +376,8 @@ class DesktopApp(App):
 
     def _save_settings(self):
         candidate = UserSettings(
+            ai_enabled=getattr(self.preferences, "ai_enabled", False),
+            ai_remember_key=getattr(self.preferences, "ai_remember_key", False),
             start_with_windows=self.settings_bool_vars["start_with_windows"].get(),
             always_on_top=self.settings_bool_vars["always_on_top"].get(),
             break_reminders=self.settings_bool_vars["break_reminders"].get(),
