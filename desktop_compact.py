@@ -622,7 +622,8 @@ class CompactDesktopApp(DesktopApp):
         return self._character_bottom_gap() + image_height - visible_top + max(8, self._scale(10))
 
     def _message_top_clearance(self) -> int:
-        controls = max(34, self._scale(28))
+        # Only the transparent drag strip remains above the conversation bubble.
+        controls = 18
         if not self._effective_display_flag("show_message"):
             return max(42, controls)
         return controls + self._message_render_height() + max(8, self._scale(10))
@@ -1048,8 +1049,8 @@ class CompactDesktopApp(DesktopApp):
         p = self.preferences
         clock = tk.Frame(hero, bg=self.TRANSPARENT_KEY, bd=0, highlightthickness=0, cursor="fleur")
         self.clock = clock
-        clock_x, clock_y = self._clock_offset()
-        clock.place(x=clock_x, y=clock_y)
+        # Keep the legacy metric widgets for timer updates and data compatibility,
+        # but the companion's main surface contains only artwork and conversation.
         timer_family, _size, timer_weight = ui_font(self.root, p.time_text_size, "timer")
         self.cont = OutlinedText(
             clock, "00:00:00", family=timer_family, size=p.time_text_size, weight=timer_weight,
@@ -1071,7 +1072,6 @@ class CompactDesktopApp(DesktopApp):
             fg=self.ESCAPE_TEXT, bg=self.TRANSPARENT_KEY, bd=0,
             highlightthickness=0, cursor="hand2",
         )
-        self.escape_control.place(relx=1.0, x=-self._scale(8), y=self._scale(5), anchor="ne")
         self.escape_control.bind("<Button-1>", self._emergency_hide)
 
         self.speech = SpeechBubble(
@@ -1139,6 +1139,12 @@ class CompactDesktopApp(DesktopApp):
         self._apply_widget_appearance()
 
     def _effective_display_flag(self, key: str) -> bool:
+        # Presentation is intentionally independent of saved legacy flags. Their
+        # values remain readable/saveable for compatibility with earlier builds.
+        if key in {"show_time", "show_status"}:
+            return False
+        if key == "show_message":
+            return True
         vars_map = getattr(self, "display_bool_vars", None)
         if vars_map and key in vars_map:
             try:
@@ -1196,14 +1202,13 @@ class CompactDesktopApp(DesktopApp):
         else:
             self.speech.place_forget()
 
-        clock_x, clock_y = self._clock_offset()
-        self.clock.place(x=clock_x, y=clock_y)
+        self.clock.place_forget()
         self.character.place(
             relx=0.5, x=self._character_x_offset(), rely=1.0,
             y=-self._character_bottom_gap(), anchor="s",
         )
         self.escape_control.configure(font=(self.FONT_FAMILY, 12, "normal"))
-        self.escape_control.place(relx=1.0, x=-18, y=14, anchor="ne")
+        self.escape_control.place_forget()
 
     def _choose_color(self, key):
         var = self.style_color_vars[key]
@@ -1597,22 +1602,11 @@ class CompactDesktopApp(DesktopApp):
             "show_status": tk.BooleanVar(value=p.show_status),
             "show_message": tk.BooleanVar(value=p.show_message),
         }
-        for key, caption in (
-            ("show_time", "시간 표시"),
-            ("show_status", "상태 표시"),
-            ("show_message", "메시지 표시"),
-        ):
-            tk.Checkbutton(
-                content, text=caption, variable=self.display_bool_vars[key],
-                command=self._preview_widget_controls,
-                font=(self.FONT_FAMILY, 9, "normal"), fg=core.TEXT, bg=core.PANEL,
-                activeforeground=core.TEXT, activebackground=core.PANEL,
-                selectcolor=core.PANEL_2, highlightthickness=0, bd=0, cursor="hand2",
-            ).pack(anchor="w", pady=1, **pad)
         self._label(
             content,
-            "시간과 상태를 모두 꺼도 승아 이미지를 누른 채 움직이면 창을 이동할 수 있습니다.",
-            size=8, fg=core.MUTED, bg=core.PANEL,
+            "메인은 이미지와 말풍선만 표시합니다. 시간은 대화로 물어보세요. "
+            "이미지를 누른 채 움직이면 창을 이동할 수 있습니다.",
+            size=8, fg=core.MUTED, bg=core.PANEL, wraplength=590, justify="left",
         ).pack(anchor="w", pady=(2, 4), **pad)
 
         self._label(content, "위젯 글자", size=11, bg=core.PANEL).pack(anchor="w", pady=(14, 4), **pad)

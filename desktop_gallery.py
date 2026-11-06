@@ -135,11 +135,10 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
 
     def _manual_override_path(self, key: str) -> Path | None:
         ref = self._manual_asset_overrides.get(key, '')
-        path = self._decode_asset_ref(ref)
-        if ref and path is None:
-            self._manual_asset_overrides.pop(key, None)
-            self._save_manual_overrides()
-        return path
+        # A fresh review folder may not yet contain the user's extra asset pack.
+        # Fall back for display while preserving the saved choice so restoring
+        # that pack (or reconnecting an image location) can make it usable again.
+        return self._decode_asset_ref(ref)
 
     def _manual_style(self, key: str):
         if hasattr(self, 'image_mode_vars') and key in self.image_mode_vars:

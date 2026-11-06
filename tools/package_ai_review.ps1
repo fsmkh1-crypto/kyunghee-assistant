@@ -80,9 +80,11 @@ evidence = root / 'build' / 'ai-review-evidence'
 sys.path.insert(0, str(root))
 sys.path.insert(0, str(root / 'tests'))
 import test_ai_desktop
+from test_minimal_desktop import MinimalMainSurfaceTests
 from test_ai_credentials import AICredentialsTests
 suite = unittest.TestSuite([
     unittest.defaultTestLoader.loadTestsFromTestCase(test_ai_desktop.GalleryAITests),
+    unittest.defaultTestLoader.loadTestsFromTestCase(MinimalMainSurfaceTests),
     AICredentialsTests('test_real_windows_dpapi_round_trip_and_tampering'),
 ])
 with patch('desktop_compact.should_suppress_overlay_notifications', return_value=False):
@@ -94,13 +96,19 @@ if not result.wasSuccessful() or result.skipped or result.testsRun < 5:
 
 from ai_credentials import AICredentials
 from ai_desktop import AIService
+from ai_dialogue import AssetToolCall
+from chat_asset_commands import AssetCommand
 from desktop_gallery_final import FinalGalleryDesktopApp
 import app as core
 
 class OfflineClient:
     calls = 0
+    next_command = None
     def generate(self, _key, **_kwargs):
         self.calls += 1
+        if self.next_command is not None:
+            command, self.next_command = self.next_command, None
+            return SimpleNamespace(text='', error_code='', tool_calls=(AssetToolCall('native_ci_call', command),))
         return SimpleNamespace(text='잘 왔어. 오늘도 옆에서 응원할게.', error_code='')
 
 # Existing test imports cached app.DATA_DIR; explicitly isolate this native panel
@@ -119,6 +127,9 @@ with tempfile.TemporaryDirectory(prefix='kyunghee-native-review-') as temp:
         with patch('ai_desktop.AIService', return_value=service), \
              patch('app.App._start_tray'), \
              patch('desktop_compact.CompactDesktopApp._start_global_hotkey'), \
+             patch('desktop_gallery.GalleryDesktopApp.MANUAL_OVERRIDE_FILE', data / 'manual_asset_overrides.json'), \
+             patch('desktop_compact.USER_IMAGE_DIR', data / 'images'), \
+             patch('desktop_compact.USER_IMAGE_SET_DIR', data / 'image_sets'), \
              patch('desktop_compact.should_suppress_overlay_notifications', return_value=False), \
              patch('socket.create_connection', side_effect=AssertionError('Network is disabled in native checks')), \
              patch('socket.socket.connect', side_effect=AssertionError('Network is disabled in native checks')):
@@ -141,7 +152,16 @@ with tempfile.TemporaryDirectory(prefix='kyunghee-native-review-') as temp:
             assert dummy_key not in saved and 'api_key' not in saved
             assert '승아' in core.APP_NAME
             assert app.root.tk.getboolean(app.root.attributes('-topmost'))
-            app._open_chat()
+            assert app._chat_window is not None and app._chat_window.winfo_viewable()
+            for metric in (app.clock, app.cont, app.main_status, app.escape_control):
+                assert not metric.winfo_ismapped(), 'Main timer metrics must stay hidden.'
+            assert app.character.winfo_ismapped() and app.speech.winfo_ismapped()
+            assert not hasattr(app, 'chat_control'), 'The separate chat control must be removed.'
+            speech_before_open = app.speech.cget('text')
+            app.speech.event_generate('<Button-1>', x=10, y=10)
+            app.root.update_idletasks()
+            assert app._chat_window is not None and app._chat_window.winfo_exists()
+            assert app.speech.cget('text') == speech_before_open
             assert app._chat_window.tk.getboolean(app._chat_window.attributes('-topmost'))
             app._chat_window.withdraw()
             app._open_chat()
@@ -157,6 +177,38 @@ with tempfile.TemporaryDirectory(prefix='kyunghee-native-review-') as temp:
                 app.root.update_idletasks()
                 time.sleep(0.005)
             assert client.calls == 1 and app._chat_messages[-1][0] == '승아 · AI'
+            previous_photo = str(app.character_photo)
+            client.next_command = AssetCommand('set', number=2)
+            app._chat_entry.insert(0, '세트 2번으로 바꿔줘')
+            app._send_chat()
+            deadline = time.monotonic() + 1
+            while service._in_flight is not None and time.monotonic() < deadline:
+                app._ai_poll()
+                app.root.update_idletasks()
+                time.sleep(0.005)
+            assert app.preferences.builtin_image_set == '02'
+            assert app.builtin_image_set_var.get() == '02'
+            assert str(app.character_photo) != previous_photo
+            assert app._custom_image(app.character_role)[0].name.endswith('_02.png')
+            assert json.loads(core.SETTINGS_FILE.read_text(encoding='utf-8'))['builtin_image_set'] == '02'
+            assert (data / 'manual_asset_overrides.json').is_file()
+            assert app._chat_messages[-1][0] == '승아 · 설정'
+            app.state.daily.active_seconds = 3661
+            app.state.session.continuous_seconds = 123
+            timer_before = (app.state.daily.active_seconds, app.state.session.continuous_seconds)
+            speech_before_status = app.speech.cget('text')
+            client.next_command = AssetCommand('status')
+            app._chat_entry.insert(0, '연속 사용 시간 알려줘')
+            app._send_chat()
+            deadline = time.monotonic() + 1
+            while service._in_flight is not None and time.monotonic() < deadline:
+                app._ai_poll()
+                app.root.update_idletasks()
+                time.sleep(0.005)
+            assert client.calls == 3 and app._chat_messages[-1][0] == '승아 · 타이머'
+            assert core.fmt(3661) in app._chat_messages[-1][1] and core.fmt(123) in app._chat_messages[-1][1]
+            assert (app.state.daily.active_seconds, app.state.session.continuous_seconds) == timer_before
+            assert app.speech.cget('text') == speech_before_status
             panel.clear_key()
             assert not panel.credentials.has_key and not panel.credentials.path.exists()
             assert not service._enabled
@@ -178,6 +230,9 @@ summary = {'native_gui_tests': result.testsRun - 1, 'native_gui_or_DPAPI_skips':
            'real_windows_DPAPI': True, 'direct_key_input_panel': True,
            'encrypted_remember_load_clear': True, 'settings_exclude_key': True,
            'mocked_AI_chat': True, 'no_local_message_before_AI_reply': True,
+           'bubble_click_opens_chat': True, 'separate_chat_button_removed': True,
+           'main_timer_metrics_hidden': True, 'chat_visible_on_startup': True,
+           'mocked_API_asset_tool_saved_and_rendered': True, 'actual_timer_status_read_only': True,
            'timer_always_on_top': True, 'chat_always_on_top': True, 'visible_name_Seunga': True,
            'real_API_requests': 0, 'real_API_key_used': False}
 (evidence / 'native-windows-checks.json').write_text(json.dumps(summary, indent=2) + '\n', encoding='utf-8')
@@ -232,6 +287,9 @@ public static class KyungheeReviewSmokeWindows {
     [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern int GetClassName(IntPtr hwnd, StringBuilder text, int size);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int size);
+    [StructLayout(LayoutKind.Sequential)] private struct WindowRect { public int Left, Top, Right, Bottom; }
+    [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hwnd, out WindowRect rect);
     [DllImport("user32.dll", EntryPoint="GetWindowLongPtrW")] private static extern IntPtr GetWindowLongPtr(IntPtr hwnd, int index);
     public static bool HasVisibleTkWindow(int processId) {
         bool found = false;
@@ -243,16 +301,34 @@ public static class KyungheeReviewSmokeWindows {
         }, IntPtr.Zero);
         return found;
     }
-    public static bool HasVisibleTopmostTkWindow(int processId) {
+    public static bool HasVisibleTopmostTkWindow(int processId, string titlePrefix) {
         bool found = false;
         EnumWindows(delegate(IntPtr hwnd, IntPtr data) {
             uint owner; GetWindowThreadProcessId(hwnd, out owner);
             StringBuilder name = new StringBuilder(256); GetClassName(hwnd, name, name.Capacity);
+            StringBuilder title = new StringBuilder(256); GetWindowText(hwnd, title, title.Capacity);
             if (owner == processId && IsWindowVisible(hwnd) && name.ToString().StartsWith("Tk") &&
+                title.ToString().StartsWith(titlePrefix, StringComparison.Ordinal) &&
                 (GetWindowLongPtr(hwnd, -20).ToInt64() & 0x8) != 0) found = true;
             return true;
         }, IntPtr.Zero);
         return found;
+    }
+    public static bool CompanionWindowsAreSeparate(int processId, string mainTitle, string chatTitle) {
+        WindowRect main = new WindowRect(), chat = new WindowRect();
+        bool hasMain = false, hasChat = false;
+        EnumWindows(delegate(IntPtr hwnd, IntPtr data) {
+            uint owner; GetWindowThreadProcessId(hwnd, out owner);
+            if (owner != processId || !IsWindowVisible(hwnd)) return true;
+            StringBuilder title = new StringBuilder(256); GetWindowText(hwnd, title, title.Capacity);
+            if (title.ToString().StartsWith(mainTitle, StringComparison.Ordinal)) hasMain = GetWindowRect(hwnd, out main);
+            if (title.ToString().StartsWith(chatTitle, StringComparison.Ordinal)) hasChat = GetWindowRect(hwnd, out chat);
+            return true;
+        }, IntPtr.Zero);
+        int overlapWidth = Math.Min(main.Right, chat.Right) - Math.Max(main.Left, chat.Left);
+        int overlapHeight = Math.Min(main.Bottom, chat.Bottom) - Math.Max(main.Top, chat.Top);
+        // Allow a small native decoration border, never substantial coverage.
+        return hasMain && hasChat && (overlapWidth <= 24 || overlapHeight <= 24);
     }
 }
 '@
@@ -270,7 +346,9 @@ public static class KyungheeReviewSmokeWindows {
             $process.Refresh()
             if ($process.HasExited) { throw "Review EXE exited during smoke test (exit $($process.ExitCode))." }
             if (-not [KyungheeReviewSmokeWindows]::HasVisibleTkWindow($process.Id)) { throw 'The review Tk window disappeared.' }
-            if (-not [KyungheeReviewSmokeWindows]::HasVisibleTopmostTkWindow($process.Id)) { throw 'The timer window is not natively topmost.' }
+            if (-not [KyungheeReviewSmokeWindows]::HasVisibleTopmostTkWindow($process.Id, '승아 타이머')) { throw 'The timer window is not natively topmost.' }
+            if (-not [KyungheeReviewSmokeWindows]::HasVisibleTopmostTkWindow($process.Id, '승아와 대화')) { throw 'The chat window is not visibly topmost on startup.' }
+            if (-not [KyungheeReviewSmokeWindows]::CompanionWindowsAreSeparate($process.Id, '승아 타이머', '승아와 대화')) { throw 'The startup chat covers the character window.' }
             $logPath = Join-Path $reviewData 'kyunghee.log'
             $statePath = Join-Path $reviewData 'state.json'
             if (-not (Test-Path $logPath)) { throw 'The isolated review log was not created.' }
@@ -287,7 +365,8 @@ public static class KyungheeReviewSmokeWindows {
                     throw 'An original profile file changed during review smoke testing.'
                 }
             }
-            @{ alive_seconds_after_window = 8; visible_native_Tk_window = $true; native_topmost_timer_window = $true; periodic_state_saved = $true;
+            @{ alive_seconds_after_window = 8; visible_native_Tk_window = $true; native_topmost_timer_window = $true;
+               native_topmost_chat_window = $true; companion_windows_separate = $true; periodic_state_saved = $true;
                isolated_log_checked = $true; default_profile_unchanged = $true; native_tray_backend = $true;
                real_API_key_used = $false; review_data_relative = 'KyungheeTimer_AI_Review/KyungheeAssistant' } |
                 ConvertTo-Json | Set-Content (Join-Path $evidenceRoot 'packaged-smoke.json') -Encoding utf8
