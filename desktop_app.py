@@ -111,7 +111,7 @@ class DesktopApp(App):
         self._set_small_avatar(avatar)
 
         self._label(row, title, size=10, weight="bold").pack(side="left")
-        if title == "경희 타이머":
+        if title == core.APP_NAME:
             self._label(row, "●", size=7, fg=core.GREEN).pack(side="left", padx=(7, 3))
             self.header_status = self._label(row, "집중 중", size=8, fg=core.MUTED)
             self.header_status.pack(side="left")
@@ -305,13 +305,13 @@ class DesktopApp(App):
         p = self.preferences
         self.settings_bool_vars = {
             "start_with_windows": tk.BooleanVar(value=p.start_with_windows),
-            "always_on_top": tk.BooleanVar(value=p.always_on_top),
+            "always_on_top": tk.BooleanVar(value=True),
             "break_reminders": tk.BooleanVar(value=p.break_reminders),
             "workday_reminders": tk.BooleanVar(value=p.workday_reminders),
         }
         for key, caption in (
             ("start_with_windows", "Windows 시작 시 자동 실행"),
-            ("always_on_top", "메인 창 항상 위 표시"),
+            ("always_on_top", "메인 창 항상 위 표시 (항상 켜짐)"),
             ("break_reminders", "휴식 알림 사용"),
             ("workday_reminders", "퇴근 시간 알림 사용"),
         ):
@@ -328,6 +328,7 @@ class DesktopApp(App):
                 highlightthickness=0,
                 bd=0,
                 cursor="hand2",
+                state="disabled" if key == "always_on_top" else "normal",
             ).pack(anchor="w", pady=0)
 
         self._label(content, "퇴근 시간 설정", size=9, weight="bold", bg=core.PANEL).pack(anchor="w", pady=(6, 3))

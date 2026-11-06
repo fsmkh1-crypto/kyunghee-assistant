@@ -11,7 +11,7 @@ if defined LOCALAPPDATA (
 
 where pythonw >nul 2>nul
 if errorlevel 1 (
-  echo [Kyunghee AI Review] Python 3.12+ is required.
+  echo [Seunga AI Review] Python 3.12+ is required.
   echo Run: python -m pip install -r requirements.txt
   pause
   exit /b 1

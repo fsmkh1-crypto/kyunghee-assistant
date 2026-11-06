@@ -11,8 +11,10 @@ Baseline: `66fb497cf505e0c8209ceb1fc8114e1d9916903e`, PR #3,
 The real gallery entrypoint now adds `OptionalAIDesktopMixin`. The original
 timer engine, state schema 8, history, break policy, local messages and gallery
 selection stay in place. No timer/state/message-engine source was replaced.
-AI is OFF by default. A local reply appears immediately; a current AI reply can
-replace it. Ordinary ticks do not request AI. Break, return, long-use thresholds,
+AI is OFF by default. Timer events keep their immediate local fallback. Explicit
+chat and daily-close show a pending indicator, leave the existing speech intact,
+and fall back locally only when AI is disabled, fails or expires. Busy requests
+retain the user's unsent text. Ordinary ticks do not request AI. Break, return, long-use thresholds,
 workday-stage changes, explicit chat and daily-close actions can request it.
 Event calls have a 60-second cooldown; chat has a separate 3-second cooldown.
 There is one daemon worker and no automatic retry. Socket timeout is 4 seconds;
@@ -30,6 +32,8 @@ written as long-term AI memory.
 The bubble is above the visible head. It has a solid contrasting surface,
 padding, wrapping and automatic height. A normal nonmodal window beside the
 widget holds user/AI/local labels, input, send, clear and daily-close actions.
+Both the timer and chat window now stay above other windows; the legacy
+always_on_top settings field remains compatible and the running app normalizes it on.
 It does not change timer state. Pretendard Regular/Medium/SemiBold/Bold are
 included unmodified under SIL OFL 1.1, including the full upstream license.
 Registration is process-private on Windows, with explicit system-font fallback.
@@ -72,10 +76,12 @@ OpenAI's applicable operational/abuse-monitoring data policy.
 
 The original canonical ZIP installer only handles master names and can overwrite
 masters. It is retained for compatibility. The new settings action uses
-`asset_pack_import.py`: validates all numbered PNGs and all ten roles before
+`asset_pack_import.py`: validates numbered or unnumbered role PNGs and all ten roles before
 exclusive new-file writes, skips identical files, refuses conflicts/links,
 ignores executable/settings/manifest entries, and rolls back newly created
-files on failure. Original archives and existing PNGs remain unchanged.
+files on failure. Complete role-only packs receive an unused number; an identical
+installed role pack reuses its existing number. Missing or ambiguous roles are
+reported without guessing. Original archives and existing PNGs remain unchanged.
 Restarting the app refreshes its complete-set selector/catalog. A restored pack
 does not require changing the asset index for runtime discovery.
 

@@ -139,15 +139,24 @@ with tempfile.TemporaryDirectory(prefix='kyunghee-native-review-') as temp:
             assert restored.load_saved_key(True).ok and restored.api_key == dummy_key
             saved = core.SETTINGS_FILE.read_text(encoding='utf-8')
             assert dummy_key not in saved and 'api_key' not in saved
+            assert '승아' in core.APP_NAME
+            assert app.root.tk.getboolean(app.root.attributes('-topmost'))
             app._open_chat()
+            assert app._chat_window.tk.getboolean(app._chat_window.attributes('-topmost'))
+            app._chat_window.withdraw()
+            app._open_chat()
+            assert app._chat_window.tk.getboolean(app._chat_window.attributes('-topmost'))
+            speech_before_send = app.speech.cget('text')
             app._chat_entry.insert(0, '안녕')
             app._send_chat()
+            assert app.speech.cget('text') == speech_before_send
+            assert app._chat_messages[-1][0] == '승아 · 대기 중'
             deadline = time.monotonic() + 1
             while service._in_flight is not None and time.monotonic() < deadline:
                 app._ai_poll()
                 app.root.update_idletasks()
                 time.sleep(0.005)
-            assert client.calls == 1 and app._chat_messages[-1][0] == '경희 · AI'
+            assert client.calls == 1 and app._chat_messages[-1][0] == '승아 · AI'
             panel.clear_key()
             assert not panel.credentials.has_key and not panel.credentials.path.exists()
             assert not service._enabled
@@ -168,7 +177,9 @@ test_ai_desktop._DATA.cleanup()
 summary = {'native_gui_tests': result.testsRun - 1, 'native_gui_or_DPAPI_skips': 0,
            'real_windows_DPAPI': True, 'direct_key_input_panel': True,
            'encrypted_remember_load_clear': True, 'settings_exclude_key': True,
-           'mocked_AI_chat': True, 'real_API_requests': 0, 'real_API_key_used': False}
+           'mocked_AI_chat': True, 'no_local_message_before_AI_reply': True,
+           'timer_always_on_top': True, 'chat_always_on_top': True, 'visible_name_Seunga': True,
+           'real_API_requests': 0, 'real_API_key_used': False}
 (evidence / 'native-windows-checks.json').write_text(json.dumps(summary, indent=2) + '\n', encoding='utf-8')
 print('Native Windows GUI, direct key input and DPAPI checks passed without a real API key.')
 '@
@@ -221,12 +232,24 @@ public static class KyungheeReviewSmokeWindows {
     [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern int GetClassName(IntPtr hwnd, StringBuilder text, int size);
+    [DllImport("user32.dll", EntryPoint="GetWindowLongPtrW")] private static extern IntPtr GetWindowLongPtr(IntPtr hwnd, int index);
     public static bool HasVisibleTkWindow(int processId) {
         bool found = false;
         EnumWindows(delegate(IntPtr hwnd, IntPtr data) {
             uint owner; GetWindowThreadProcessId(hwnd, out owner);
             StringBuilder name = new StringBuilder(256); GetClassName(hwnd, name, name.Capacity);
             if (owner == processId && IsWindowVisible(hwnd) && name.ToString().StartsWith("Tk")) found = true;
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+    public static bool HasVisibleTopmostTkWindow(int processId) {
+        bool found = false;
+        EnumWindows(delegate(IntPtr hwnd, IntPtr data) {
+            uint owner; GetWindowThreadProcessId(hwnd, out owner);
+            StringBuilder name = new StringBuilder(256); GetClassName(hwnd, name, name.Capacity);
+            if (owner == processId && IsWindowVisible(hwnd) && name.ToString().StartsWith("Tk") &&
+                (GetWindowLongPtr(hwnd, -20).ToInt64() & 0x8) != 0) found = true;
             return true;
         }, IntPtr.Zero);
         return found;
@@ -247,6 +270,7 @@ public static class KyungheeReviewSmokeWindows {
             $process.Refresh()
             if ($process.HasExited) { throw "Review EXE exited during smoke test (exit $($process.ExitCode))." }
             if (-not [KyungheeReviewSmokeWindows]::HasVisibleTkWindow($process.Id)) { throw 'The review Tk window disappeared.' }
+            if (-not [KyungheeReviewSmokeWindows]::HasVisibleTopmostTkWindow($process.Id)) { throw 'The timer window is not natively topmost.' }
             $logPath = Join-Path $reviewData 'kyunghee.log'
             $statePath = Join-Path $reviewData 'state.json'
             if (-not (Test-Path $logPath)) { throw 'The isolated review log was not created.' }
@@ -263,7 +287,7 @@ public static class KyungheeReviewSmokeWindows {
                     throw 'An original profile file changed during review smoke testing.'
                 }
             }
-            @{ alive_seconds_after_window = 8; visible_native_Tk_window = $true; periodic_state_saved = $true;
+            @{ alive_seconds_after_window = 8; visible_native_Tk_window = $true; native_topmost_timer_window = $true; periodic_state_saved = $true;
                isolated_log_checked = $true; default_profile_unchanged = $true; native_tray_backend = $true;
                real_API_key_used = $false; review_data_relative = 'KyungheeTimer_AI_Review/KyungheeAssistant' } |
                 ConvertTo-Json | Set-Content (Join-Path $evidenceRoot 'packaged-smoke.json') -Encoding utf8
@@ -298,6 +322,52 @@ public static class KyungheeReviewSmokeWindows {
             if (-not (Test-Path $summary)) { throw "Required verification summary is missing: $name" }
             Copy-Item $summary (Join-Path $verification $name)
         }
+        $assetInventoryScript = @'
+from pathlib import Path
+import hashlib
+import json
+import re
+import subprocess
+import sys
+
+package = Path(sys.argv[1])
+assets = package / '_internal' / 'assets'
+source_assets = Path.cwd() / 'assets'
+assert assets.is_dir(), 'Packaged asset directory is missing.'
+roles = ('default', 'cheer', 'rest', 'away', 'warning', 'leave', 'stats', 'settings', 'alert', 'profile')
+image_extensions = {'.png', '.jpg', '.jpeg', '.webp', '.gif'}
+def inventory(root):
+    return {p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in root.rglob('*') if p.is_file() and p.suffix.lower() in image_extensions}
+packaged = inventory(assets)
+source = inventory(source_assets)
+assert packaged == source, 'Packaged image inventory differs from the source images.'
+by_role = {}
+numbered_count = 0
+for role in roles:
+    numbers = set()
+    for path in (assets / role).glob('*.png'):
+        match = re.fullmatch(re.escape(role) + r'_(\d{2})', path.stem)
+        if match:
+            numbers.add(match.group(1))
+            numbered_count += 1
+    by_role[role] = sorted(numbers)
+complete = sorted(set.intersection(*(set(by_role[role]) for role in roles)))
+record = {'source_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode().strip(),
+          'inspection': 'Actual frozen package directory after PyInstaller; every image hash compared to source',
+          'complete_numbered_sets': complete, 'complete_set_count': len(complete),
+          'numbered_png_count': numbered_count, 'image_count': len(packaged),
+          'numbers_per_role': by_role, 'packaged_images_match_source': True,
+          'image_sha256': packaged,
+          'build_workflow_fetches_external_asset_packs': False}
+destination = package / 'build-verification' / 'asset-inventory.json'
+destination.write_text(json.dumps(record, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+print('PACKAGED_ASSET_INVENTORY ' + json.dumps({k: record[k] for k in
+      ('complete_numbered_sets', 'complete_set_count', 'numbered_png_count', 'image_count', 'packaged_images_match_source')}))
+'@
+        $assetInventoryPath = Join-Path $evidenceRoot 'verify_packaged_assets.py'
+        Set-Content -Path $assetInventoryPath -Value $assetInventoryScript -Encoding utf8
+        Invoke-ReviewPython -Arguments @($assetInventoryPath, $packageRoot)
         $exeHash = (Get-FileHash $exePath -Algorithm SHA256).Hash.ToLowerInvariant()
         Set-Content (Join-Path $packageRoot 'SHA256SUMS.txt') "$exeHash  KyungheeTimerAIReview.exe" -Encoding utf8
         Write-Host "Review package prepared from commit $commit. No API key is bundled."

@@ -38,7 +38,7 @@ def button(parent, text, primary=False):
 class Preview:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("경희 타이머 · 데스크톱 UI 프리뷰")
+        self.root.title("승아 타이머 · 데스크톱 UI 프리뷰")
         self.root.geometry("940x610")
         self.root.minsize(900, 580)
         self.root.configure(bg=BG)
@@ -71,7 +71,7 @@ class Preview:
         else:
             label(header, "●", size=14, fg=PURPLE).pack(side="left", padx=(0, 6))
 
-        label(header, "경희 타이머", size=12, weight="bold").pack(side="left")
+        label(header, "승아 타이머", size=12, weight="bold").pack(side="left")
         label(header, "●", size=9, fg=GREEN).pack(side="left", padx=(10, 4))
         label(header, "집중 중", size=9, fg=MUTED).pack(side="left")
         button(header, "설정").pack(side="right")

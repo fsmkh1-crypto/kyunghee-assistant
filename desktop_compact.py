@@ -359,7 +359,7 @@ class CompactDesktopApp(DesktopApp):
         self._presentation_suppressed = False
         super().__init__()
         self.root.overrideredirect(True)
-        self.root.attributes("-topmost", self.preferences.always_on_top)
+        self.root.attributes("-topmost", True)
         self.root.bind("<Escape>", self._emergency_hide)
         self._enable_detail_drag_surfaces()
         self._restore_window_position()
@@ -774,7 +774,6 @@ class CompactDesktopApp(DesktopApp):
             self.show_stats()
 
     def _emergency_hide(self, _event=None):
-        self.root.attributes("-topmost", False)
         self.root.withdraw()
 
     def _toggle_hidden(self):
@@ -970,11 +969,10 @@ class CompactDesktopApp(DesktopApp):
                 self._presentation_suppressed = suppressed
                 core.log.info("presentation/fullscreen suppression=%s", suppressed)
             if suppressed:
-                self.root.attributes("-topmost", False)
                 self.break_gate.defer()
                 self._destroy_toast()
-            elif self.root.winfo_viewable():
-                self.root.attributes("-topmost", self.preferences.always_on_top)
+            if self.root.winfo_viewable():
+                self.root.attributes("-topmost", True)
         except Exception:
             core.log.exception("presentation state sync failed")
         finally:
@@ -992,10 +990,7 @@ class CompactDesktopApp(DesktopApp):
         )
         self._set_window_rect(x, y, width, height)
         self.root.lift()
-        self.root.attributes(
-            "-topmost",
-            self.preferences.always_on_top and not should_suppress_overlay_notifications(),
-        )
+        self.root.attributes("-topmost", True)
 
     def show_toast(self, text):
         if should_suppress_overlay_notifications():
@@ -1492,13 +1487,13 @@ class CompactDesktopApp(DesktopApp):
         self._label(content, "앱 설정", size=11, bg=core.PANEL).pack(anchor="w", pady=(12, 5), **pad)
         self.settings_bool_vars = {
             "start_with_windows": tk.BooleanVar(value=p.start_with_windows),
-            "always_on_top": tk.BooleanVar(value=p.always_on_top),
+            "always_on_top": tk.BooleanVar(value=True),
             "break_reminders": tk.BooleanVar(value=p.break_reminders),
             "workday_reminders": tk.BooleanVar(value=p.workday_reminders),
         }
         for key, caption in (
             ("start_with_windows", "Windows 시작 시 자동 실행"),
-            ("always_on_top", "메인 창 항상 위 표시"),
+            ("always_on_top", "메인 창 항상 위 표시 (항상 켜짐)"),
             ("break_reminders", "휴식 알림 사용"),
             ("workday_reminders", "퇴근 시간 알림 사용"),
         ):
@@ -1507,6 +1502,7 @@ class CompactDesktopApp(DesktopApp):
                 font=(self.FONT_FAMILY, 9, "normal"), fg=core.TEXT, bg=core.PANEL,
                 activeforeground=core.TEXT, activebackground=core.PANEL,
                 selectcolor=core.PANEL_2, highlightthickness=0, bd=0, cursor="hand2",
+                state="disabled" if key == "always_on_top" else "normal",
             ).pack(anchor="w", pady=1, **pad)
 
         interval_row = tk.Frame(content, bg=core.PANEL)
@@ -1546,7 +1542,7 @@ class CompactDesktopApp(DesktopApp):
             anchor="w", pady=(2, 2), **pad
         )
 
-        self._label(content, "경희 말투", size=11, bg=core.PANEL).pack(anchor="w", pady=(14, 4), **pad)
+        self._label(content, "승아 말투", size=11, bg=core.PANEL).pack(anchor="w", pady=(14, 4), **pad)
         personality_labels = {
             "balanced": "균형형", "warm": "다정형", "playful": "장난형", "strict": "잔소리형",
         }
@@ -1615,7 +1611,7 @@ class CompactDesktopApp(DesktopApp):
             ).pack(anchor="w", pady=1, **pad)
         self._label(
             content,
-            "시간과 상태를 모두 꺼도 경희 이미지를 누른 채 움직이면 창을 이동할 수 있습니다.",
+            "시간과 상태를 모두 꺼도 승아 이미지를 누른 채 움직이면 창을 이동할 수 있습니다.",
             size=8, fg=core.MUTED, bg=core.PANEL,
         ).pack(anchor="w", pady=(2, 4), **pad)
 
@@ -1659,7 +1655,7 @@ class CompactDesktopApp(DesktopApp):
             ).pack(side="left", ipady=2)
             self._button(row, "색상 선택", lambda k=key: self._choose_color(k)).pack(side="left", padx=(6, 0))
 
-        self._label(content, "상황별 경희 이미지", size=11, bg=core.PANEL).pack(anchor="w", pady=(16, 4), **pad)
+        self._label(content, "상황별 승아 이미지", size=11, bg=core.PANEL).pack(anchor="w", pady=(16, 4), **pad)
         self._label(
             content,
             "권장: 투명 PNG, 세로형 900×1200 이상(최소 600×800). 인물 주변 여백 5~10%. 프로필은 512×512 이상 권장.",

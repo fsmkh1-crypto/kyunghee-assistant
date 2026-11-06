@@ -2,6 +2,8 @@ import unittest
 
 from messages import (
     DAILY_TEMPERAMENT_POOLS,
+    PERSONALITY_POOLS,
+    POOLS,
     RARE_MIN_GAP,
     RARE_POOLS,
     custom_dialogue_lines,
@@ -18,6 +20,15 @@ from messages import (
 class MessageBehaviorTests(unittest.TestCase):
     def tearDown(self):
         _reset_rare_state_for_tests()
+
+    def test_bundled_dialogue_uses_current_character_name(self):
+        pools = [*POOLS.values(), *RARE_POOLS.values(), *DAILY_TEMPERAMENT_POOLS.values()]
+        pools.extend(lines for modes in PERSONALITY_POOLS.values() for lines in modes.values())
+        lines = [line for pool in pools for line in pool]
+        self.assertTrue(any("승아" in line for line in lines))
+        for line in lines:
+            with self.subTest(line=line):
+                self.assertNotIn("경희", line)
 
     def test_time_of_day_boundaries(self):
         self.assertEqual(time_of_day_kind(6), "morning")

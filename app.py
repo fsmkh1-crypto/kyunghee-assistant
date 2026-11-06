@@ -7,6 +7,7 @@ import os
 import queue
 import threading
 import time
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
@@ -23,7 +24,7 @@ from state import load_state, save_state, rollover_daily, prepare_startup_state
 from timer_engine import TimerEngine
 from workday import WorkdayState, apply_reminder_preference, classify_workday, should_encourage_more_work
 
-APP_NAME = "경희 타이머"
+APP_NAME = "승아 타이머"
 DIALOGUE_INTERVAL_SEC = 60
 
 DATA_DIR = Path(os.getenv("APPDATA", Path.home())) / "KyungheeAssistant"
@@ -86,7 +87,7 @@ class SingleInstance:
 
 class App:
     def __init__(self):
-        self.preferences = load_user_settings(SETTINGS_FILE)
+        self.preferences = replace(load_user_settings(SETTINGS_FILE), always_on_top=True)
         self.workday_policy = self.preferences.workday_policy()
         self.state = load_state(STATE_FILE)
         prepare_startup_state(self.state, time.time())
@@ -102,7 +103,7 @@ class App:
         self.root.geometry("760x520")
         self.root.minsize(720, 500)
         self.root.configure(bg=BG)
-        self.root.attributes("-topmost", self.preferences.always_on_top)
+        self.root.attributes("-topmost", True)
         self.root.protocol("WM_DELETE_WINDOW", self.root.withdraw)
 
         self.ui_commands: queue.Queue = queue.Queue()
@@ -143,13 +144,17 @@ class App:
         )
 
     def apply_preferences(self, preferences: UserSettings) -> None:
+        preferences = replace(preferences, always_on_top=True)
         preferences.workday_policy()
         save_user_settings(SETTINGS_FILE, preferences)
         self.preferences = preferences
         self.workday_policy = preferences.workday_policy()
         self.engine.set_break_interval(preferences.break_interval_minutes * 60)
         self.engine.set_snooze_interval(preferences.snooze_minutes * 60)
-        self.root.attributes("-topmost", preferences.always_on_top)
+        self.root.attributes("-topmost", True)
+        settings_vars = getattr(self, "settings_bool_vars", {})
+        if "always_on_top" in settings_vars:
+            settings_vars["always_on_top"].set(True)
 
     def _label(self, parent, text="", size=10, weight="normal", fg=TEXT, bg=None, **kwargs):
         return tk.Label(
@@ -231,7 +236,7 @@ class App:
 
     def _build_timer_page(self):
         page = self.timer_page
-        self._build_header(page, "경희 타이머", settings_command=lambda: self._show_page("settings"))
+        self._build_header(page, APP_NAME, settings_command=lambda: self._show_page("settings"))
 
         body = tk.Frame(page, bg=BG)
         body.pack(fill="both", expand=True, padx=18, pady=(4, 14))
@@ -397,7 +402,7 @@ class App:
         right.pack(side="left", fill="both", expand=True, padx=(8, 0))
         self._label(right, "기본 설정", size=11, weight="bold", bg=PANEL).pack(anchor="w", padx=20, pady=(18, 10))
 
-        for text in ("Windows 시작 시 자동 실행", "메인 창 항상 위 표시", "휴식 알림 사용", "퇴근 시간 알림 사용"):
+        for text in ("Windows 시작 시 자동 실행", "메인 창 항상 위 표시 (항상 켜짐)", "휴식 알림 사용", "퇴근 시간 알림 사용"):
             row = tk.Frame(right, bg=PANEL)
             row.pack(fill="x", padx=20, pady=6)
             self._label(row, "✓", size=11, weight="bold", fg=PURPLE, bg=PANEL).pack(side="left")
@@ -648,7 +653,7 @@ class App:
     def _toast_window(self, width, height):
         win = tk.Toplevel(self.root)
         self.toast = win
-        win.title("경희 타이머 알림")
+        win.title(f"{APP_NAME} 알림")
         win.configure(bg=PANEL)
         win.attributes("-topmost", True)
         win.resizable(False, False)
@@ -677,7 +682,7 @@ class App:
 
         text_wrap = tk.Frame(win, bg=PANEL)
         text_wrap.pack(side="left", fill="both", expand=True, padx=(0, 12), pady=12)
-        self._label(text_wrap, "경희 타이머", size=9, weight="bold", fg=PURPLE, bg=PANEL).pack(anchor="w")
+        self._label(text_wrap, APP_NAME, size=9, weight="bold", fg=PURPLE, bg=PANEL).pack(anchor="w")
         self._label(text_wrap, text, size=9, bg=PANEL, wraplength=270, justify="left").pack(anchor="w", pady=(4, 0))
         win.after(8000, lambda w=win: self._destroy_specific(w))
 
@@ -739,7 +744,7 @@ class App:
         icon = Image.new("RGB", (64, 64), BG)
         draw = ImageDraw.Draw(icon)
         draw.ellipse((7, 7, 57, 57), outline=PURPLE, width=3)
-        draw.text((20, 19), "K", fill=TEXT)
+        draw.text((20, 19), "S", fill=TEXT)
         return icon
 
     def _start_tray(self):
@@ -765,8 +770,6 @@ class App:
         self.root.deiconify()
         self.root.lift()
         self.root.attributes("-topmost", True)
-        if not self.preferences.always_on_top:
-            self.root.after(60, lambda: self.root.attributes("-topmost", False))
 
     def quit(self):
         try:

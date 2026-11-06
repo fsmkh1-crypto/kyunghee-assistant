@@ -347,6 +347,8 @@ class AIServiceTests(unittest.TestCase):
             self.assertTrue(service.request("leave", {"personality": personality, "workday_stage": "leave"}))
             self.drain(service)
             prompt = service._client.calls[0]["instructions"]
+            self.assertIn("한국어 비서 승아입니다.", prompt)
+            self.assertNotIn("경희", prompt)
             self.assertIn("퇴근", prompt)
             self.assertIn("1~2문장", prompt)
             instructions.append(prompt)

@@ -46,7 +46,7 @@ def main():
     if not singleton.acquire():
         return
     app = FinalGalleryDesktopApp()
-    app.root.title("경희 타이머 · AI 연결 테스트")
+    app.root.title("승아 타이머 · AI 연결 테스트")
     app.run()
 
 

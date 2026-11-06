@@ -45,7 +45,7 @@ def main() -> int:
     root.update_idletasks()
     initial = Path.home() / "Downloads"
     selected = filedialog.askopenfilename(
-        title="경희 타이머 확정 에셋 ZIP 선택",
+        title="승아 타이머 확정 에셋 ZIP 선택",
         initialdir=str(initial if initial.exists() else Path.home()),
         filetypes=[("ZIP files", "*.zip"), ("All files", "*.*")],
     )
