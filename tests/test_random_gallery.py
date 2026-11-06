@@ -107,8 +107,10 @@ class RandomGalleryTkTests(unittest.TestCase):
             yield
 
     def click(self, widget):
-        widget.event_generate("<ButtonPress-1>", x=4, y=4)
-        widget.event_generate("<ButtonRelease-1>", x=4, y=4)
+        self.app.root.update_idletasks()
+        x, y = widget.winfo_width() // 2, widget.winfo_height() // 2
+        widget.event_generate("<ButtonPress-1>", x=x, y=y)
+        widget.event_generate("<ButtonRelease-1>", x=x, y=y)
         self.app.root.update_idletasks()
 
     def pixels(self):
@@ -263,9 +265,13 @@ class RandomGalleryTkTests(unittest.TestCase):
 
     def test_controls_remain_visible_above_long_bubble_at_supported_scales(self):
         app = self.app
+        # Keep this control-spacing test within the physical Windows work area.
+        # Large artwork scaling and rerendering are exercised separately below.
+        spacing_image = self.data / "fixture-spacing.png"
+        Image.new("RGBA", (120, 180), "#D43C3C").save(spacing_image)
         app.speech.configure(text="긴 말풍선이 있어도 랜덤 이미지 버튼을 누를 수 있어야 해요. " * 3)
         for scale in (80, 100, 140, 200):
-            with self.subTest(scale=scale), self.candidates(self.first):
+            with self.subTest(scale=scale), self.candidates(spacing_image):
                 app.preferences = replace(app.preferences, widget_scale=scale)
                 app.widget_scale_var.set(scale)
                 app._apply_widget_appearance()
@@ -284,7 +290,14 @@ class RandomGalleryTkTests(unittest.TestCase):
                     self.assertGreaterEqual(top, app.root.winfo_rooty())
                     self.assertLessEqual(bottom, bubble_top)
                     self.assertLessEqual(bottom, character_top)
-                    self.assertIs(app.root.winfo_containing(left + 4, top + 4), control)
+                    # Windows' transparent colour key lets empty label padding
+                    # pass through. At least one painted glyph pixel must hit the
+                    # actual control; a fixed blank corner is not a click target.
+                    self.assertTrue(any(
+                        app.root.winfo_containing(x, y) is control
+                        for y in range(top + 1, bottom - 1)
+                        for x in range(left + 1, right - 1)
+                    ), f"No clickable glyph point for {control.cget('text')!r} at {scale}%")
 
     def test_explicit_current_role_selection_cancels_random_and_shows_manual_image(self):
         app = self.app
@@ -300,7 +313,7 @@ class RandomGalleryTkTests(unittest.TestCase):
         app.root.update_idletasks()
         self.assertFalse(app._random_gallery_active)
         self.assertEqual(app.character_role, "away")
-        self.assertEqual(app._manual_override_path("away"), self.second)
+        self.assertTrue(app._manual_override_path("away").samefile(self.second))
         self.assertEqual(ImageTk.getimage(app.character_photo).getpixel((0, 0))[:3], (50, 79, 208))
         self.assertFalse(app.random_gallery_restore.winfo_ismapped())
         self.assertEqual(json.loads(self.manual_file.read_text(encoding="utf-8"))["away"],
@@ -318,7 +331,7 @@ class RandomGalleryTkTests(unittest.TestCase):
         self.assertTrue(app._random_gallery_active)
         self.assertEqual(app._random_gallery_state_role, "away")
         self.assertEqual(self.pixels(), displayed)
-        self.assertEqual(app._manual_override_path("cheer"), self.second)
+        self.assertTrue(app._manual_override_path("cheer").samefile(self.second))
 
     def test_scale_apply_and_preview_keep_path_and_latest_role_without_redecoding_each_refresh(self):
         app = self.app
