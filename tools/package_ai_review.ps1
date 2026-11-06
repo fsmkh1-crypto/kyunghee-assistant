@@ -81,10 +81,12 @@ sys.path.insert(0, str(root))
 sys.path.insert(0, str(root / 'tests'))
 import test_ai_desktop
 from test_minimal_desktop import MinimalMainSurfaceTests
+from test_random_gallery import RandomGalleryTkTests
 from test_ai_credentials import AICredentialsTests
 suite = unittest.TestSuite([
     unittest.defaultTestLoader.loadTestsFromTestCase(test_ai_desktop.GalleryAITests),
     unittest.defaultTestLoader.loadTestsFromTestCase(MinimalMainSurfaceTests),
+    unittest.defaultTestLoader.loadTestsFromTestCase(RandomGalleryTkTests),
     AICredentialsTests('test_real_windows_dpapi_round_trip_and_tampering'),
 ])
 with patch('desktop_compact.should_suppress_overlay_notifications', return_value=False):
@@ -219,6 +221,9 @@ summary = {'native_gui_tests': result.testsRun - 1, 'native_gui_or_DPAPI_skips':
            'main_timer_metrics_hidden': True, 'chat_visible_on_startup': True,
            'chat_settings_control_removed': True, 'timer_queries_local_immediate_without_API': True,
            'actual_timer_status_read_only': True,
+           'visible_dice_random_and_restore': True,
+           'random_image_does_not_change_saved_settings': True,
+           'dice_preserves_character_bubble_click_and_drag': True,
            'timer_always_on_top': True, 'chat_always_on_top': True, 'visible_name_Seunga': True,
            'real_API_requests': 0, 'real_API_key_used': False}
 (evidence / 'native-windows-checks.json').write_text(json.dumps(summary, indent=2) + '\n', encoding='utf-8')

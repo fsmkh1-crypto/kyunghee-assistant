@@ -121,6 +121,7 @@ def _render_gallery_image(app, path: Path) -> bool:
         app._character_alpha_bbox = alpha_bbox or (0, 0, image.width, image.height)
         app.character_photo = ImageTk.PhotoImage(image)
         app.character.configure(image=app.character_photo)
+        app._random_gallery_render_size = max_size
         return True
     except Exception:
         core.log.exception("random gallery asset failed: %s", path)
@@ -130,8 +131,10 @@ def _render_gallery_image(app, path: Path) -> bool:
 def _refresh_gallery_controls(app) -> None:
     try:
         app.random_gallery_control.place(x=18, y=14, anchor="nw")
+        app.random_gallery_control.lift()
         if app._random_gallery_active:
             app.random_gallery_restore.place(x=53, y=14, anchor="nw")
+            app.random_gallery_restore.lift()
         else:
             app.random_gallery_restore.place_forget()
     except (AttributeError, tk.TclError):
@@ -232,7 +235,8 @@ def _install_dynamic_timer_layout(app) -> None:
 
 
 def _install_random_gallery(app) -> None:
-    if app.__class__.__name__ != "CompactDesktopApp":
+    # Include the gallery entrypoints without importing their subclasses here.
+    if not any(base.__name__ == "CompactDesktopApp" for base in type(app).__mro__):
         return
     if getattr(app, "_random_gallery_installed", False):
         return
@@ -242,6 +246,8 @@ def _install_random_gallery(app) -> None:
     app._random_gallery_installed = True
     app._random_gallery_active = False
     app._random_gallery_last_path = None
+    app._random_gallery_render_size = None
+    app._random_gallery_ignore_role = False
     app._random_gallery_state_role = getattr(app, "character_role", None) or "default"
     app._random_gallery_original_set_character = app._set_character
 
@@ -249,7 +255,9 @@ def _install_random_gallery(app) -> None:
 
     def random_aware_set_character(self, role: str):
         if getattr(self, "_random_gallery_active", False):
-            self._random_gallery_state_role = role
+            if not self._random_gallery_ignore_role:
+                self._random_gallery_state_role = role
+            self.character_role = self._random_gallery_state_role
             return
 
         before = getattr(self, "character_role", None)
@@ -288,6 +296,92 @@ def _install_random_gallery(app) -> None:
     app.random_gallery_restore.bind(
         "<Button-1>", lambda event: _restore_state_image(app, event)
     )
+
+    original_clearance = app._message_top_clearance
+
+    def control_clearance(self):
+        control_height = max(self.random_gallery_control.winfo_reqheight(),
+                             self.random_gallery_restore.winfo_reqheight())
+        return original_clearance() + max(0, 14 + control_height + 8 - 18)
+
+    app._message_top_clearance = MethodType(control_clearance, app)
+    original_appearance = app._apply_widget_appearance
+
+    def appearance_with_gallery(self):
+        if self._random_gallery_active:
+            size = (self._scale(self.CHARACTER_MAX[0]), self._scale(self.CHARACTER_MAX[1]))
+            if size != self._random_gallery_render_size:
+                _render_gallery_image(self, Path(self._random_gallery_last_path))
+                # A missing/corrupt source must not be retried on every tick.
+                self._random_gallery_render_size = size
+        result = original_appearance()
+        _refresh_gallery_controls(self)
+        return result
+
+    app._apply_widget_appearance = MethodType(appearance_with_gallery, app)
+
+    def finish_manual_choice(self, role):
+        self._random_gallery_active = False
+        self._random_gallery_last_path = None
+        self.character_role = None
+        original_set_character(role)
+        _refresh_timer_layout(self)
+        _refresh_gallery_controls(self)
+
+    # Existing gallery choices remain authoritative. Wait until they succeed
+    # before ending a temporary preview, and leave other roles' choices alone.
+    for name in ("_set_manual_override", "_reset_image", "_follow_selected_set"):
+        original_choice = getattr(app, name, None)
+        if original_choice is None:
+            continue
+
+        def manual_choice(self, key, *args, _original=original_choice, **kwargs):
+            active = self._random_gallery_active
+            role = self._random_gallery_state_role
+            relevant = key == self.ROLE_TO_SETTING.get(role, "default")
+            ignored = self._random_gallery_ignore_role
+            self._random_gallery_ignore_role = active or ignored
+            try:
+                result = _original(key, *args, **kwargs)
+            finally:
+                self._random_gallery_ignore_role = ignored
+            if active and self._random_gallery_active and relevant:
+                finish_manual_choice(self, role)
+            return result
+
+        setattr(app, name, MethodType(manual_choice, app))
+
+    original_preview = app._preview_widget_controls
+
+    def preview_with_gallery(self, *args, **kwargs):
+        ignored = self._random_gallery_ignore_role
+        self._random_gallery_ignore_role = self._random_gallery_active or ignored
+        try:
+            return original_preview(*args, **kwargs)
+        finally:
+            self._random_gallery_ignore_role = ignored
+
+    app._preview_widget_controls = MethodType(preview_with_gallery, app)
+    original_apply = app.apply_preferences
+
+    def apply_with_gallery(self, preferences):
+        active = self._random_gallery_active
+        role = self._random_gallery_state_role
+        key = self.ROLE_TO_SETTING.get(role, "default")
+        selection_fields = ("builtin_image_set", f"image_{key}", f"builtin_image_{key}")
+        selection_changed = any(getattr(preferences, name, "") != getattr(self.preferences, name, "")
+                                for name in selection_fields)
+        ignored = self._random_gallery_ignore_role
+        self._random_gallery_ignore_role = active or ignored
+        try:
+            result = original_apply(preferences)
+        finally:
+            self._random_gallery_ignore_role = ignored
+        if active and self._random_gallery_active and selection_changed:
+            finish_manual_choice(self, role)
+        return result
+
+    app.apply_preferences = MethodType(apply_with_gallery, app)
     _refresh_gallery_controls(app)
 
 
