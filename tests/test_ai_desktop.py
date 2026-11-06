@@ -659,7 +659,7 @@ class GalleryAITests(unittest.TestCase):
             self.assertEqual(Path(self.app.MANUAL_OVERRIDE_FILE).read_bytes(), before)
             restored = folder / "default_17.png"
             restored.write_bytes(content)
-            self.assertEqual(self.app._manual_override_path("default"), restored)
+            self.assertTrue(self.app._manual_override_path("default").samefile(restored))
         self.assertEqual(Path(self.app.MANUAL_OVERRIDE_FILE).read_bytes(), before)
 
     def test_catalog_metadata_contains_opaque_ids_and_no_local_paths_or_custom_names(self):
@@ -687,7 +687,7 @@ class GalleryAITests(unittest.TestCase):
             self.assertTrue(ok)
             self.assertNotIn(image.name, acknowledgement)
             self.assertNotIn(str(image.parent), acknowledgement)
-            self.assertEqual(self.app._manual_override_path("default"), image)
+            self.assertTrue(self.app._manual_override_path("default").samefile(image))
 
     def test_ZIP_import_reports_automatic_number_for_complete_role_only_pack(self):
         self.assertIn("번호 없이", self.app._pack_status.cget("text"))
