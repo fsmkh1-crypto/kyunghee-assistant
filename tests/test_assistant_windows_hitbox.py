@@ -35,15 +35,35 @@ class SpeechHitboxTests(unittest.TestCase):
         self.api.WindowFromPoint.restype = wintypes.HWND
         self.api.GetWindowRect.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.RECT))
         self.api.GetWindowRect.restype = wintypes.BOOL
+        self.api.GetWindow.argtypes = (wintypes.HWND, wintypes.UINT)
+        self.api.GetWindow.restype = wintypes.HWND
+        self.api.IsWindowVisible.argtypes = (wintypes.HWND,)
+        self.api.IsWindowVisible.restype = wintypes.BOOL
+        self.api.GetLayeredWindowAttributes.argtypes = (
+            wintypes.HWND, ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.BYTE),
+            ctypes.POINTER(wintypes.DWORD),
+        )
+        self.api.GetLayeredWindowAttributes.restype = wintypes.BOOL
         self.api.GetForegroundWindow.argtypes = ()
         self.api.GetForegroundWindow.restype = wintypes.HWND
-        self.api.PostMessageW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
-        self.api.PostMessageW.restype = wintypes.BOOL
+        self.api.SendMessageW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+        self.api.SendMessageW.restype = ctypes.c_ssize_t
 
     def test_blank_corners_hit_owned_overlay_until_hidden(self):
         rect = wintypes.RECT()
         self.assertTrue(self.api.GetWindowRect(self.bubble.winfo_id(), ctypes.byref(rect)))
-        hwnd = self.api.GetAncestor(self.hitbox._window.winfo_id(), 2)
+        hwnd = self.hitbox._hwnd
+        owner = self.api.GetAncestor(self.root.winfo_id(), 2)
+        self.assertEqual(self.api.GetWindow(hwnd, 4), owner)  # GW_OWNER
+        self.assertTrue(self.api.IsWindowVisible(hwnd))
+        overlay = wintypes.RECT()
+        self.assertTrue(self.api.GetWindowRect(hwnd, ctypes.byref(overlay)))
+        bounds = (rect.left, rect.top, rect.right, rect.bottom)
+        self.assertEqual((overlay.left, overlay.top, overlay.right, overlay.bottom), bounds)
+        alpha, flags = wintypes.BYTE(), wintypes.DWORD()
+        self.assertTrue(self.api.GetLayeredWindowAttributes(hwnd, None, ctypes.byref(alpha), ctypes.byref(flags)))
+        self.assertTrue(0 < alpha.value <= 5)
+        self.assertEqual(flags.value, 2)  # LWA_ALPHA only, without a color key
         corners = [
             wintypes.POINT(x, y)
             for x in (rect.left + 3, rect.right - 3)
@@ -66,12 +86,12 @@ class SpeechHitboxTests(unittest.TestCase):
 
     def test_windows_button_messages_route_without_changing_foreground(self):
         foreground = self.api.GetForegroundWindow()
-        client = self.hitbox._window.winfo_id()
+        hwnd = self.hitbox._hwnd
         blank_corner = 3 | (3 << 16)
-        # Post client messages without disturbing the physical cursor or other apps.
-        for down, up, mask in ((0x0201, 0x0202, 1), (0x0204, 0x0205, 2)):
-            self.assertTrue(self.api.PostMessageW(client, down, mask, blank_corner))
-            self.assertTrue(self.api.PostMessageW(client, up, 0, blank_corner))
+        # Feed the popup's native client messages without disturbing the physical cursor.
+        self.assertEqual(self.api.SendMessageW(hwnd, 0x0021, 0, 0), 3)  # MA_NOACTIVATE
+        self.api.SendMessageW(hwnd, 0x0201, 1, blank_corner)
+        self.api.SendMessageW(hwnd, 0x0204, 2, blank_corner)
         self.root.update()
         self.assertEqual(self.events, ["next", "dismiss"])
         self.assertEqual(self.api.GetForegroundWindow(), foreground)
