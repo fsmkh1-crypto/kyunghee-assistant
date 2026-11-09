@@ -61,6 +61,9 @@ class _SettingsWindow(_Window):
         self._wrapped(content, "OpenAI API는 ChatGPT 구독과 별도 요금이에요. 키와 모델을 정한 뒤 저장해 주세요.", color=MUTED).pack(fill="x", padx=12, pady=(0, 8))
         self.enabled = self._variable(tk.BooleanVar)
         self._check(content, self.enabled, "승아의 AI 대화 사용").pack(anchor="w", padx=12, pady=3)
+        self.proactive = self._variable(tk.BooleanVar)
+        self._check(content, self.proactive, "승아가 상황에 맞춰 먼저 말 걸기").pack(anchor="w", padx=12, pady=3)
+        self._wrapped(content, "켜면 휴식·복귀·업무 마무리를 살펴 먼저 말 걸어요. 사용 중 정기 대화는 기본 20분 간격이며, 대화 중·작성 중이거나 최근 5분 안에 대화했다면 쉬어요. API 사용량이 생기며 간격·상황은 고급 설정에서 바꿀 수 있어요.", color=MUTED, size=9).pack(fill="x", padx=12, pady=(0, 6))
         form = tk.Frame(content, bg=PANEL)
         form.pack(fill="x", padx=12, pady=5)
         form.columnconfigure(0, weight=1)
@@ -143,25 +146,31 @@ class _SettingsWindow(_Window):
         self.web_search = self._variable(tk.BooleanVar)
         self.history = self._variable(tk.BooleanVar)
         self.memory = self._variable(tk.BooleanVar)
-        self.proactive = self._variable(tk.BooleanVar)
         self.quiet = self._variable(tk.BooleanVar)
         for variable, caption in (
             (self.web_search, "대화에서 웹 검색 허용 · 검색 비용이 추가될 수 있어요"),
             (self.history, "대화 기록을 이 PC에 저장"),
             (self.memory, "저장한 장기 기억을 다음 대화에 활용"),
-            (self.proactive, "타이머 상황에 맞춰 AI가 먼저 말하기"),
         ):
             check = self._check(content, variable, caption)
             check.pack(fill="x", padx=12, pady=2)
             check.bind("<Configure>", lambda event, widget=check: widget.configure(wraplength=max(120, event.width - 32)))
         self._wrapped(content, "기록 저장과 기억 사용은 각각 선택해요. 끄더라도 기존 데이터는 삭제되지 않으며 기억 관리·대화 기록에서 따로 지울 수 있어요.", size=9, color=MUTED).pack(fill="x", padx=12, pady=4)
+        _label(content, "먼저 말 걸기 · 간격과 상황", size=11).pack(anchor="w", padx=12, pady=(9, 3))
+        self.proactive_interval = self._variable(value="20")
+        interval = tk.Spinbox(content, from_=5, to=120, increment=5, textvariable=self.proactive_interval,
+                              font=_font(self), fg=TEXT, bg=PANEL_2, insertbackground=TEXT,
+                              highlightcolor=PURPLE, width=8)
+        interval.bind("<MouseWheel>", self._scroll)
+        _label(content, "사용 중 정기 대화 간격 · 5~120분", size=9).pack(anchor="w", padx=12)
+        interval.pack(anchor="w", padx=12, pady=(2, 4))
         events = tk.Frame(content, bg=PANEL)
         events.pack(fill="x", padx=20, pady=3)
         self.event_vars = {event: self._variable(tk.BooleanVar) for event in PROACTIVE_EVENTS}
         for index, (event, variable) in enumerate(self.event_vars.items()):
             self._check(events, variable, _EVENT_LABELS[event]).grid(row=index // 2, column=index % 2, sticky="w", padx=(0, 12))
         self._check(content, self.quiet, "오늘은 자동 응원 쉬기 · 저장하면 적용").pack(anchor="w", padx=12, pady=4)
-        self._wrapped(content, "자동 응원도 API 사용량에 포함되고 타이머 상태·최근 대화가 전송될 수 있어요.", size=9, color=MUTED).pack(fill="x", padx=12, pady=(0, 6))
+        self._wrapped(content, "먼저 말 걸기도 요청·토큰·비용 한도를 따라요. 상황별 호출은 최소 2분 간격이고, 자리비움·퇴근 모드에는 정기 대화를 쉬어요. 꺼도 기존 타이머 알림과 기본 대사는 계속 나와요.", size=9, color=MUTED).pack(fill="x", padx=12, pady=(0, 6))
 
         form = tk.Frame(content, bg=PANEL)
         form.pack(fill="x", padx=12)
@@ -294,6 +303,7 @@ class _SettingsWindow(_Window):
             self.history.set(settings.conversation_storage_enabled)
             self.memory.set(settings.memory_enabled)
             self.proactive.set(settings.proactive_enabled)
+            self.proactive_interval.set(str(settings.proactive_interval_minutes))
             self.quiet.set(settings.proactive_quiet_until == date.today().isoformat())
             for event, variable in self.event_vars.items():
                 variable.set(event in settings.proactive_events)
@@ -335,6 +345,7 @@ class _SettingsWindow(_Window):
                 key_persistence=self.key_persistence.get(), web_search_enabled=self.web_search.get(),
                 conversation_storage_enabled=self.history.get(), memory_enabled=self.memory.get(),
                 proactive_enabled=self.proactive.get(),
+                proactive_interval_minutes=int(self.proactive_interval.get()),
                 proactive_events=tuple(event for event, variable in self.event_vars.items() if variable.get()),
                 proactive_quiet_until=date.today().isoformat() if self.quiet.get() else "",
                 reading_text_size=int(self.reading_size.get()), weather_location=self.weather_location.get().strip(),
@@ -343,7 +354,7 @@ class _SettingsWindow(_Window):
                 daily_budget_usd=float(budget) if budget else None,
             )
         except (ValueError, tk.TclError):
-            raise SettingsError("글자 크기·요청·토큰 한도는 정수로, 비용 한도는 숫자로 입력해 주세요.") from None
+            raise SettingsError("말 걸기 간격·글자 크기·요청·토큰 한도는 정수로, 비용 한도는 숫자로 입력해 주세요.") from None
         settings.validate()
         return settings
 

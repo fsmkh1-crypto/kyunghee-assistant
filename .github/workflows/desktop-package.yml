@@ -101,7 +101,7 @@ jobs:
           Copy-Item packaged-ui-report.json dist\SeungaTimer\
       - uses: actions/upload-artifact@v4
         with:
-          name: seunga-timer-2.1.1-windows-x64
+          name: seunga-timer-2.1.2-windows-x64
           path: dist/SeungaTimer
 
 # Package trigger: finalized settings gallery + duplicate-safe random 2026-09-10

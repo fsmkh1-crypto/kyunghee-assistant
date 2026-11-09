@@ -11,6 +11,7 @@ import tkinter as tk
 from tkinter import messagebox
 
 import app as core
+from messages import maybe_pick_custom, maybe_pick_daily_temperament, maybe_pick_rare, pick, time_of_day_kind
 
 from .service import AssistantService
 from .timer_tools import TimerTools, validate_arguments
@@ -18,12 +19,11 @@ from .ui import AssistantWindows
 from .windows_speech_hitbox import SpeechHitbox
 
 
-_PROACTIVE_MIN_SPACING = 15
-_PERIODIC_MIN_SPACING = 5 * 60
+_PROACTIVE_MIN_SPACING = 2 * 60
+_RECENT_CHAT_QUIET_SECONDS = 5 * 60
 _PROACTIVE_MAX_AGE = 25
 _TOOL_TIMEOUT = 120
 _CHAT_REPLY_SECONDS = 22
-_CHAT_EXPAND_SECONDS = 90
 _CHAT_PREVIEW_LINES = 3
 _CHAT_ROLE = {"composing": "rest", "waiting": "rest", "reply": "default", "error": "worry"}
 _CHAT_LABEL = {"composing": "듣는 중", "waiting": "생각 중", "reply": "답변", "error": "응답 오류"}
@@ -60,8 +60,11 @@ class DesktopAssistantMixin:
         self._assistant_pending = None
         self._assistant_periodic_due = False
         self._assistant_last_attempt = float("-inf")
-        self._assistant_last_periodic = float("-inf")
+        self._assistant_last_periodic = time.monotonic()
+        self._assistant_last_chat_at = float("-inf")
+        self._assistant_local_rotation = 0
         self._chat_phase = "idle"
+        self._last_chat_reply = ""
         self._expandable_reply = ""
         self._chat_expiry = None
         self._chat_hitbox = None
@@ -74,6 +77,9 @@ class DesktopAssistantMixin:
         self._assistant_tools = TimerTools(self)
         try:
             self._assistant_service = AssistantService(core.DATA_DIR)
+            # Start after the service's matching cooldown clock so the first
+            # due attempt is not rejected and delayed for another interval.
+            self._assistant_last_periodic = time.monotonic()
             self._assistant_windows = AssistantWindows(
                 self.root, self._assistant_service,
                 context=self._assistant_tools.context, dispatch=self._dispatch_assistant_tool,
@@ -146,9 +152,34 @@ class DesktopAssistantMixin:
 
     def _set_character(self, role):
         self._timer_character_role = role
-        return super()._set_character(_CHAT_ROLE.get(self._chat_phase, role))
+        # A retained answer must not freeze the character in its neutral pose
+        # while the timer moves into away, break, or end-of-day states.
+        override = _CHAT_ROLE.get(self._chat_phase, role) if self._chat_phase != "reply" else role
+        return super()._set_character(override)
+
+    def _local_dialogue(self, kind, work_mode):
+        personality = getattr(self.preferences, "personality", "balanced")
+        if kind == "playful" and work_mode == "normal":
+            self._assistant_local_rotation += 1
+            custom = maybe_pick_custom(getattr(self.preferences, "custom_dialogue", ""))
+            if custom:
+                return custom
+            rare = maybe_pick_rare(personality)
+            if rare:
+                return rare
+            daily = maybe_pick_daily_temperament(date.today().isoformat())
+            if daily:
+                return daily
+            # Time-aware messages used to live only in the old click-to-cycle
+            # path. Rotate them into ordinary dialogue without reducing the
+            # whole day to the same three time-of-day lines.
+            if self._assistant_local_rotation % 3 == 1:
+                kind = time_of_day_kind(datetime.now().hour)
+        return pick(kind, personality=personality)
 
     def _say(self, kind, text=None, work_mode="normal"):
+        if text is None:
+            text = self._local_dialogue(kind, work_mode)
         result = super()._say(kind, text, work_mode)
         speech = self.speech.cget("text")
         if speech and (not self._assistant_recent_dialogue or self._assistant_recent_dialogue[-1] != speech):
@@ -161,6 +192,18 @@ class DesktopAssistantMixin:
             self._chat_expiry = None
 
     def _show_chat_phase(self, phase, text=""):
+        incoming_phase = phase
+        if phase == "cleared":
+            self._last_chat_reply = ""
+            phase = "idle"
+        elif phase == "waiting":
+            self._last_chat_reply = ""
+        elif phase == "reply":
+            self._last_chat_reply = text
+        elif phase == "idle" and self._last_chat_reply:
+            phase, text = "reply", self._last_chat_reply
+        if incoming_phase != "cleared" and (phase != "idle" or self._chat_phase != "idle"):
+            self._assistant_last_chat_at = time.monotonic()
         self._cancel_chat_expiry()
         if phase == "idle" and self._chat_phase == "idle":
             return
@@ -173,7 +216,7 @@ class DesktopAssistantMixin:
         else:
             self._cancel_proactive()
             self._chat_button.configure(text=f"승아 {_CHAT_LABEL[phase]}")
-            super()._set_character(_CHAT_ROLE[phase])
+            super()._set_character(self._timer_character_role if phase == "reply" else _CHAT_ROLE[phase])
             if phase == "reply":
                 self._render_chat_reply(text)
             else:
@@ -205,20 +248,19 @@ class DesktopAssistantMixin:
             self._expandable_reply = text
             text = "\n".join(lines[:_CHAT_PREVIEW_LINES]).rstrip() + "\n전체 답변 보기 ›"
         self._chat_speech.configure(text=text)
-        show_preview = self._expandable_reply and self._effective_display_flag("show_message")
-        self._schedule_chat_expiry(_CHAT_EXPAND_SECONDS if show_preview else _CHAT_REPLY_SECONDS)
+        # Keep the answer until a new send, explicit dismissal, or a later
+        # opt-in AI conversation. Ordinary timer chatter never erases it.
 
     def _activate_chat_reply(self, _event=None):
         if self._chat_phase != "reply" or not self._expandable_reply:
             self._open_assistant_chat()
         else:
             self._assistant_windows.open_reply(self._expandable_reply)
-            self._show_chat_phase("idle")
         return "break"
 
     def _dismiss_chat_reply(self, _event=None):
         if self._chat_phase in {"reply", "error"}:
-            self._show_chat_phase("idle")
+            self._show_chat_phase("cleared")
         return "break"
 
     def _build_header(self, parent, title, back_command=None, settings_command=None):
@@ -343,57 +385,7 @@ class DesktopAssistantMixin:
         return service.save_assistant_memory(text)
 
     def _confirm_assistant_change(self, description, cancelled):
-        if cancelled():
-            return False
-        parent = self._assistant_windows.confirmation_parent()
-        window = tk.Toplevel(parent, bg=core.BG)
-        window.title("승아 요청 확인")
-        if parent.winfo_viewable():
-            window.transient(parent)
-        window.minsize(420, 210)
-        window.geometry("480x255")
-        self._label(window, "이 요청을 적용할까요?", size=11, weight="bold").pack(anchor="w", padx=14, pady=(12, 6))
-        frame = tk.Frame(window, bg=core.BG)
-        frame.pack(fill="both", expand=True, padx=14)
-        body = tk.Text(frame, wrap="word", font=(self.FONT_FAMILY, 10), fg=core.TEXT, bg=core.PANEL, bd=0, padx=8, pady=7)
-        scroll = tk.Scrollbar(frame, command=body.yview)
-        body.configure(yscrollcommand=scroll.set)
-        scroll.pack(side="right", fill="y")
-        body.pack(side="left", fill="both", expand=True)
-        body.insert("1.0", description)
-        body.configure(state="disabled")
-        controls = tk.Frame(window, bg=core.BG)
-        controls.pack(fill="x", padx=14, pady=12)
-        approved = False
-        poll_id = None
-
-        def close(apply=False):
-            nonlocal approved, poll_id
-            approved = apply and not cancelled()
-            if poll_id is not None:
-                window.after_cancel(poll_id)
-                poll_id = None
-            window.destroy()
-
-        def watch_cancellation():
-            nonlocal poll_id
-            poll_id = None
-            if cancelled():
-                close()
-            else:
-                poll_id = window.after(150, watch_cancellation)
-
-        self._button(controls, "적용", lambda: close(apply=True), primary=True).pack(side="right")
-        cancel_button = self._button(controls, "취소", close)
-        cancel_button.pack(side="right", padx=(0, 6))
-        window.bind("<Escape>", lambda _event: close())
-        window.protocol("WM_DELETE_WINDOW", close)
-        poll_id = window.after(150, watch_cancellation)
-        window.wait_visibility()
-        window.grab_set()
-        cancel_button.focus_set()
-        parent.wait_window(window)
-        return approved and not cancelled()
+        return self._assistant_windows.confirm_change(description, cancelled)
 
     def _sync_assistant_preference_controls(self, changes):
         controls = {
@@ -452,11 +444,18 @@ class DesktopAssistantMixin:
             self._assistant_pending.cancel.set()
             self._assistant_pending = None
 
+    def _chat_blocks_proactive(self):
+        windows = self._assistant_windows
+        if windows is not None and windows.is_chat_active():
+            return True
+        return (self._chat_phase not in {"idle", "reply"}
+                or time.monotonic() - self._assistant_last_chat_at < _RECENT_CHAT_QUIET_SECONDS)
+
     def _request_proactive(self, event, toast=None):
         service = self._assistant_service
         if event != "periodic":
             self._assistant_events.append({"date": date.today().isoformat(), "time": datetime.now().astimezone().isoformat(timespec="seconds"), "event": event})
-        if self._chat_phase != "idle" and toast is None:
+        if self._chat_blocks_proactive():
             return
         if self._assistant_pending is not None:
             if event != "periodic":
@@ -473,7 +472,11 @@ class DesktopAssistantMixin:
         if now - self._assistant_last_attempt < _PROACTIVE_MIN_SPACING:
             return
         if event == "periodic":
-            if now - self._assistant_last_periodic < _PERIODIC_MIN_SPACING:
+            interval = service.load_settings().proactive_interval_minutes * 60
+            context = self._assistant_tools.context()
+            if context.get("is_away") or context.get("workday_mode") != "normal":
+                return
+            if now - self._assistant_last_periodic < interval:
                 return
             self._assistant_last_periodic = now
         request = _ProactiveRequest(
@@ -505,6 +508,7 @@ class DesktopAssistantMixin:
             or time.monotonic() - request.started_at > _PROACTIVE_MAX_AGE
             or service is None or service.revision != request.revision or not service.can_proactively_speak()
             or self._break_notifications_suppressed()
+            or self._chat_blocks_proactive()
         ):
             return
         current = self._assistant_tools.context()
@@ -521,6 +525,10 @@ class DesktopAssistantMixin:
         ):
             return
         if text:
+            if self._chat_phase == "reply":
+                # The prior answer remains in chat history. Only a fresh,
+                # permitted AI message may replace its retained widget view.
+                self._show_chat_phase("cleared")
             self.speech.configure(text=text)
             self._assistant_recent_dialogue.append(text)
             self.last_dialogue_at = time.monotonic()

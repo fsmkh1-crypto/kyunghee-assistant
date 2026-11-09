@@ -1,4 +1,4 @@
-# Windows smoke test — 승아 타이머 2.1.1
+# Windows smoke test — 승아 타이머 2.1.2
 
 Run this on a real Windows PC before calling the build ready for daily use.
 
@@ -13,6 +13,11 @@ Run this on a real Windows PC before calling the build ready for daily use.
 
 ### 0. Review implementation acceptance
 
+- In image settings, follow imported set 26 and select the normal role. Previous/next must browse different situation images with an accurate caption; browsing must not change the selected set or saved preferences. Repeat with a built-in set, a single custom image and a multi-image custom group.
+- Ask for a break or away transition. At 100/125/150/200% Windows scaling, shrink the approval window and scroll its long description: Apply and Cancel must remain reachable. Repeat with an image proposal and its preview. Cancel must leave the timer/image unchanged; Apply must perform it once.
+- Start manual away and watch the main clock for at least 20 seconds without input. Check the away clock advances while active time stays unchanged. Return and compare today's away record; repeat with automatic idle and crossing midnight.
+- Close and reopen a chat containing a long AI answer and an unsent draft. The latest answer, conversation and draft must remain available; test the full-answer window too. Explicit dismissal/new conversation and important break/leave alerts must still work.
+- Let normal local messages change several times and check that recent lines do not repeat immediately. With proactive AI disabled or Today Quiet enabled, there must be no proactive API request. With it enabled, check event/periodic controls, spacing and contextual messages; an active conversation or draft must not be interrupted. Real API requests use the user's configured account and limits.
 - Open a folded long answer by clicking the actual speech bubble. Close it with the button, Esc and titlebar X, then reopen it; also click repeatedly. The timer must stay alive, the whole answer and source links remain readable, and unsent drafts, saved chat and memories remain unchanged. CI now queues native Windows clicks with PostMessageW; synchronous SendMessageW alone did not exercise the fatal boundary in 2.1.0.
 - Open chat from the speech bubble; open settings with a short timer/character click; drag without opening settings. Verify tray/keyboard access with the bubble hidden.
 - Roll the screen dice, change to away/rest/return, and check situation images return. Explicitly pin and unpin. Restore the latest situation while pinned.

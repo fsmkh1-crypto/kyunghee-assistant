@@ -37,6 +37,10 @@ class AssistantServiceTests(unittest.TestCase):
         client = patch("assistant_ai.service.ResponsesClient")
         self.api = client.start().return_value
         self.addCleanup(client.stop)
+        self.now = 10_000.0
+        clock = patch("assistant_ai.service.time.monotonic", side_effect=lambda: self.now)
+        clock.start()
+        self.addCleanup(clock.stop)
         self.service = AssistantService(self.path)
         self.settings = replace(self.service.load_settings(), enabled=True)
         self.service.save_settings(self.settings)
@@ -205,6 +209,7 @@ class AssistantServiceTests(unittest.TestCase):
         self.api.respond.assert_not_called()
         self.api.respond.return_value = reply("조금 쉬고 갈까요?")
         self.ask("회의를 막 끝냈어요")
+        self.now += 300
         self.service.save_settings(replace(self.settings, proactive_enabled=True))
         self.api.respond.return_value = reply("SILENT")
         self.assertIsNone(self.service.proactive("rest", context={"away": False}, cancel=cancel))
@@ -396,6 +401,7 @@ class AssistantServiceTests(unittest.TestCase):
         self.api.respond.return_value = reply("오빠, 물 한 잔 마셔요.")
         self.assertIsNone(self.service.proactive("periodic", context={}, cancel=threading.Event()))
         self.assertIsNotNone(self.service.proactive("rest", context={}, cancel=threading.Event()))
+        self.now += 120
         self.assertIsNone(self.service.proactive("rest", context={}, cancel=threading.Event()))
         self.assertIn("물 한 잔", self.api.respond.call_args.kwargs["instructions"])
         self.assertEqual(self.api.respond.call_args.kwargs["purpose"], "event")
@@ -408,6 +414,146 @@ class AssistantServiceTests(unittest.TestCase):
         self.service.save_settings(replace(self.settings, proactive_enabled=True))
         self.api.respond.return_value = reply("물을 마셔요.")
         self.assertIsNone(self.service.proactive("rest", context={"recent_dialogue": ["물을 마셔요."]}, cancel=threading.Event()))
+
+    def test_proactive_does_not_repackage_a_recent_chat_sentence(self):
+        self.service.save_settings(replace(self.settings, proactive_enabled=True))
+        self.api.respond.return_value = reply("물 한 잔 마시고 잠깐 쉬어요.")
+        self.ask("잠깐 쉴까요?")
+        self.now += 300
+        self.api.respond.return_value = reply("오빠, 물 한 잔 마시고 잠깐 쉬어요. 오늘 정말 수고했어요.")
+        self.assertIsNone(self.service.proactive("rest", context={}, cancel=threading.Event()))
+        self.assertIn("물 한 잔 마시고", self.api.respond.call_args.kwargs["instructions"])
+        self.assertEqual(len(self.service.recent_turns()), 1)
+
+    def test_proactive_waits_after_every_attempt_including_failure(self):
+        self.service.save_settings(replace(self.settings, proactive_enabled=True))
+        self.api.respond.side_effect = [AIError("network", "연결 실패"), reply("돌아오셨네요. 반가워요.")]
+        with self.assertRaises(AIError):
+            self.service.proactive("rest", context={}, cancel=threading.Event())
+        self.now += 119
+        self.assertIsNone(self.service.proactive("return", context={}, cancel=threading.Event()))
+        self.assertEqual(self.api.respond.call_count, 1)
+        self.now += 1
+        self.assertIsNotNone(self.service.proactive("return", context={}, cancel=threading.Event()))
+        self.assertEqual(self.api.respond.call_count, 2)
+
+    def test_proactive_waits_five_minutes_after_chat_even_for_timer_events(self):
+        self.service.save_settings(replace(self.settings, proactive_enabled=True))
+        self.api.respond.return_value = reply("회의 내용은 확인했어요.")
+        self.ask("회의를 끝냈어요.")
+        self.api.respond.reset_mock()
+        self.api.respond.return_value = reply("지금은 잠깐 쉬어도 괜찮아요.")
+        self.now += 299
+        self.assertIsNone(self.service.proactive("rest", context={}, cancel=threading.Event()))
+        self.api.respond.assert_not_called()
+        self.now += 1
+        self.assertIsNotNone(self.service.proactive("rest", context={}, cancel=threading.Event()))
+
+    def test_periodic_uses_configured_interval_and_only_active_work_context(self):
+        self.service.save_settings(replace(self.settings, proactive_enabled=True, proactive_interval_minutes=5))
+        self.api.respond.side_effect = [reply("오후가 깊어가네요. 잠깐 안부가 궁금했어요."), reply("SILENT")]
+        context = {"workday_mode": "normal", "is_away": False}
+        self.now += 299
+        self.assertIsNone(self.service.proactive("periodic", context=context, cancel=threading.Event()))
+        self.now += 1
+        for change in ({"is_away": True}, {"workday_mode": "soft_stop"}, {"workday_mode": "hard_stop"}):
+            self.assertIsNone(self.service.proactive("periodic", context={**context, **change}, cancel=threading.Event()))
+        self.api.respond.assert_not_called()
+        self.assertIsNotNone(self.service.proactive("periodic", context=context, cancel=threading.Event()))
+        self.now += 299
+        self.assertIsNone(self.service.proactive("periodic", context=context, cancel=threading.Event()))
+        self.assertEqual(self.api.respond.call_count, 1)
+        self.now += 1
+        self.assertIsNone(self.service.proactive("periodic", context=context, cancel=threading.Event()))
+        self.assertEqual(self.api.respond.call_count, 2)
+
+    def test_proactive_context_keeps_local_time_personality_and_event_details(self):
+        self.service.save_settings(replace(self.settings, proactive_enabled=True))
+        self.api.respond.return_value = reply("오늘의 마무리는 조금 느긋해도 괜찮아요.")
+        context = {"current_time": "2026-11-09T23:15:00+09:00", "personality": "warm",
+                   "workday_mode": "soft_stop", "today_events": [{"event": "break_started"}]}
+        self.assertIsNotNone(self.service.proactive("leave", context=context, cancel=threading.Event()))
+        instructions = self.api.respond.call_args.kwargs["instructions"]
+        for expected in ('"time_of_day": "밤"', '"kind": "leave"', '"personality": "warm"',
+                         '"current_time": "2026-11-09T23:15:00+09:00"', '"event": "break_started"'):
+            self.assertIn(expected, instructions)
+        self.assertIn("일을 더 권하지", instructions)
+        self.assertNotIn("tools", self.api.respond.call_args.kwargs)
+
+    def test_proactive_keeps_single_flight_until_cancelled_worker_returns(self):
+        self.service.save_settings(replace(self.settings, proactive_enabled=True))
+        entered, release = threading.Event(), threading.Event()
+        cancel = threading.Event()
+        errors = []
+
+        def delayed(*args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("fake transport did not release")
+            return reply("늦게 온 자동 안내예요.")
+
+        self.api.respond.side_effect = delayed
+
+        def request():
+            try:
+                self.service.proactive("rest", context={}, cancel=cancel)
+            except AIError as error:
+                errors.append(error.code)
+
+        worker = threading.Thread(target=request)
+        worker.start()
+        try:
+            self.assertTrue(entered.wait(5))
+            cancel.set()
+            self.now += 121
+            self.assertIsNone(self.service.proactive("return", context={}, cancel=threading.Event()))
+            self.assertEqual(self.api.respond.call_count, 1)
+        finally:
+            release.set()
+            worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, ["cancelled"])
+        self.assertIsNone(self.service._active_proactive_cancel)
+        self.assertEqual(list(self.service._proactive_recent), [])
+
+    def test_new_chat_cancels_in_flight_proactive_and_discards_its_result(self):
+        self.service.save_settings(replace(self.settings, proactive_enabled=True))
+        cancel = threading.Event()
+
+        def chat_during_proactive(*args, **kwargs):
+            if kwargs.get("purpose") == "event":
+                self.api.respond.side_effect = None
+                self.api.respond.return_value = reply("사용자 질문에 답했어요.")
+                self.assertEqual(self.ask("질문이 있어요."), "사용자 질문에 답했어요.")
+                return reply("표시되면 안 되는 이전 자동 안내예요.")
+            raise AssertionError("unexpected fake call")
+
+        self.api.respond.side_effect = chat_during_proactive
+        with self.assertRaises(AIError) as error:
+            self.service.proactive("rest", context={}, cancel=cancel)
+        self.assertEqual(error.exception.code, "cancelled")
+        self.assertTrue(cancel.is_set())
+        self.assertEqual(list(self.service._proactive_recent), [])
+        self.assertIsNone(self.service._active_proactive_cancel)
+
+    def test_quiet_setting_cancels_proactive_and_incomplete_text_is_not_displayed(self):
+        self.service.save_settings(replace(self.settings, proactive_enabled=True))
+
+        def quiet_during_request(*args, **kwargs):
+            self.service.quiet_today()
+            return reply("표시되면 안 되는 자동 안내예요.")
+
+        self.api.respond.side_effect = quiet_during_request
+        with self.assertRaises(AIError) as error:
+            self.service.proactive("rest", context={}, cancel=threading.Event())
+        self.assertEqual(error.exception.code, "cancelled")
+        self.assertEqual(list(self.service._proactive_recent), [])
+        self.service.quiet_today(False)
+        self.now += 120
+        self.api.respond.side_effect = None
+        self.api.respond.return_value = reply("아직 끝나지 않은 문장", status="incomplete")
+        self.assertIsNone(self.service.proactive("rest", context={}, cancel=threading.Event()))
+        self.assertEqual(list(self.service._proactive_recent), [])
 
 
 class AssistantStartupKeyRecoveryTests(unittest.TestCase):

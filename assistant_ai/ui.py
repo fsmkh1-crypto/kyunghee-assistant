@@ -423,12 +423,21 @@ class AssistantWindows:
 
     def show_image_proposal(self, proposal):
         window = _Window(self, "이미지 변경 확인", 680, 700)
-        title = _label(window.body, proposal.get("summary", "이미지 변경"), size=13, wraplength=480)
+        window.minsize(300, 220)
+        # Pack the actions first: previews and long descriptions may scroll,
+        # but must never consume the space needed to apply or cancel.
+        controls = tk.Frame(window.body, bg=PANEL)
+        controls.pack(side="bottom", fill="x", padx=10, pady=10)
+        content = _scrollable_content(window.body, window)
+        title = _label(content, proposal.get("summary", "이미지 변경"), size=13, wraplength=480)
         title.pack(fill="x", padx=14, pady=(12, 6))
         title.bind("<Configure>", lambda event: title.configure(wraplength=event.width))
-        _label(window.body, proposal.get("scope", ""), color=MUTED, wraplength=480).pack(fill="x", padx=14)
-        previews = tk.Frame(window.body, bg=PANEL)
-        previews.pack(fill="both", expand=True, padx=12, pady=8)
+        scope = _label(content, proposal.get("scope", ""), color=MUTED, wraplength=480)
+        scope.pack(fill="x", padx=14)
+        scope.bind("<Configure>", lambda event: scope.configure(wraplength=max(1, event.width)))
+        previews = tk.Frame(content, bg=PANEL, height=300)
+        previews.pack(fill="x", padx=12, pady=8)
+        previews.grid_propagate(False)
         previews.columnconfigure(0, weight=1, uniform="images")
         previews.columnconfigure(1, weight=1, uniform="images")
         previews.rowconfigure(1, weight=1)
@@ -457,9 +466,9 @@ class AssistantWindows:
                     preview.configure(text="미리보기를 표시할 수 없어요.")
         state = {"pending": proposal.get("status") == "pending"}
         status = tk.StringVar(master=window)
-        _label(window.body, textvariable=status, color=AMBER, wraplength=480).pack(fill="x", padx=14, pady=6)
-        controls = tk.Frame(window.body, bg=PANEL)
-        controls.pack(side="bottom", fill="x", padx=14, pady=12)
+        result_label = _label(content, textvariable=status, color=AMBER, wraplength=480)
+        result_label.pack(fill="x", padx=14, pady=6)
+        result_label.bind("<Configure>", lambda event: result_label.configure(wraplength=max(1, event.width)))
         def cancel():
             if state["pending"] and self.image_cancel:
                 self.image_cancel(proposal["id"])
@@ -474,6 +483,7 @@ class AssistantWindows:
             apply_button.configure(state="disabled")
             undo_button.configure(state="normal" if result.get("changed") else "disabled")
             cancel_button.configure(text="닫기")
+            window.after_idle(lambda: window.content_canvas.yview_moveto(1) if window_exists(window) else None)
         def undo():
             result = self.image_undo() if self.image_undo else {"summary": "되돌릴 변경이 없어요."}
             status.set(result.get("summary", "되돌리기 결과를 확인해 주세요."))
@@ -485,6 +495,22 @@ class AssistantWindows:
         undo_button = _button(controls, "되돌리기", undo)
         undo_button.pack(side="left")
         undo_button.configure(state="disabled")
+        action_buttons = (undo_button, cancel_button, apply_button)
+        for button in action_buttons:
+            button.pack_forget()
+        def arrange_actions(event=None):
+            width = event.width if event else max(1, controls.winfo_width())
+            cell = max(button.winfo_reqwidth() for button in action_buttons) + 6
+            columns = max(1, min(3, width // cell))
+            for column in range(3):
+                controls.grid_columnconfigure(column, weight=1 if column < columns else 0)
+            for index, button in enumerate(action_buttons):
+                button.grid(row=index // columns, column=index % columns, sticky="ew", padx=2, pady=2)
+        controls.bind("<Configure>", arrange_actions)
+        arrange_actions()
+        window.apply_button, window.cancel_button, window.undo_button = apply_button, cancel_button, undo_button
+        for button in (apply_button, cancel_button, undo_button):
+            button.bind("<Return>", lambda _event, target=button: (target.invoke(), "break")[1])
         if not state["pending"]:
             apply_button.configure(state="disabled")
             status.set(proposal.get("summary", "이 요청을 적용할 수 없어요."))
@@ -493,6 +519,31 @@ class AssistantWindows:
         window._hide = lambda _event=None: cancel()
         window.show()
         cancel_button.focus_set()
+
+    def confirm_change(self, description, cancelled):
+        if self._closed or cancelled():
+            return False
+        window = _ConfirmWindow(self, description, cancelled)
+        try:
+            return window.confirm()
+        finally:
+            if window_exists(window):
+                window.destroy()
+            if window in self._extra_windows:
+                self._extra_windows.remove(window)
+
+    def is_chat_active(self):
+        if self._closed:
+            return False
+        if self._cancel is not None:
+            return True
+        if window_exists(self.chat_window):
+            try:
+                return bool(self.chat_window.winfo_viewable() or
+                            self.chat_window.input.get("1.0", "end-1c").strip())
+            except tk.TclError:
+                pass
+        return False
 
     def open_weather_settings(self):
         if not self._closed:
@@ -726,7 +777,7 @@ class AssistantWindows:
         self.chat_window.set_retry_available(False)
         if self._render_history() is not None:
             self.chat_window.status.set("대화 기록을 지웠어요.")
-        self._set_chat_state("idle")
+        self._set_chat_state("cleared")
 
 
 class _Window(tk.Toplevel):
@@ -753,10 +804,10 @@ class _Window(tk.Toplevel):
         self.withdraw()
         return "break"
 
-    def show(self):
+    def show(self, *, parent=None):
         if self.owner._closed or not window_exists(self):
             return False
-        if position_window(self, self.owner.root, self.owner.chat_work_area) is None:
+        if position_window(self, parent or self.owner.root, self.owner.chat_work_area) is None:
             return False
         self.deiconify()
         self.lift()
@@ -789,6 +840,110 @@ class _Window(tk.Toplevel):
         _button(parent, "복사", lambda: self.copy_text(widget)).pack(side="left", padx=2)
         if sources is not None:
             _button(parent, "출처 열기", sources.open_picker).pack(side="left", padx=2)
+
+
+def _scrollable_content(parent, window):
+    """Scrollable approval details, separate from the always-visible footer."""
+    viewport = tk.Frame(parent, bg=PANEL)
+    viewport.pack(fill="both", expand=True)
+    canvas = tk.Canvas(viewport, bg=PANEL, highlightthickness=0, width=1, height=1,
+                       takefocus=True)
+    scrollbar = tk.Scrollbar(viewport, command=canvas.yview)
+    scrollbar.pack(side="right", fill="y")
+    canvas.pack(side="left", fill="both", expand=True)
+    canvas.configure(yscrollcommand=scrollbar.set)
+    content = tk.Frame(canvas, bg=PANEL)
+    item = canvas.create_window(0, 0, window=content, anchor="nw")
+    canvas.bind("<Configure>", lambda event: canvas.itemconfigure(item, width=max(1, event.width)))
+    content.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+    def scroll(event):
+        direction = -1 if getattr(event, "num", 0) == 4 or getattr(event, "delta", 0) > 0 else 1
+        canvas.yview_scroll(direction * 3, "units")
+        return "break"
+    for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+        window.bind(sequence, scroll, add="+")
+    canvas.bind("<Next>", lambda _event: (canvas.yview_scroll(1, "pages"), "break")[1])
+    canvas.bind("<Prior>", lambda _event: (canvas.yview_scroll(-1, "pages"), "break")[1])
+    canvas.bind("<Home>", lambda _event: (canvas.yview_moveto(0), "break")[1])
+    canvas.bind("<End>", lambda _event: (canvas.yview_moveto(1), "break")[1])
+    window.content_canvas = canvas
+    return content
+
+
+class _ConfirmWindow(_Window):
+    def __init__(self, owner, description, cancelled):
+        super().__init__(owner, "승아 요청 확인", 520, 350)
+        self.cancelled = cancelled
+        self.approved = False
+        self.poll_id = None
+        self.minsize(300, 220)
+        controls = tk.Frame(self.body, bg=PANEL)
+        controls.pack(side="bottom", fill="x", padx=10, pady=10)
+        self.apply_button = _button(controls, "적용", lambda: self.finish(True), primary=True)
+        self.apply_button.pack(side="right")
+        self.cancel_button = _button(controls, "취소", self.finish)
+        self.cancel_button.pack(side="right", padx=(0, 6))
+        for button in (self.apply_button, self.cancel_button):
+            button.bind("<Return>", lambda _event, target=button: (target.invoke(), "break")[1])
+        frame = tk.Frame(self.body, bg=PANEL)
+        frame.pack(fill="both", expand=True, padx=12, pady=(10, 0))
+        self.description = _text(frame, height=5)
+        _add_scrollbar(frame, self.description)
+        # The heading scrolls with the details, leaving readable content even
+        # when large system fonts and a short work area leave little height.
+        self.description.insert("1.0", "이 요청을 적용할까요?\n\n", "heading")
+        self.description.tag_configure("heading", foreground=TEXT)
+        self.description.insert("end", description)
+        self.description.configure(state="disabled")
+        self._reading_widgets.append(self.description)
+        self.apply_reading_size()
+
+    def show(self):
+        return super().show(parent=self.owner.confirmation_parent())
+
+    def _hide(self, _event=None):
+        self.finish()
+        return "break"
+
+    def destroy(self):
+        if self.poll_id is not None:
+            self.after_cancel(self.poll_id)
+            self.poll_id = None
+        super().destroy()
+
+    def finish(self, apply=False):
+        if not window_exists(self):
+            return
+        self.approved = bool(apply and not self.cancelled() and not self.owner._closed)
+        if self.poll_id is not None:
+            self.after_cancel(self.poll_id)
+            self.poll_id = None
+        self.destroy()
+
+    def _watch_cancellation(self):
+        self.poll_id = None
+        if self.cancelled() or self.owner._closed:
+            self.finish()
+        elif window_exists(self):
+            self.poll_id = self.after(150, self._watch_cancellation)
+
+    def confirm(self):
+        if not self.show():
+            return False
+        self._watch_cancellation()
+        if not window_exists(self):
+            return False
+        if not self.winfo_viewable():
+            try:
+                self.wait_visibility()
+            except tk.TclError:
+                if not window_exists(self):
+                    return False
+                raise
+        self.grab_set()
+        self.cancel_button.focus_set()
+        self.owner.root.wait_window(self)
+        return self.approved and not self.cancelled() and not self.owner._closed
 
 
 class _ReadoutWindow(_Window):

@@ -6,6 +6,7 @@ import faulthandler
 import os
 from pathlib import Path
 import tempfile
+import time
 import traceback
 from unittest.mock import patch
 
@@ -30,6 +31,123 @@ def _click_full_reply(desktop, count=1):
     desktop.root.after(100, desktop.root.quit)
     desktop.root.mainloop()
     desktop.root.update()
+
+
+def _descendants(widget):
+    for child in widget.winfo_children():
+        yield child
+        yield from _descendants(child)
+
+
+def _assert_action_visible(button, window):
+    assert button.winfo_viewable(), f"{button.cget('text')} action is hidden"
+    x, y = button.winfo_rootx() - window.winfo_rootx(), button.winfo_rooty() - window.winfo_rooty()
+    assert 0 <= x and x + button.winfo_width() <= window.winfo_width(), "action exceeds dialog width"
+    assert 0 <= y and y + button.winfo_height() <= window.winfo_height(), "action exceeds dialog height"
+    assert button.winfo_height() >= button.winfo_reqheight(), "action height is clipped"
+
+
+def _exercise_approval_actions(desktop):
+    root, windows = desktop.root, desktop._assistant_windows
+    with patch.object(windows, "chat_work_area", lambda *_args: (0, 0, 640, 360)):
+        for action in ("취소", "적용"):
+            errors, clicked = [], []
+            deadline = time.monotonic() + 5
+
+            def click_action():
+                found = [item for item in root.winfo_children()
+                         if item.winfo_class() == "Toplevel" and item.title().startswith("승아 요청 확인")]
+                if not found:
+                    if time.monotonic() < deadline:
+                        root.after(30, click_action)
+                    return
+                dialog = found[-1]
+                try:
+                    dialog.geometry("360x240")
+                    dialog.update_idletasks()
+                    buttons = {item.cget("text"): item for item in _descendants(dialog)
+                               if item.winfo_class() == "Button"}
+                    for label in ("적용", "취소"):
+                        _assert_action_visible(buttons[label], dialog)
+                    assert dialog.description.winfo_viewable(), "approval description is hidden"
+                    assert dialog.description.winfo_height() > 24, "approval description has no readable area"
+                    clicked.append(action)
+                    buttons[action].invoke()
+                except Exception:
+                    errors.append(traceback.format_exc())
+                    dialog.tk.call(dialog.protocol("WM_DELETE_WINDOW"))
+
+            root.after(50, click_action)
+            approved = desktop._confirm_assistant_change(
+                "휴식 상태로 바꿉니다. 내용을 확인한 뒤 적용하세요.\n" * 50,
+                lambda: time.monotonic() >= deadline,
+            )
+            assert not errors, "approval layout failed:\n" + "\n".join(errors)
+            assert clicked == [action], "approval action was not reached"
+            assert approved == (action == "적용"), "approval result changed"
+
+        proposal = desktop.propose_image_action({"kind": "base_set", "set_id": "01"})
+        windows.show_image_proposal({**proposal, "summary": "이미지 변경 확인 " * 30,
+                                     "scope": "변경 범위를 확인한 뒤 적용합니다. " * 30})
+        dialog = next(item for item in root.winfo_children()
+                      if item.winfo_class() == "Toplevel" and item.title().startswith("이미지 변경 확인"))
+        dialog.geometry("360x240")
+        root.update()
+        buttons = {item.cget("text"): item for item in _descendants(dialog)
+                   if item.winfo_class() == "Button"}
+        for label in ("적용", "취소", "되돌리기"):
+            _assert_action_visible(buttons[label], dialog)
+        assert dialog.content_canvas.winfo_viewable(), "image approval details are hidden"
+        buttons["취소"].invoke()
+        assert dialog.state() == "withdrawn", "image cancellation did not close the proposal"
+
+
+def _exercise_away_clock(desktop):
+    from copy import deepcopy
+    from types import SimpleNamespace
+    from timer_engine import TimerEngine
+
+    state = deepcopy(desktop.state)
+    state.session.is_away = state.session.manual_away = False
+    clock = SimpleNamespace(mono=100.0, wall=time.time(), idle=0.0)
+    engine = TimerEngine(state, clock=lambda: clock.mono, wall=lambda: clock.wall,
+                         idle_provider=lambda: (clock.idle, 1))
+    before_away, before_active = state.daily.away_seconds, state.daily.active_seconds
+    with patch.object(desktop, "state", state), patch.object(desktop, "engine", engine):
+        engine.start_manual_away()
+        for elapsed in (2, 3):
+            clock.mono += elapsed
+            clock.wall += elapsed
+            clock.idle += elapsed
+            engine.tick()
+            desktop._update_ui()
+            assert desktop.cont.cget("text") == f"00:00:{int(clock.idle):02d}", "away clock stopped"
+            assert state.daily.away_seconds == before_away + clock.idle, "away records drifted"
+            assert state.daily.active_seconds == before_active, "away counted as active"
+            assert state.session.continuous_seconds == 0, "away changed focus streak"
+    desktop._update_ui()
+
+
+def _exercise_preview_navigation(desktop):
+    from dataclasses import asdict
+    from PIL import ImageTk
+
+    desktop._show_page("settings")
+    desktop._settings_notebook.select(2)
+    desktop._select_settings_preview("default")
+    desktop.root.update()
+    before_settings = asdict(desktop.preferences)
+    before = ImageTk.getimage(desktop.settings_preview_image.image).tobytes()
+    before_label = desktop.settings_preview_meta.cget("text")
+    desktop.settings_preview_next.invoke()
+    desktop.root.update()
+    assert desktop.settings_preview_meta.cget("text") != before_label, "preview navigation did not advance"
+    assert ImageTk.getimage(desktop.settings_preview_image.image).tobytes() != before, "preview pixels did not change"
+    desktop.settings_preview_prev.invoke()
+    desktop.root.update()
+    assert desktop.settings_preview_meta.cget("text") == before_label, "previous preview was not restored"
+    assert asdict(desktop.preferences) == before_settings, "preview navigation modified saved preferences"
+    desktop._show_page("timer")
 
 
 def _exercise_full_reply(desktop):
@@ -87,6 +205,17 @@ def _exercise_full_reply(desktop):
     assert windows.chat_window.input.get("1.0", "end-1c") == draft, "existing draft was modified"
     assert memory.recent_turns(None) == saved_turns, "full answer modified saved conversations"
     assert memory.counts() == saved_counts, "full answer modified saved data"
+    windows._set_chat_state("reply", reply)
+    windows.chat_window._hide()
+    root.update()
+    assert desktop._chat_phase == "reply" and desktop._expandable_reply == reply, "closing chat erased the latest answer"
+    assert desktop._chat_expiry is None, "retained answer still expires automatically"
+    desktop._say("playful", "다음 기본 대사")
+    assert desktop._expandable_reply == reply, "ordinary dialogue erased the AI answer"
+    windows.open_chat()
+    root.update()
+    assert reply in windows.chat_window.history.get("1.0", "end-1c"), "reopening chat lost its conversation"
+    assert windows.chat_window.input.get("1.0", "end-1c") == draft, "reopening chat lost its draft"
     heartbeat = []
     root.after(1, lambda: heartbeat.append(True))
     root.after(25, root.quit)
@@ -164,6 +293,9 @@ def _run_packaged_smoke(app_factory, report_path):
                         assert desktop.character_role == "away", "page transition lost away pose"
                         windows = desktop._assistant_windows
                         assert windows is not None, "assistant failed to initialize"
+                        _exercise_preview_navigation(desktop)
+                        _exercise_away_clock(desktop)
+                        _exercise_approval_actions(desktop)
                         _exercise_full_reply(desktop)
                         windows.open_chat()
                         windows.open_settings()
@@ -199,7 +331,7 @@ def _run_packaged_smoke(app_factory, report_path):
                         assert network.call_count == 0, "unexpected network request"
                         assert not callback_errors, "Tk callback failed:\n" + "\n".join(callback_errors)
                         report["checks"].append({"dpi": dpi, "status": "passed",
-                                                 "flows": ["dice", "settings", "away", "full reply native click", "reply close/reopen/repeat", "conversation and draft preservation", "chat", "AI settings", "model choices and unsaved preview", "memories", "image picker", "gallery", "backup", "weather", "offline status", "image cancel"]})
+                                                 "flows": ["dice", "settings", "preview previous/next pixels and selection preservation", "away clock and records", "small approval actions", "small image proposal actions", "full reply native click", "reply close/reopen/repeat", "conversation and draft preservation", "chat hide/reopen and retained answer", "AI settings", "model choices and unsaved preview", "memories", "image picker", "gallery", "backup", "weather", "offline status", "image cancel"]})
                     finally:
                         for timer_id in root.tk.splitlist(root.tk.call("after", "info")):
                             root.tk.call("after", "cancel", timer_id)

@@ -93,6 +93,7 @@ class AISettings:
     proactive_quiet_until: str = ""
     key_persistence: str = "session"
     reading_text_size: int = 12
+    proactive_interval_minutes: int = 20
 
     def validate(self) -> None:
         if not isinstance(self.model, str) or not _MODEL_ID.fullmatch(self.model) or self.model.startswith("sk-"):
@@ -118,6 +119,8 @@ class AISettings:
                 raise SettingsError("자동 응원을 쉬는 날짜를 확인해 주세요.") from None
         if type(self.reading_text_size) is not int or not 10 <= self.reading_text_size <= 20:
             raise SettingsError("대화 글자 크기는 10~20으로 설정해 주세요.")
+        if type(self.proactive_interval_minutes) is not int or not 5 <= self.proactive_interval_minutes <= 120:
+            raise SettingsError("먼저 말 거는 간격은 5~120분으로 설정해 주세요.")
         location = self.weather_location
         if not isinstance(location, str) or not 2 <= len(location.strip()) <= 80 or not location.isprintable():
             raise SettingsError("기본 날씨 지역은 2~80자의 한 줄로 입력해 주세요.")

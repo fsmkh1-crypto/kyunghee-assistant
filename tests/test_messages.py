@@ -1,4 +1,6 @@
 import unittest
+from unittest.mock import patch
+import messages
 
 from messages import (
     DAILY_TEMPERAMENT_POOLS,
@@ -16,8 +18,12 @@ from messages import (
 
 
 class MessageBehaviorTests(unittest.TestCase):
+    def setUp(self):
+        messages._recent.clear()
+
     def tearDown(self):
         _reset_rare_state_for_tests()
+        messages._recent.clear()
 
     def test_time_of_day_boundaries(self):
         self.assertEqual(time_of_day_kind(6), "morning")
@@ -74,6 +80,27 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertIsNone(
             habit_dialogue_kind(away_count=1, longest_continuous=1800, continuous_seconds=1200)
         )
+
+    def test_small_message_pool_rotates_even_after_all_lines_are_recent(self):
+        with patch("messages.random.choice", side_effect=lambda choices: choices[-1]):
+            selected = [messages.pick("cheer", personality="warm") for _ in range(12)]
+        pool = messages.PERSONALITY_POOLS["warm"]["cheer"]
+        for start in range(0, 12, len(pool)):
+            self.assertEqual(set(selected[start:start + len(pool)]), set(pool))
+        self.assertTrue(all(first != second for first, second in zip(selected, selected[1:])))
+
+    def test_one_custom_line_yields_to_other_messages_before_repeating(self):
+        self.assertEqual(maybe_pick_custom("우리만의 인사", roll=0), "우리만의 인사")
+        self.assertIsNone(maybe_pick_custom("우리만의 인사", roll=0))
+        for _ in range(10):
+            messages.pick("playful")
+        self.assertEqual(maybe_pick_custom("우리만의 인사", roll=0), "우리만의 인사")
+
+    def test_daily_temperament_uses_all_lines_before_repeating(self):
+        with patch("messages.random.choice", side_effect=lambda choices: choices[-1]):
+            selected = [maybe_pick_daily_temperament("2026-11-09", roll=0) for _ in range(6)]
+        self.assertEqual(len(set(selected[:3])), 3)
+        self.assertEqual(selected[:3], selected[3:])
 
 
 if __name__ == "__main__":

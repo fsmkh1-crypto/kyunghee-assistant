@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
+import unicodedata
 from collections import deque
 from contextlib import contextmanager
 from dataclasses import replace
@@ -38,8 +40,48 @@ PERSONA += "\n이미지 변경 도구는 확인할 제안만 만들어요. pendi
 
 PROACTIVE = """앱이 감지한 상황에 자연스럽게 반응하세요. 알림이나 타이머 동작은 이미 앱이 처리해요.
 말할 가치가 있으면 화면에 들어가는 짧은 한두 문장만 쓰세요. 같은 조언을 되풀이할 상황이거나 새로 할 말이 없으면
-SILENT만 출력하세요. 사용자가 말풍선을 누른 manual 이벤트에는 새로 한마디를 건네요.
-쉬는 중이나 퇴근 시간에는 일을 더 권하지 마세요. 어떤 동작을 했다고 가정하지 마세요."""
+SILENT만 출력하세요. 최근 기본 대사, AI 안내와 대화 답변에서 이미 한 조언을 말만 바꿔 되풀이하지 마세요.
+정기 말 걸기는 알림이 아니라 가벼운 안부예요. 현재 시간대와 집중·휴식 상태, 방금 나눈 대화에 맞춰
+작은 공감이나 부담 없는 질문으로 자연스럽게 말을 건네되, 매번 물 마시기·스트레칭·더 집중하기로 끝내지 마세요.
+사용자가 말하지 않은 업무, 감정이나 건강 상태를 추측하거나 답변을 재촉하지 마세요.
+쉬는 중, 저녁·밤이나 퇴근 시간에는 일을 더 권하지 마세요. 어떤 동작을 했다고 가정하지 마세요."""
+
+_PROACTIVE_MIN_SPACING = 120
+_PROACTIVE_AFTER_CHAT = 5 * 60
+_PROACTIVE_EVENT_GUIDANCE = {
+    "rest": "휴식 알림이 표시됐어요. 같은 알림을 반복하지 말고 잠깐 쉬기 편하도록 짧게 배려해요.",
+    "break_started": "휴식을 시작했어요. 업무를 권하거나 답을 요구하지 말고 쉬는 시간을 존중해요.",
+    "away": "자리를 비웠어요. 응답을 기대하는 질문이나 작업 독촉 없이 짧게 배웅해요.",
+    "return": "자리에서 돌아왔어요. 가볍게 반기되 곧바로 더 일하라고 재촉하지 않아요.",
+    "leave": "업무를 마무리할 시간이에요. 지금까지의 시간을 인정하고 이후 휴식을 존중해요.",
+    "periodic": "현재 맥락에 새로 덧붙일 말이 있을 때만 편안한 안부나 짧은 대화를 먼저 건네요.",
+}
+
+
+def _dialogue_key(text: str) -> str:
+    text = unicodedata.normalize("NFKC", text)
+    text = re.sub(r"^\s*(?:오빠|사용자님)\s*[,，:]\s*", "", text)
+    return re.sub(r"[\W_]+", "", text).casefold()
+
+
+def _repeats_dialogue(speech: str, recent_lines) -> bool:
+    """Catch repeated advice even when an address or another sentence is added."""
+    key = _dialogue_key(speech)
+    if not key:
+        return True
+    fragments = [_dialogue_key(part) for part in re.split(r"[.!?。！？\n]+", speech)]
+    for old in recent_lines:
+        if not isinstance(old, str):
+            continue
+        old_key = _dialogue_key(old)
+        if key == old_key or SequenceMatcher(None, key, old_key).ratio() >= 0.90:
+            return True
+        old_fragments = [_dialogue_key(part) for part in re.split(r"[.!?。！？\n]+", old)]
+        if any(len(part) >= 8 and len(previous) >= 8
+               and SequenceMatcher(None, part, previous).ratio() >= 0.90
+               for part in fragments for previous in old_fragments):
+            return True
+    return False
 
 CONTEXT_CHARS = 72_000
 MAX_TOOL_ROUNDS = 8
@@ -140,6 +182,10 @@ class AssistantService:
         self._persistent_turns: dict[int, int] = {}
         self._request_turns: dict[int, tuple[int, int | None]] = {}
         self._proactive_recent = deque(maxlen=12)
+        self._active_proactive_cancel: threading.Event | None = None
+        self._proactive_last_attempt = float("-inf")
+        self._proactive_last_periodic = time.monotonic()
+        self._last_chat_activity = float("-inf")
         self._config = ConfigStore(data_dir)
         self._vault = KeyVault(data_dir)
         self.ledger = UsageLedger(data_dir)
@@ -372,6 +418,8 @@ class AssistantService:
 
     def _invalidate_requests(self) -> None:
         self._generation += 1
+        if self._active_proactive_cancel is not None:
+            self._active_proactive_cancel.set()
         if self._active_chat_cancel is not None:
             self._active_chat_cancel.set()
             self._mark_request_status(self._active_chat_cancel, "cancelled")
@@ -460,6 +508,9 @@ class AssistantService:
                 raise AIError("busy", "이전 답변을 마친 후 다시 보내 주세요.")
             if len(self._running_chats) >= 8:
                 raise AIError("busy", "취소한 연결을 정리하고 있어요. 잠시 뒤 다시 보내 주세요.")
+            if self._active_proactive_cancel is not None:
+                self._active_proactive_cancel.set()
+            self._last_chat_activity = time.monotonic()
             self._active_chat_cancel = cancel
             self._running_chats.add(id(cancel))
             self._receipts.setdefault(request_id, dict(self._receipts.get(retry_of, {})))
@@ -500,6 +551,7 @@ class AssistantService:
             with self._lock:
                 if self._active_chat_cancel is cancel:
                     self._active_chat_cancel = None
+                self._last_chat_activity = time.monotonic()
                 self._running_chats.discard(id(cancel))
                 self._request_turns.pop(id(cancel), None)
 
@@ -661,29 +713,67 @@ class AssistantService:
     @_tracked_operation
     def proactive(self, event: str, *, context: dict, cancel: threading.Event) -> str | None:
         with self._lock:
-            if not self.can_proactively_speak(event):
+            if not self.can_proactively_speak(event) or self._active_proactive_cancel is not None:
+                return None
+            now = time.monotonic()
+            if (now - self._proactive_last_attempt < _PROACTIVE_MIN_SPACING
+                    or now - self._last_chat_activity < _PROACTIVE_AFTER_CHAT):
+                return None
+            if context.get("workday_mode") == "hard_stop":
+                return None
+            if event == "periodic" and (
+                context.get("is_away") or context.get("workday_mode", "normal") != "normal"
+                or now - self._proactive_last_periodic < self._settings.proactive_interval_minutes * 60
+            ):
                 return None
             settings, generation, client = self._request_state(timeout=20)
+            self._check_current(generation, cancel)
             previous = self._history_context(event, recent_limit=3, relevant_limit=0, memory_limit=2)
-            context = {**context, "recent_ai_dialogue": list(self._proactive_recent)}
-        self._check_current(generation, cancel)
-        instructions = self._instructions(context, previous) + "\n\n" + PROACTIVE
-        inputs = self._messages(previous.recent, 2500)
-        inputs.append({"role": "user", "content": "현재 앱 이벤트 " + event})
-        result = client.respond(settings, inputs, instructions=instructions, max_output_tokens=1024, purpose="event")
-        self._check_current(generation, cancel)
-        speech = " ".join(result.text.split())
-        if not speech or speech.strip(" .!\"'`").upper() == "SILENT":
-            return None
-        speech = speech[:177].rstrip() + "…" if len(speech) > 180 else speech
-        with self._lock:
-            normalized = re.sub(r"\W", "", speech).casefold()
-            recent_lines = [*self._proactive_recent, *context.get("recent_dialogue", ())]
-            if any(SequenceMatcher(None, normalized, re.sub(r"\W", "", old).casefold()).ratio() >= 0.90
-                   for old in recent_lines):
-                return None
-            self._proactive_recent.append(speech)
-        return speech
+            recent_chat = [turn.assistant[:2500] for turn in previous.recent if turn.assistant]
+            context = self._proactive_context(event, context, recent_chat)
+            self._active_proactive_cancel = cancel
+            self._proactive_last_attempt = now
+            if event == "periodic":
+                self._proactive_last_periodic = now
+        try:
+            self._check_current(generation, cancel)
+            instructions = self._instructions(context, previous) + "\n\n" + PROACTIVE
+            inputs = self._messages(previous.recent, 2500)
+            inputs.append({"role": "user", "content": "현재 앱 이벤트 " + event})
+            result = client.respond(settings, inputs, instructions=instructions, max_output_tokens=1024, purpose="event")
+            with self._lock:
+                self._check_current(generation, cancel)
+                if not self.can_proactively_speak(event):
+                    return None
+                speech = " ".join(result.text.split())
+                if result.status != "completed" or not speech or speech.strip(" .!\"'`").upper() == "SILENT":
+                    return None
+                speech = speech[:177].rstrip() + "…" if len(speech) > 180 else speech
+                recent_lines = [*self._proactive_recent, *context.get("recent_dialogue", ()), *recent_chat]
+                if _repeats_dialogue(speech, recent_lines):
+                    return None
+                self._proactive_recent.append(speech)
+                return speech
+        finally:
+            with self._lock:
+                if self._active_proactive_cancel is cancel:
+                    self._active_proactive_cancel = None
+
+    def _proactive_context(self, event: str, context: dict, recent_chat: list[str]) -> dict:
+        try:
+            now = datetime.fromisoformat(context.get("current_time", ""))
+        except (TypeError, ValueError):
+            now = datetime.now().astimezone()
+        hour = now.hour
+        period = ("새벽" if hour < 6 else "오전" if hour < 12 else "점심 무렵" if hour < 14
+                  else "오후" if hour < 18 else "저녁" if hour < 22 else "밤")
+        return {
+            **context,
+            "current_time": now.isoformat(timespec="seconds"),
+            "time_of_day": period,
+            "proactive_event": {"kind": event, "guidance": _PROACTIVE_EVENT_GUIDANCE.get(event, "")},
+            "recent_ai_dialogue": [*self._proactive_recent, *recent_chat],
+        }
 
     @staticmethod
     def _messages(turns, limit: int) -> list[dict]:

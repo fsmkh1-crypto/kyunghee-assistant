@@ -16,7 +16,7 @@ from PIL import Image
 
 from assistant_ai.config import AISettings
 from settings import UserSettings
-from state import fresh_state, save_state
+from state import fresh_state, load_state, save_state
 import user_data_backup as backup
 
 
@@ -396,13 +396,32 @@ class BackupTests(unittest.TestCase):
             backup.create_backup(self.profile, self.base / "bad.zip", ("chat",))
 
     def test_invalid_timer_numbers_and_dates_are_safe_validation_errors(self):
-        for daily in ({"day": "2026-99-99"}, {"day": None}, {"active_seconds": 10 ** 400}, {"away_count": -1}, {"away_count": 0.5}):
+        for daily in ({"day": "2026-99-99"}, {"day": None}, {"active_seconds": 10 ** 400}, {"away_seconds": -1}, {"away_count": -1}, {"away_count": 0.5}):
             with self.subTest(daily=daily):
                 self.write_json("state.json", {"daily": daily})
                 with self.assertRaises(backup.BackupError):
                     backup.create_backup(self.profile, self.archive, ("timer",))
         self.write_json("settings.json", {"widget_scale": 10 ** 400})
         self.assertNotIn("widget_scale", backup.diagnostic_report(self.profile)["safe_configuration"]["settings.json"])
+
+    def test_negative_virtual_away_anchor_survives_backup_and_restore(self):
+        from timer_engine import TimerEngine
+        state = fresh_state()
+        env = SimpleNamespace(mono=0.0, wall=1000.0)
+        engine = TimerEngine(state, clock=lambda: env.mono, wall=lambda: env.wall,
+                             idle_provider=lambda: (0, 1))
+        engine.start_manual_away()
+        env.mono += 1
+        env.wall += 691
+        engine.tick()
+        self.assertEqual(state.session.away_started_mono, -690)
+        self.assertEqual(state.daily.manual_away_seconds, 691)
+        save_state(self.profile / "state.json", state, now_wall=env.wall)
+        backup.create_backup(self.profile, self.archive, ("timer",))
+        destination = self.base / "destination"
+        backup.restore_backup(self.archive, destination, ("timer",), app_is_quiescent=True)
+        restored = load_state(destination / "state.json")
+        self.assertEqual(asdict(restored), asdict(state))
 
     def test_tampered_hash_and_traversal_rejected(self):
         self.seed()

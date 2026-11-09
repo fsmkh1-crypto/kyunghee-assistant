@@ -257,6 +257,11 @@ def _clean_json(name: str, data: bytes, data_dir: Path | None = None) -> bytes:
                         raise BackupError("타이머 상태 값이 올바르지 않아요.")
                 elif v is None and default is None:
                     pass
+                elif field.name == "away_started_mono":
+                    # Suspend correction can place this virtual clock anchor
+                    # before monotonic zero. It is not a recorded duration.
+                    if type(v) not in (int, float) or not -1e15 <= v <= 1e15 or not math.isfinite(v):
+                        raise BackupError("타이머 시작 기준 값이 올바르지 않아요.")
                 elif type(v) not in (int, float) or not 0 <= v <= 1e15 or not math.isfinite(v):
                     raise BackupError("타이머 기록 값이 올바르지 않아요.")
                 elif type(default) is int and type(v) is not int:

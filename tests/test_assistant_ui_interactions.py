@@ -243,6 +243,142 @@ class AssistantInteractionTests(unittest.TestCase):
         actions["되돌리기"].invoke()
         self.owner.image_undo.assert_called_once()
 
+    def assert_action_visible(self, button, window):
+        self.assertTrue(button.winfo_viewable(), button.cget("text"))
+        left, top = button.winfo_rootx() - window.winfo_rootx(), button.winfo_rooty() - window.winfo_rooty()
+        self.assertGreaterEqual(left, 0)
+        self.assertGreaterEqual(top, 0)
+        self.assertGreaterEqual(button.winfo_width(), button.winfo_reqwidth())
+        self.assertGreaterEqual(button.winfo_height(), button.winfo_reqheight())
+        self.assertLessEqual(left + button.winfo_width(), window.winfo_width())
+        self.assertLessEqual(top + button.winfo_height(), window.winfo_height())
+
+    def test_timer_approval_actions_remain_visible_at_small_sizes_and_common_dpi(self):
+        from assistant_ai.ui import _ConfirmWindow
+        original = float(self.root.tk.call("tk", "scaling"))
+        self.addCleanup(lambda: self.root.tk.call("tk", "scaling", original))
+        for dpi in (96, 120, 144, 192):
+            for width, height in ((640, 360), (320, 240)):
+                with self.subTest(dpi=dpi, work_area=(width, height)):
+                    self.root.tk.call("tk", "scaling", dpi / 72)
+                    self.owner.chat_work_area = lambda *_, w=width, h=height: (0, 0, w, h)
+                    window = _ConfirmWindow(self.owner, "휴식을 시작해요.\n" * 100, lambda: False)
+                    window.show()
+                    self.root.update()
+                    self.assert_action_visible(window.apply_button, window)
+                    self.assert_action_visible(window.cancel_button, window)
+                    self.assertTrue(window.description.winfo_viewable())
+                    self.assertGreater(window.description.winfo_height(), 10)
+                    window.description.yview_moveto(1)
+                    self.assertGreater(window.description.yview()[0], 0)
+                    self.assertLessEqual(window.winfo_height(), height)
+                    window.destroy()
+
+    def test_real_timer_confirmation_returns_only_explicit_valid_approval(self):
+        from assistant_ai.desktop import DesktopAssistantMixin
+        app = SimpleNamespace(_assistant_windows=self.owner)
+        for action, cancelled, expected in (("apply", False, True), ("cancel", False, False),
+                                            ("window_close", False, False), ("apply", True, False)):
+            with self.subTest(action=action, cancelled=cancelled):
+                cancellation = [False]
+                inspected = []
+                def operate():
+                    window = self.owner._extra_windows[-1]
+                    inspected.append(window)
+                    cancellation[0] = cancelled
+                    if action == "window_close":
+                        window.tk.call(window.protocol("WM_DELETE_WINDOW"))
+                    else:
+                        getattr(window, action + "_button").invoke()
+                self.root.after(50, operate)
+                result = DesktopAssistantMixin._confirm_assistant_change(app, "휴식을 시작해요.", lambda: cancellation[0])
+                self.assertEqual(result, expected)
+                self.assertEqual(len(inspected), 1)
+                self.assertNotIn(inspected[0], self.owner._extra_windows)
+                self.assertIsNone(self.root.grab_current())
+
+    def test_timer_confirmation_cancellation_closes_dialog_without_applying(self):
+        from threading import Event
+        cancelled = Event()
+        self.root.after(40, cancelled.set)
+        self.assertFalse(self.owner.confirm_change("휴식을 시작해요.", cancelled.is_set))
+        self.assertIsNone(self.root.grab_current())
+
+    def test_timer_approval_follows_visible_chat_and_clamps_to_its_monitor(self):
+        from assistant_ai.ui import _ConfirmWindow
+        from assistant_ai.ui_helpers import position_window
+        chat = self.owner.chat_window
+        self.root.update()
+        chat.geometry("500x450+1000+100")
+        self.root.update()
+        self.owner.chat_work_area = Mock(return_value=(960, 0, 1920, 1080))
+        window = _ConfirmWindow(self.owner, "휴식을 시작해요.", lambda: False)
+        with patch("assistant_ai.ui.position_window", wraps=position_window) as position:
+            window.show()
+        self.root.update()
+        self.assertIs(position.call_args.args[1], chat)
+        self.assertEqual(str(window.transient()), str(chat))
+        self.assertGreaterEqual(self.owner.chat_work_area.call_args.args[0], 960)
+        self.assertGreaterEqual(window.winfo_rootx(), 960)
+        self.assertLessEqual(window.winfo_rootx() + window.winfo_width(), 1920)
+        self.assert_action_visible(window.apply_button, window)
+        window.destroy()
+
+    def test_image_approval_long_details_scroll_without_hiding_actions(self):
+        original = float(self.root.tk.call("tk", "scaling"))
+        self.addCleanup(lambda: self.root.tk.call("tk", "scaling", original))
+        self.owner.image_apply = Mock(return_value={"summary": "적용했어요", "changed": True})
+        self.owner.image_cancel = Mock()
+        self.owner.image_undo = Mock(return_value={"summary": "되돌렸어요", "changed": True})
+        for dpi in (96, 120, 144, 192):
+            for width, height in ((640, 360), (320, 240)):
+                with self.subTest(dpi=dpi, work_area=(width, height)):
+                    self.root.tk.call("tk", "scaling", dpi / 72)
+                    self.owner.chat_work_area = lambda *_, w=width, h=height: (0, 0, w, h)
+                    self.owner.show_image_proposal({"id": "p1", "status": "pending",
+                        "summary": "세트를 변경할까요? " * 25, "scope": "수동 지정은 유지돼요. " * 40})
+                    window = self.owner._extra_windows[-1]
+                    self.root.update()
+                    for button in (window.apply_button, window.cancel_button, window.undo_button):
+                        self.assert_action_visible(button, window)
+                    window.content_canvas.yview_moveto(1)
+                    self.assertGreater(window.content_canvas.yview()[0], 0)
+                    window.apply_button.invoke()
+                    self.root.update()
+                    self.assertEqual(window.undo_button.cget("state"), "normal")
+                    for button in (window.apply_button, window.cancel_button, window.undo_button):
+                        self.assert_action_visible(button, window)
+                    window.undo_button.invoke()
+                    window.cancel_button.invoke()
+                    window.destroy()
+        self.assertEqual(self.owner.image_apply.call_count, 8)
+        self.assertEqual(self.owner.image_undo.call_count, 8)
+        self.owner.image_cancel.assert_not_called()
+
+    def test_chat_activity_covers_visible_pending_and_unsent_hidden_drafts(self):
+        self.root.update()
+        self.assertTrue(self.owner.is_chat_active())
+        self.owner.chat_window._hide()
+        self.assertFalse(self.owner.is_chat_active())
+        self.owner.chat_window.input.insert("1.0", "아직 보내지 않은 초안")
+        self.assertTrue(self.owner.is_chat_active())
+        self.owner.chat_window.input.delete("1.0", "end")
+        self.send_without_network("응답 기다리는 중")
+        self.owner.chat_window.withdraw()
+        self.assertTrue(self.owner.is_chat_active())
+        self.owner.cancel()
+        self.assertTrue(self.owner.is_chat_active())  # Cancellation restores the unsent request.
+        self.owner.chat_window.input.delete("1.0", "end")
+        self.assertFalse(self.owner.is_chat_active())
+
+    def test_explicit_history_clear_sends_separate_clear_state(self):
+        self.service.history_counts = Mock(return_value={})
+        self.service.clear_history = Mock()
+        with patch("assistant_ai.ui.messagebox.askyesno", return_value=True):
+            self.owner.clear_history()
+        self.service.clear_history.assert_called_once()
+        self.assertEqual(self.states[-1], ("cleared", ""))
+
     def test_chat_layout_keeps_history_and_send_visible_at_high_dpi(self):
         from assistant_ai.ui import _ChatWindow
         original = float(self.root.tk.call("tk", "scaling"))

@@ -1,6 +1,7 @@
 import unittest
+from dataclasses import asdict
 
-from state import DailyStats, PersistedState, SessionState
+from state import DailyStats, PersistedState, SessionState, rollover_daily
 from timer_engine import (
     BREAK_INTERVAL_SEC,
     GAP_TOLERANCE_SEC,
@@ -54,6 +55,90 @@ class TimerEngineTests(unittest.TestCase):
             idle_provider=env.idle_provider,
         )
         return env, state, engine
+
+    def test_current_manual_away_duration_advances_without_changing_recorded_stats(self):
+        e, s, eng = self.make()
+        s.daily.away_seconds = s.daily.manual_away_seconds = 120
+        eng.start_manual_away()
+        self.assertEqual(eng.current_away_duration(), 0)
+        for elapsed in range(1, 4):
+            e.advance(1)
+            eng.tick()
+            before = asdict(s)
+            self.assertEqual(eng.current_away_duration(), elapsed)
+            self.assertEqual(eng.current_away_duration(), elapsed)
+            self.assertEqual(asdict(s), before)
+            self.assertEqual(s.daily.manual_away_seconds, 120 + elapsed)
+            self.assertEqual(s.session.continuous_seconds, 0)
+
+    def test_current_auto_away_duration_includes_reclassified_idle_and_resets_on_return(self):
+        e, s, eng = self.make()
+        for _ in range(IDLE_THRESHOLD_SEC):
+            e.advance(1)
+            eng.tick()
+        self.assertEqual(eng.current_away_duration(), IDLE_THRESHOLD_SEC)
+        self.assertEqual(s.daily.auto_away_seconds, IDLE_THRESHOLD_SEC)
+        e.advance(1)
+        eng.tick()
+        self.assertEqual(eng.current_away_duration(), IDLE_THRESHOLD_SEC + 1)
+        e.advance(1, input_event=True)
+        self.assertTrue(eng.tick().became_active)
+        self.assertEqual(eng.current_away_duration(), 0)
+        self.assertEqual(s.session.continuous_seconds, 0)
+        self.assertEqual(s.daily.auto_away_seconds, IDLE_THRESHOLD_SEC + 2)
+        e.advance(1, input_event=True)
+        eng.tick()
+        self.assertEqual(s.session.continuous_seconds, 1)
+        self.assertEqual(eng.current_away_duration(), 0)
+
+    def test_manual_away_sleep_duration_matches_recording_when_monotonic_pauses(self):
+        for resume in (False, True):
+            with self.subTest(resume=resume):
+                e, s, eng = self.make()
+                eng.start_manual_away()
+                e.advance(4)
+                eng.tick()
+                e.advance(1, wall_delta=691, input_event=resume)
+                result = eng.tick()
+                self.assertEqual(s.daily.away_seconds, 695)
+                self.assertEqual(s.daily.manual_away_seconds, 695)
+                self.assertEqual(s.daily.active_seconds, 0)
+                if resume:
+                    self.assertEqual(result.away_duration, 695)
+                    self.assertEqual(eng.current_away_duration(), 0)
+                else:
+                    self.assertEqual(eng.current_away_duration(), 695)
+                    e.advance(2)
+                    eng.tick()
+                    self.assertEqual(eng.current_away_duration(), 697)
+                    self.assertEqual(s.daily.manual_away_seconds, 697)
+
+    def test_new_long_gap_away_duration_includes_more_time_than_monotonic_uptime(self):
+        e, s, eng = self.make()
+        e.advance(1, wall_delta=691)
+        self.assertTrue(eng.tick().became_away)
+        self.assertEqual(eng.current_away_duration(), 691)
+        self.assertEqual(s.daily.auto_away_seconds, 691)
+
+    def test_corrected_away_clock_survives_backward_wall_jump_and_midnight(self):
+        e, s, eng = self.make()
+        eng.start_manual_away()
+        e.advance(1, wall_delta=691)
+        eng.tick()
+        e.advance(2, wall_delta=-3600)
+        eng.tick()
+        self.assertEqual(eng.current_away_duration(), 693)
+        self.assertEqual(s.daily.manual_away_seconds, 693)
+        rollover_daily(s, today="2026-09-03")
+        self.assertEqual(s.daily.away_seconds, 0)
+        self.assertEqual(s.history[-1].manual_away_seconds, 693)
+        self.assertEqual(eng.current_away_duration(), 693)
+        e.advance(3)
+        eng.tick()
+        self.assertEqual(eng.current_away_duration(), 696)
+        self.assertEqual(s.daily.manual_away_seconds, 3)
+        self.assertEqual(s.history[-1].manual_away_seconds, 693)
+        self.assertEqual(s.session.continuous_seconds, 0)
 
     def test_break_at_60_minutes(self):
         e, s, eng = self.make()

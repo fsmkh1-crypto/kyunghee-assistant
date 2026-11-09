@@ -129,6 +129,75 @@ class DesktopWorkflowTests(unittest.TestCase):
             self.assertEqual(asdict(desktop.state), before)
             self.assertEqual(desktop.character_role, "away")
 
+    @staticmethod
+    def fake_timer(desktop):
+        from state import fresh_state
+        from timer_engine import TimerEngine
+        desktop.state = fresh_state()
+        env = SimpleNamespace(mono=0.0, wall=1000.0, idle=0.0, input_tick=1)
+        desktop.engine = TimerEngine(desktop.state, clock=lambda: env.mono, wall=lambda: env.wall,
+                                     idle_provider=lambda: (env.idle, env.input_tick))
+        return env
+
+    def test_manual_away_clock_advances_without_inflating_saved_stats_and_returns_to_focus(self):
+        import app
+        from state import load_state, save_state
+        from timer_engine import MANUAL_INPUT_GRACE_SEC
+        with self.desktop() as desktop:
+            env = self.fake_timer(desktop)
+            desktop.state.daily.away_seconds = desktop.state.daily.manual_away_seconds = 120
+            desktop.engine.start_manual_away()
+            for second in range(1, 4):
+                env.mono = second
+                env.wall = 1000 + second
+                env.idle = second
+                desktop.engine.tick()
+                before = asdict(desktop.state)
+                desktop._update_ui()
+                desktop._update_ui()
+                self.assertEqual(asdict(desktop.state), before)
+                self.assertEqual(desktop.cont.cget("text"), f"00:00:0{second}")
+                self.assertEqual(desktop.detail_cont.cget("text"), desktop.cont.cget("text"))
+                self.assertEqual(desktop.main_status.cget("text"), "자리비움 중")
+                self.assertEqual(desktop.state.daily.manual_away_seconds, 120 + second)
+                self.assertEqual(desktop.state.session.continuous_seconds, 0)
+            save_state(app.STATE_FILE, desktop.state, now_wall=env.wall)
+            restored = load_state(app.STATE_FILE)
+            self.assertEqual(restored.daily.away_seconds, 123)
+            self.assertEqual(restored.daily.manual_away_seconds, 123)
+            env.mono = MANUAL_INPUT_GRACE_SEC + 1
+            env.wall = 1000 + env.mono
+            env.input_tick += 1
+            env.idle = 0
+            self.assertTrue(desktop.engine.tick().became_active)
+            desktop._update_ui()
+            self.assertEqual(desktop.cont.cget("text"), "00:00:00")
+            self.assertEqual(desktop.main_status.cget("text"), "집중 중")
+            env.mono += 2
+            env.wall += 2
+            env.input_tick += 1
+            desktop.engine.tick()
+            desktop._update_ui()
+            self.assertEqual(desktop.cont.cget("text"), "00:00:02")
+            self.assertEqual(desktop.state.daily.manual_away_seconds, 120 + MANUAL_INPUT_GRACE_SEC + 1)
+
+    def test_auto_away_clock_starts_from_reclassified_idle_duration(self):
+        from timer_engine import IDLE_THRESHOLD_SEC
+        with self.desktop() as desktop:
+            env = self.fake_timer(desktop)
+            for second in range(1, IDLE_THRESHOLD_SEC + 2):
+                env.mono = second
+                env.wall = 1000 + second
+                env.idle = second
+                desktop.engine.tick()
+                if second >= IDLE_THRESHOLD_SEC:
+                    desktop._update_ui()
+                    self.assertEqual(desktop.cont.cget("text"), f"00:05:0{second - IDLE_THRESHOLD_SEC}")
+                    self.assertEqual(desktop.detail_cont.cget("text"), desktop.cont.cget("text"))
+                    self.assertEqual(desktop.main_status.cget("text"), "자리비움 중")
+                    self.assertEqual(desktop.state.daily.auto_away_seconds, second)
+                    self.assertEqual(desktop.state.daily.active_seconds, 0)
+
     def test_unsaved_drafts_survive_page_navigation_and_discard_restores_fields(self):
         with self.desktop() as desktop:
             desktop._show_page("settings")

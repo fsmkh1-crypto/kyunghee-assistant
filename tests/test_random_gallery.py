@@ -9,7 +9,7 @@ import tkinter as tk
 from tkinter import ttk
 import unittest
 from unittest.mock import patch
-from PIL import Image
+from PIL import Image, ImageTk
 
 os.environ.setdefault('PYSTRAY_BACKEND', 'dummy')
 
@@ -248,3 +248,89 @@ class RandomGalleryTkTests(unittest.TestCase):
         self.assertTrue(legacy['before_preview_ref'].startswith('preview:'))
         self.assertEqual(app._decode_asset_ref(legacy['before_preview_ref']), red)
         self.assertEqual(app.propose_image_action({'kind': 'image', 'role': 'rest', 'ref': legacy['before_preview_ref']})['status'], 'error')
+
+    def _preview_pack_fixture(self, number):
+        for index, (role, _caption) in enumerate(self.app.IMAGE_ROWS):
+            path = self.app.IMPORTED_ASSET_DIR / role / f'{role}_{number:02d}.png'
+            path.parent.mkdir(parents=True, exist_ok=True)
+            Image.new('RGBA', (80, 120), (20 + index * 20, 40, number * 5, 255)).save(path)
+
+    def test_imported_set_preview_navigation_browses_roles_without_applying(self):
+        app = self.app
+        builtin_before = app._image_action_state()
+        app._select_settings_preview('rest')
+        self.assertIn('rest_01.png', app.settings_preview_meta.cget('text'))
+        app.settings_preview_next.invoke()
+        self.assertIn('away_01.png', app.settings_preview_meta.cget('text'))
+        self.assertEqual(app._image_action_state(), builtin_before)
+        self._preview_pack_fixture(26)
+        app._choose_base_set('가져온 세트 26')
+        app._select_settings_preview('default')
+        self.assertEqual(len(app._settings_preview_sources('default')[0]), 10)
+        self.assertEqual(str(app.settings_preview_next.cget('state')), 'normal')
+        self.assertIn('default_26.png', app.settings_preview_meta.cget('text'))
+        state_before = app._image_action_state()
+        preferences_before = asdict(app.preferences)
+        file_before = app.MANUAL_OVERRIDE_FILE.read_bytes()
+        settings_before = self.settings.read_bytes()
+        history_before = list(app._image_actions.history)
+        character_before = ImageTk.getimage(app.character_photo).tobytes()
+        default_preview = ImageTk.getimage(app.settings_preview_image.image).tobytes()
+        app.settings_preview_next.invoke()
+        self.assertIn('cheer_26.png', app.settings_preview_meta.cget('text'))
+        self.assertNotEqual(ImageTk.getimage(app.settings_preview_image.image).tobytes(), default_preview)
+        self.assertIn(dict(app.IMAGE_ROWS)['cheer'], app.settings_preview_title.cget('text'))
+        self.assertIn('설정 대상: ' + dict(app.IMAGE_ROWS)['default'], app.settings_preview_meta.cget('text'))
+        self.assertIn('선택/저장 변경 없음', app.settings_preview_meta.cget('text'))
+        self.assertEqual(app._settings_preview_role, 'default')
+        app.settings_preview_prev.invoke()
+        self.assertIn('default_26.png', app.settings_preview_meta.cget('text'))
+        app.settings_preview_prev.invoke()
+        self.assertIn('profile_26.png', app.settings_preview_meta.cget('text'))
+        app.settings_preview_next.invoke()
+        for _ in range(10):
+            app.settings_preview_next.invoke()
+        self.assertIn('default_26.png', app.settings_preview_meta.cget('text'))
+        self.assertEqual(app._image_action_state(), state_before)
+        self.assertEqual(asdict(app.preferences), preferences_before)
+        self.assertEqual(app.MANUAL_OVERRIDE_FILE.read_bytes(), file_before)
+        self.assertEqual(self.settings.read_bytes(), settings_before)
+        self.assertEqual(app._image_actions.history, history_before)
+        self.assertEqual(ImageTk.getimage(app.character_photo).tobytes(), character_before)
+        app.settings_preview_next.invoke()
+        app._select_settings_preview('rest')
+        self.assertIn('rest_26.png', app.settings_preview_meta.cget('text'))
+        app._select_settings_preview('default')
+        self.assertIn('default_26.png', app.settings_preview_meta.cget('text'))
+        app.settings_preview_next.invoke()
+        self._preview_pack_fixture(27)
+        app._choose_base_set('가져온 세트 27')
+        self.assertIn('default_27.png', app.settings_preview_meta.cget('text'))
+
+    def test_single_manual_preview_is_explicit_and_multi_image_navigation_is_read_only(self):
+        app = self.app
+        red = self.fixture('manual-red.png', 'red')
+        blue = self.fixture('manual-blue.png', 'blue')
+        app._import_role_images('default', [red])
+        app._select_settings_preview('default')
+        self.assertEqual(str(app.settings_preview_prev.cget('state')), 'disabled')
+        self.assertEqual(str(app.settings_preview_next.cget('state')), 'disabled')
+        self.assertIn('1장만', app.settings_preview_meta.cget('text'))
+        app._import_role_images('default', [red, blue])
+        before = app._image_action_state()
+        file_before = app.MANUAL_OVERRIDE_FILE.read_bytes()
+        first = ImageTk.getimage(app.settings_preview_image.image).tobytes()
+        app.settings_preview_next.invoke()
+        self.assertNotEqual(ImageTk.getimage(app.settings_preview_image.image).tobytes(), first)
+        self.assertIn('2/2', app.settings_preview_meta.cget('text'))
+        self.assertEqual(app._image_action_state(), before)
+        self.assertEqual(app.MANUAL_OVERRIDE_FILE.read_bytes(), file_before)
+        self._preview_pack_fixture(26)
+        app._choose_base_set('가져온 세트 26')
+        app._follow_selected_set('default')
+        self.assertEqual(len(app._settings_preview_sources('default')[0]), 10)
+        self.assertIn('default_26.png', app.settings_preview_meta.cget('text'))
+        follow_before = app._image_action_state()
+        app.settings_preview_next.invoke()
+        self.assertIn('cheer_26.png', app.settings_preview_meta.cget('text'))
+        self.assertEqual(app._image_action_state(), follow_before)

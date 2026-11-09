@@ -386,9 +386,16 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
         return [path for path in sources if path and valid_image(path)], self._builtin_base_label(base)
 
     def _role_base_preview_sources(self, key: str):
-        role = self.SETTING_TO_CANONICAL_ROLE.get(key, 'default')
-        path = self._resolve_builtin_asset(role)
-        return ([path] if path and valid_image(path) else []), '전체 세트 · ' + self._builtin_base_label(self._image_action_state()[BASE])
+        # Start on the edited role, then let Previous/Next browse all situations
+        # in the selected set. This list is for preview only; it never changes
+        # the role selector, manual overrides, or the current timer character.
+        rows = list(self.IMAGE_ROWS)
+        start = next((index for index, (role_key, _caption) in enumerate(rows) if role_key == key), 0)
+        rows = rows[start:] + rows[:start]
+        sources = [self._resolve_builtin_asset(self.SETTING_TO_CANONICAL_ROLE.get(role_key, 'default'))
+                   for role_key, _caption in rows]
+        return ([path for path in sources if path and valid_image(path)],
+                '전체 세트 · ' + self._builtin_base_label(self._image_action_state()[BASE]))
 
     def _settings_preview_sources(self, key: str):
         group = self._manual_group_paths(key)
@@ -419,12 +426,25 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
         labels = dict(self.IMAGE_ROWS)
         return labels.get(parent)
 
+    def _select_settings_preview(self, key: str):
+        if key != getattr(self, '_settings_preview_role', None):
+            self._settings_preview_indices[key] = 0
+        super()._select_settings_preview(key)
+
     def _render_settings_preview(self, key=None):
         if not hasattr(self, 'settings_preview_image'):
             return
         key = key or self._settings_preview_role
         self._settings_preview_role = key
         sources, source_kind = self._settings_preview_sources(key)
+        # A new base/manual set starts at its edited role instead of carrying
+        # a browsing offset from the previous collection into the new preview.
+        signatures = getattr(self, '_settings_preview_source_signatures', {})
+        signature = tuple(str(path) for path in sources)
+        if signatures.get(key) != signature:
+            self._settings_preview_indices[key] = 0
+            signatures[key] = signature
+        self._settings_preview_source_signatures = signatures
         default_caption = dict(self.IMAGE_ROWS).get(key, key)
         if not sources:
             self.settings_preview_image.configure(image='', text='이미지 없음')
@@ -465,15 +485,15 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
         self.settings_preview_image.configure(image=photo, text='', width=self.PREVIEW_SIZE[0], height=self.PREVIEW_SIZE[1])
         self.settings_preview_image.image = photo
         role_caption = self._preview_role_for_path(source)
-        if source_kind.startswith('세트 ') and role_caption:
-            title = f'{source_kind} · {role_caption}'
-        else:
-            title = default_caption
+        browsing_base = source_kind.startswith('전체 세트 · ')
+        title = f'미리보기: {role_caption or default_caption}' if browsing_base else default_caption
         self.settings_preview_title.configure(text=title)
-        if len(sources) > 1:
-            meta = f'{source_kind} · {index + 1}/{len(sources)} · {source.name}'
-        else:
-            meta = f'{source_kind} · {source.name}'
+        meta = f'{source_kind} · {index + 1}/{len(sources)} · {source.name}'
+        if browsing_base:
+            meta = f'설정 대상: {default_caption}\n' + meta
+        if len(sources) == 1:
+            meta += '\n1장만 등록되어 있어 이전·다음을 사용할 수 없습니다.'
+        meta += '\n둘러보기만 · 선택/저장 변경 없음'
         self.settings_preview_meta.configure(text=meta)
         nav_state = 'normal' if len(sources) > 1 else 'disabled'
         self.settings_preview_prev.configure(state=nav_state)

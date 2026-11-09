@@ -284,7 +284,11 @@ def maybe_pick_daily_temperament(
     if float(roll) >= float(chance):
         return None
     mood = daily_temperament(date_key)
-    return random.choice(DAILY_TEMPERAMENT_POOLS[mood])
+    message = _fresh_choice(DAILY_TEMPERAMENT_POOLS[mood], _recent)
+    _recent.append(message)
+    if len(_recent) > 40:
+        del _recent[:-25]
+    return message
 
 
 def time_of_day_kind(hour: int) -> str:
@@ -304,11 +308,21 @@ _rare_gap = RARE_MIN_GAP
 _recent_rare = []
 
 
+def _fresh_choice(pool, recent):
+    """Exhaust fresh lines before returning to the least recently used one."""
+    pool = list(dict.fromkeys(pool))
+    fresh = [line for line in pool if line not in recent[-10:]]
+    if not fresh:
+        last_seen = {line: index for index, line in enumerate(recent)}
+        oldest = min(last_seen.get(line, -1) for line in pool)
+        fresh = [line for line in pool if last_seen.get(line, -1) == oldest]
+    return random.choice(fresh)
+
+
 def pick(kind: str, personality: str = "balanced", **fmt) -> str:
     personality_pool = PERSONALITY_POOLS.get(personality, {})
     pool = personality_pool.get(kind) or POOLS.get(kind, POOLS["playful"])
-    candidates = [m for m in pool if m not in _recent[-10:]] or pool
-    msg = random.choice(candidates)
+    msg = _fresh_choice(pool, _recent)
     _recent.append(msg)
     if len(_recent) > 40:
         del _recent[:-25]
@@ -329,8 +343,10 @@ def maybe_pick_custom(value: str, *, chance: float = 0.25, roll: float | None = 
     sample = random.random() if roll is None else float(roll)
     if sample >= max(0.0, min(1.0, float(chance))):
         return None
-    candidates = [line for line in lines if line not in _recent[-10:]] or lines
-    msg = random.choice(candidates)
+    # A one-line custom greeting should not crowd out every ordinary message.
+    if len(set(lines)) == 1 and lines[0] in _recent[-10:]:
+        return None
+    msg = _fresh_choice(lines, _recent)
     _recent.append(msg)
     if len(_recent) > 40:
         del _recent[:-25]

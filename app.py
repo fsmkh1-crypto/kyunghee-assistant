@@ -255,7 +255,8 @@ class App:
 
         top = tk.Frame(left, bg=PANEL)
         top.pack(fill="x", padx=20, pady=(18, 8))
-        self._label(top, "연속 집중 시간", size=10, weight="bold", fg=MUTED, bg=PANEL).pack(anchor="w")
+        self.timer_caption = self._label(top, "연속 집중 시간", size=10, weight="bold", fg=MUTED, bg=PANEL)
+        self.timer_caption.pack(anchor="w")
         self.cont = self._label(top, "00:00:00", size=30, weight="bold", bg=PANEL)
         self.cont.pack(anchor="w", pady=(4, 1))
 
@@ -498,7 +499,7 @@ class App:
         self.break_gate.reset()
         self._destroy_toast()
         self.engine.accept_break()
-        text = "좋아. 잠깐 쉬고 와. 시간은 내가 멈춰둘게."
+        text = "좋아. 잠깐 쉬고 와. 집중 시간은 멈추고 자리비움 시간을 기록할게."
         self._say("away_start", text)
         self.show_toast(text)
 
@@ -614,7 +615,10 @@ class App:
             fg=AMBER if s.is_away else GREEN,
         )
         self.away_btn.configure(text="복귀하기" if s.is_away else "자리비움 시작")
-        self.cont.configure(text=fmt_clock(s.continuous_seconds))
+        clock_seconds = self.engine.current_away_duration() if s.is_away else s.continuous_seconds
+        self.cont.configure(text=fmt_clock(clock_seconds))
+        if hasattr(self, "timer_caption"):
+            self.timer_caption.configure(text="현재 자리비움 시간" if s.is_away else "연속 집중 시간")
         if d.break_reminders_suppressed:
             self.remain.configure(text="오늘 꺼짐")
             self.next_break.configure(text="오늘 휴식 알림: 꺼짐")

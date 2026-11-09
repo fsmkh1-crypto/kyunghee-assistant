@@ -4,13 +4,13 @@ Windows productivity timer and virtual secretary.
 
 ## Current development target
 
-`2.1.1` — fixes the native speech-click crash in 2.1.0; complete review implementation based on Seunga Timer 2.0.3 (`15accd3`).
+`2.1.2` — fixes image-preview navigation, clipped approval buttons, the away clock and conversation continuity; improves message variety and optional proactive conversation. Includes the native speech-click crash fix from 2.1.1 and the complete review implementation based on Seunga Timer 2.0.3 (`15accd3`).
 
 The implementation and verification ledger is [docs/IMPLEMENTATION_CHECKLIST_2_1.md](docs/IMPLEMENTATION_CHECKLIST_2_1.md). Windows acceptance steps and remaining physical-device checks are documented separately; automated checks do not imply a live API quality test.
 
 ## Desktop app
 
-Development is focused on the Windows desktop app. `RUN.cmd` and Windows source autostart launch `desktop_gallery_final.py`. The Windows job in the **tests** workflow publishes `seunga-timer-2.1.1-windows-x64` for branch pushes. Sign in to GitHub, open the successful workflow run, then select the package under **Artifacts**. Keep `SeungaTimer.exe` beside its `_internal` folder. The package includes Python.
+Development is focused on the Windows desktop app. `RUN.cmd` and Windows source autostart launch `desktop_gallery_final.py`. The Windows job in the **tests** workflow publishes `seunga-timer-2.1.2-windows-x64` for branch pushes. Sign in to GitHub, open the successful workflow run, then select the package under **Artifacts**. Keep `SeungaTimer.exe` beside its `_internal` folder. The package includes Python.
 
 - Click the speech bubble for chat, or the timer/character for settings; drag the timer/character to move the widget.
 - Screen dice changes the current image until the next situation. Explicit pinning and restoration are available.

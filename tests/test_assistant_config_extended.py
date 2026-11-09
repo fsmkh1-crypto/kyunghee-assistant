@@ -25,9 +25,11 @@ class ConfigMigrationTests(unittest.TestCase):
             self.assertFalse(defaults.conversation_storage_enabled)
             self.assertFalse(defaults.memory_enabled)
             self.assertEqual(defaults.key_persistence, "session")
+            self.assertFalse(defaults.proactive_enabled)
+            self.assertEqual(defaults.proactive_interval_minutes, 20)
             settings = replace(defaults, conversation_storage_enabled=True, web_search_enabled=False,
                                proactive_events=("away", "return"), proactive_quiet_until="2026-11-09",
-                               reading_text_size=17)
+                               reading_text_size=17, proactive_interval_minutes=35)
             store.save(settings)
             self.assertEqual(store.load(), settings)
             self.assertNotIn(FAKE_KEY, store.path.read_text())
@@ -58,12 +60,25 @@ class ConfigMigrationTests(unittest.TestCase):
             {"proactive_events": ("away", "away")}, {"proactive_events": ["away"]},
             {"proactive_quiet_until": "2026-02-30"}, {"proactive_quiet_until": "20261109"},
             {"reading_text_size": True}, {"reading_text_size": 21},
+            {"proactive_interval_minutes": True}, {"proactive_interval_minutes": 4},
+            {"proactive_interval_minutes": 121}, {"proactive_interval_minutes": "20"},
         ):
             with self.subTest(values=values), self.assertRaises(SettingsError) as caught:
                 replace(AISettings(), **values).validate()
             self.assertNotIn(FAKE_KEY, str(caught.exception))
         replace(AISettings(), proactive_events=()).validate()
         self.assertTrue(PROACTIVE_EVENTS)
+
+    def test_existing_proactive_opt_in_and_event_selection_survive_interval_upgrade(self):
+        with TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory))
+            store.path.write_text(json.dumps({"enabled": True, "proactive_enabled": True,
+                                             "proactive_events": ["return"], "model": "gpt-6.1-sol"}))
+            settings = store.load()
+            self.assertTrue(settings.proactive_enabled)
+            self.assertEqual(settings.proactive_events, ("return",))
+            self.assertEqual(settings.model, "gpt-6.1-sol")
+            self.assertEqual(settings.proactive_interval_minutes, 20)
 
 
 class KeyStorageChoiceTests(unittest.TestCase):
