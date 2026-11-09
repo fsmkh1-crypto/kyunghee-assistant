@@ -45,6 +45,8 @@ jobs:
           $process = Start-Process -FilePath dist\SeungaTimer\SeungaTimer.exe -ArgumentList @("--self-test", $report) -PassThru -Wait
           if ($process.ExitCode -ne 0) {
             if (Test-Path $report) { Get-Content $report }
+            $faultLog = [IO.Path]::ChangeExtension($report, ".fault.log")
+            if (Test-Path $faultLog) { Get-Content $faultLog }
             throw "Packaged UI tests failed with exit code $($process.ExitCode)."
           }
           Get-Content $report
@@ -79,7 +81,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: packaged-ui-report
-          path: packaged-ui-report.json
+          path: |
+            packaged-ui-report.json
+            packaged-ui-report.fault.log
 
   asset-import-tool:
     runs-on: ubuntu-latest
