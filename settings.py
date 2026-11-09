@@ -126,7 +126,7 @@ def _clock_or(value: object, default: str) -> str:
 
 @dataclass(frozen=True)
 class UserSettings:
-    schema_version: int = 7
+    schema_version: int = 8
     start_with_windows: bool = False
     always_on_top: bool = False
     break_reminders: bool = True
@@ -148,12 +148,12 @@ class UserSettings:
     personality: str = "balanced"
     custom_dialogue: str = ""
 
-    time_text_size: int = 16
-    status_text_size: int = 9
-    message_text_size: int = 11
-    time_text_color: str = "#13A45C"
-    status_text_color: str = "#11854B"
-    message_text_color: str = "#E05A88"
+    time_text_size: int = 22
+    status_text_size: int = 14
+    message_text_size: int = 15
+    time_text_color: str = "#FFFFFF"
+    status_text_color: str = "#FFFFFF"
+    message_text_color: str = "#FFFFFF"
 
     builtin_image_set: str = "random"
     builtin_image_default: str = ""
@@ -214,12 +214,12 @@ class UserSettings:
             raise ValueError("위젯 크기는 80~200% 사이로 설정해 주세요.")
         if not 14 <= self.time_text_size <= 24:
             raise ValueError("시간 글자 크기는 14~24 사이로 설정해 주세요.")
-        if not 7 <= self.status_text_size <= 12:
-            raise ValueError("상태 글자 크기는 7~12 사이로 설정해 주세요.")
+        if not 7 <= self.status_text_size <= 16:
+            raise ValueError("상태 글자 크기는 7~16 사이로 설정해 주세요.")
         if not 9 <= self.message_text_size <= 16:
             raise ValueError("메시지 글자 크기는 9~16 사이로 설정해 주세요.")
         if self.personality not in PERSONALITIES:
-            raise ValueError("경희 말투 설정이 올바르지 않습니다.")
+            raise ValueError("승아 말투 설정이 올바르지 않습니다.")
         if _builtin_set_choice(self.builtin_image_set, "") != self.builtin_image_set:
             raise ValueError("기본 내장 이미지 세트 설정이 올바르지 않습니다.")
         for key in (
@@ -240,6 +240,18 @@ def settings_from_dict(raw: object) -> UserSettings:
         return UserSettings()
 
     d = UserSettings()
+    version = raw.get("schema_version")
+    if type(version) is not int or version < d.schema_version:
+        raw = raw.copy()
+        for field, previous in {
+            "time_text_size": 16, "status_text_size": 9, "message_text_size": 11,
+            "time_text_color": "#13A45C", "status_text_color": "#11854B", "message_text_color": "#E05A88",
+        }.items():
+            value = raw.get(field)
+            if isinstance(previous, str) and isinstance(value, str):
+                value = value.strip().upper()
+            if value == previous:
+                raw[field] = getattr(d, field)
     wind_down = _clock_or(raw.get("wind_down", d.wind_down), d.wind_down)
     leave_mode = _clock_or(raw.get("leave_mode", d.leave_mode), d.leave_mode)
     strong_leave = _clock_or(raw.get("strong_leave", d.strong_leave), d.strong_leave)
@@ -274,7 +286,7 @@ def settings_from_dict(raw: object) -> UserSettings:
         personality=_personality(raw.get("personality", d.personality)),
         custom_dialogue=normalize_custom_dialogue(raw.get("custom_dialogue", d.custom_dialogue)),
         time_text_size=_bounded_int(raw.get("time_text_size"), d.time_text_size, 14, 24),
-        status_text_size=_bounded_int(raw.get("status_text_size"), d.status_text_size, 7, 12),
+        status_text_size=_bounded_int(raw.get("status_text_size"), d.status_text_size, 7, 16),
         message_text_size=_bounded_int(raw.get("message_text_size"), d.message_text_size, 9, 16),
         time_text_color=_color_or(raw.get("time_text_color"), d.time_text_color),
         status_text_color=_color_or(raw.get("status_text_color"), d.status_text_color),

@@ -36,6 +36,8 @@ PM_REMOVE = 0x0001
 SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
 GA_ROOT = 2
+PANEL_BG = "#171C25"
+PANEL_BORDER = "#394352"
 
 
 class OutlinedText(tk.Canvas):
@@ -70,7 +72,7 @@ class OutlinedText(tk.Canvas):
             relief="flat",
             cursor=cursor or "arrow",
         )
-        self._font = tkfont.Font(family=family, size=size, weight="normal")
+        self._font = tkfont.Font(family=family, size=size, weight=weight)
         self._text = text
         self._fg = fg
         self._outline = outline
@@ -132,7 +134,7 @@ class OutlinedText(tk.Canvas):
         if size is not None:
             new_size = int(size)
             size_changed = int(self._font.actual("size")) != new_size
-            self._font.configure(size=new_size, weight="normal")
+            self._font.configure(size=new_size)
             for item in self._outline_items:
                 self.itemconfigure(item, font=self._font)
             self.itemconfigure(self._main_item, font=self._font)
@@ -145,6 +147,18 @@ class OutlinedText(tk.Canvas):
                 self.itemconfigure(item, fill=outline)
         if size_changed:
             self._refresh_geometry(force=True)
+
+    def set_wraplength(self, width):
+        if width == self._wraplength:
+            return
+        self._wraplength = width
+        x, y, _anchor = self._text_position()
+        for item, (dx, dy) in zip(self._outline_items, self.OFFSETS):
+            self.coords(item, x + dx, y + dy)
+            self.itemconfigure(item, width=width)
+        self.coords(self._main_item, x, y)
+        self.itemconfigure(self._main_item, width=width)
+        self._refresh_geometry(force=True)
 
     def configure(self, cnf=None, **kwargs):
         if cnf:
@@ -182,6 +196,150 @@ class OutlinedText(tk.Canvas):
     __getitem__ = cget
 
 
+class _RoundedPanel(tk.Canvas):
+    def __init__(self, parent, *, bg, cursor):
+        super().__init__(parent, bg=bg, bd=0, highlightthickness=0, cursor=cursor, width=1, height=1)
+        self._panel = self.create_polygon(0, 0, 0, 0, 0, 0, fill=PANEL_BG,
+                                          outline=PANEL_BORDER, smooth=True, splinesteps=20)
+
+    def _dpi_pixels(self, value):
+        return max(1, round(value * self.winfo_fpixels("1i") / 96))
+
+    def _fit_panel(self, width, height, radius):
+        x0, y0, x1, y1 = 1, 1, width - 1, height - 1
+        r = min(self._dpi_pixels(radius), (width - 2) // 2, (height - 2) // 2)
+        self.coords(
+            self._panel,
+            x0 + r, y0, x0 + r, y0, x1 - r, y0, x1 - r, y0,
+            x1, y0, x1, y0 + r, x1, y0 + r, x1, y1 - r, x1, y1 - r,
+            x1, y1, x1 - r, y1, x1 - r, y1, x0 + r, y1, x0 + r, y1,
+            x0, y1, x0, y1 - r, x0, y1 - r, x0, y0 + r, x0, y0 + r, x0, y0,
+        )
+        tk.Canvas.configure(self, width=width, height=height)
+
+
+class SpeechBubble(_RoundedPanel):
+    """A readable message surface over the transparent character window."""
+
+    def __init__(self, parent, text, *, family, size, fg, bg, wraplength):
+        super().__init__(parent, bg=bg, cursor="hand2")
+        self._font = tkfont.Font(family=family, size=size)
+        self._text = text
+        self._fg = fg
+        self._wraplength = wraplength
+        self._render()
+
+    def wrapped_lines(self, text, *, limit=None):
+        available = max(1, self._wraplength - 2 * self._dpi_pixels(18))
+        lines = []
+        for paragraph in text.expandtabs(4).split("\n"):
+            remaining = paragraph.rstrip()
+            while len(remaining) > 1 and self._font.measure(remaining) > available:
+                low, high = 1, len(remaining) - 1
+                while low < high:
+                    mid = (low + high + 1) // 2
+                    if self._font.measure(remaining[:mid]) <= available:
+                        low = mid
+                    else:
+                        high = mid - 1
+                end = remaining.rfind(" ", 0, low + 1)
+                if end <= 0:
+                    end = low
+                lines.append(remaining[:end])
+                if limit is not None and len(lines) >= limit:
+                    return lines
+                remaining = remaining[end:].lstrip()
+            lines.append(remaining)
+            if limit is not None and len(lines) >= limit:
+                return lines
+        return lines
+
+    def _render(self):
+        pad_x, pad_y = self._dpi_pixels(18), self._dpi_pixels(12)
+        lines = self.wrapped_lines(self._text)
+        font_height = self._font.metrics("linespace")
+        font_pixels = self.winfo_fpixels(f"{self._font.actual('size')}p")
+        line_height = max(font_height, round(font_pixels * 1.4))
+        height = 2 * pad_y + font_height + (len(lines) - 1) * line_height
+        self.delete("line")
+        for index, line in enumerate(lines):
+            if line:
+                self.create_text(pad_x, pad_y + index * line_height, text=line, font=self._font,
+                                 fill=self._fg, anchor="nw", tags="line")
+        self._fit_panel(self._wraplength, height, 14)
+
+    def set_style(self, *, size=None, fg=None, outline=None):
+        changed = False
+        if size is not None and int(size) != int(self._font.cget("size")):
+            self._font.configure(size=int(size))
+            changed = True
+        if fg is not None and fg != self._fg:
+            self._fg = fg
+            changed = True
+        if changed:
+            self._render()
+
+    def set_wraplength(self, width):
+        if width != self._wraplength:
+            self._wraplength = width
+            self._render()
+
+    def configure(self, cnf=None, **kwargs):
+        if cnf:
+            kwargs.update(cnf)
+        text = kwargs.pop("text", None)
+        color = kwargs.pop("fg", kwargs.pop("foreground", None))
+        kwargs.pop("outline", None)
+        changed = False
+        if text is not None and str(text) != self._text:
+            self._text = str(text)
+            changed = True
+        if color is not None and color != self._fg:
+            self._fg = color
+            changed = True
+        if changed:
+            self._render()
+        if kwargs:
+            super().configure(**kwargs)
+
+    config = configure
+
+    def cget(self, key):
+        if key == "text":
+            return self._text
+        if key in ("fg", "foreground"):
+            return self._fg
+        return super().cget(key)
+
+    __getitem__ = cget
+
+
+class _ClockPanel(_RoundedPanel):
+    def __init__(self, parent, *, bg):
+        super().__init__(parent, bg=bg, cursor="fleur")
+        self.content = tk.Frame(self, bg=PANEL_BG, bd=0)
+        self._content_window = self.create_window(0, 0, anchor="nw", window=self.content)
+
+    def fit_rows(self, clock, status, show_time, show_status):
+        if not (show_time or show_status):
+            return
+        pad_x, pad_y = self._dpi_pixels(11), self._dpi_pixels(8)
+        row_gap = self._dpi_pixels(2) if show_time and show_status else 0
+        widths, heights = [], []
+        if show_time:
+            font = clock._font
+            digit_width = max(font.measure(str(digit)) for digit in range(10))
+            widths.append(max(clock.winfo_reqwidth(), 6 * digit_width + font.measure("::") + 10))
+            heights.append(clock.winfo_reqheight())
+        if show_status:
+            widths.append(max(status.winfo_reqwidth(), status._font.measure("자리비움 중") + 10))
+            heights.append(status.winfo_reqheight())
+        width, height = max(widths), sum(heights) + row_gap
+        self.coords(self._content_window, pad_x, pad_y)
+        self.itemconfigure(self._content_window, width=width, height=height)
+        self._fit_panel(width + 2 * pad_x, height + 2 * pad_y, 12)
+
+
 def _outline_for(color: str) -> str:
     """Pick a contrasting outline automatically from the chosen text colour."""
     color = validate_hex_color(color)
@@ -210,7 +368,7 @@ class CompactDesktopApp(DesktopApp):
     DETAIL_SIZE = (410, 430)
     SETTINGS_SIZE = (650, 700)
     CHARACTER_MAX = (346, 384)
-    BUBBLE_WRAP = 270
+    BUBBLE_WRAP = 350
     FONT_FAMILY = "Pretendard"
     ESCAPE_TEXT = "#6B7280"
 
@@ -268,15 +426,14 @@ class CompactDesktopApp(DesktopApp):
         self._enable_detail_drag_surfaces()
         self._restore_window_position()
         self._start_global_hotkey()
-        self._check_font_available()
         self.root.after(1500, self._sync_presentation_state)
 
-    def _check_font_available(self):
-        try:
-            if self.FONT_FAMILY not in tkfont.families(self.root):
-                core.log.warning("Pretendard not installed; Tk will use a system fallback font")
-        except tk.TclError:
-            core.log.warning("font availability check failed")
+    def _build_ui(self):
+        families = {name.casefold(): name for name in tkfont.families(self.root)}
+        preferred = (self.FONT_FAMILY, "Malgun Gothic", "맑은 고딕", "Noto Sans CJK KR",
+                     "Segoe UI", "DejaVu Sans", "Arial", "Helvetica")
+        self.FONT_FAMILY = next((families[name.casefold()] for name in preferred if name.casefold() in families), "Arial")
+        super()._build_ui()
 
     @staticmethod
     def _monitor_work_areas():
@@ -445,10 +602,17 @@ class CompactDesktopApp(DesktopApp):
             return 0
         return self._clock_render_width()
 
+    def _visible_speech(self):
+        return getattr(self, "speech", None)
+
+    def _message_wrap_width(self):
+        logical_width = min(420, max(320, self._scale(self.BUBBLE_WRAP)))
+        return round(logical_width * self.root.winfo_fpixels("1i") / 96)
+
     def _message_render_width(self) -> int:
         if not self._effective_display_flag("show_message"):
             return 0
-        speech = getattr(self, "speech", None)
+        speech = self._visible_speech()
         if speech is not None:
             try:
                 req = int(speech.winfo_reqwidth())
@@ -456,8 +620,7 @@ class CompactDesktopApp(DesktopApp):
                     return req
             except tk.TclError:
                 pass
-        wrap = min(360, max(250, self._scale(self.BUBBLE_WRAP)))
-        return wrap + 8
+        return self._message_wrap_width()
 
     def _horizontal_union_bounds(self) -> tuple[float, float, int, int]:
         visible_left, _visible_top, visible_right, _visible_bottom = self._character_visible_bounds()
@@ -498,7 +661,7 @@ class CompactDesktopApp(DesktopApp):
     def _message_render_height(self) -> int:
         if not self._effective_display_flag("show_message"):
             return 0
-        speech = getattr(self, "speech", None)
+        speech = self._visible_speech()
         if speech is not None:
             try:
                 req = int(speech.winfo_reqheight())
@@ -558,7 +721,10 @@ class CompactDesktopApp(DesktopApp):
         right_margin = 8
         required_width = round(union_width + left_margin + right_margin)
         width = max(360, required_width)
-        required_height = self._scale(self.CHARACTER_MAX[1]) + 130
+        required_height = max(
+            self._scale(self.CHARACTER_MAX[1]) + 130,
+            self._character_render_size()[1] + self._character_bottom_gap() + 42,
+        )
         return width, max(height, required_height)
 
     def _resize_for_page(self, name: str):
@@ -960,23 +1126,23 @@ class CompactDesktopApp(DesktopApp):
         )
 
         p = self.preferences
-        clock = tk.Frame(hero, bg=self.TRANSPARENT_KEY, bd=0, highlightthickness=0, cursor="fleur")
+        clock = _ClockPanel(hero, bg=self.TRANSPARENT_KEY)
         self.clock = clock
         clock_x, clock_y = self._clock_offset()
         clock.place(x=clock_x, y=clock_y)
         self.cont = OutlinedText(
-            clock, "00:00:00", family=self.FONT_FAMILY, size=p.time_text_size,
+            clock.content, "00:00:00", family=self.FONT_FAMILY, size=p.time_text_size, weight="bold",
             fg=p.time_text_color, outline=_outline_for(p.time_text_color),
-            bg=self.TRANSPARENT_KEY, cursor="fleur",
+            bg=PANEL_BG, cursor="fleur",
         )
         self.cont.pack(anchor="w")
         self.main_status = OutlinedText(
-            clock, "집중 중", family=self.FONT_FAMILY, size=p.status_text_size,
+            clock.content, "집중 중", family=self.FONT_FAMILY, size=p.status_text_size,
             fg=p.status_text_color, outline=_outline_for(p.status_text_color),
-            bg=self.TRANSPARENT_KEY, cursor="fleur",
+            bg=PANEL_BG, cursor="fleur",
         )
-        self.main_status.pack(anchor="w", pady=(0, 1))
-        for widget in (clock, self.cont, self.main_status):
+        self.main_status.pack(anchor="w")
+        for widget in (clock, clock.content, self.cont, self.main_status):
             self._bind_drag_surface(widget)
 
         self.escape_control = tk.Label(
@@ -987,12 +1153,7 @@ class CompactDesktopApp(DesktopApp):
         self.escape_control.place(relx=1.0, x=-self._scale(8), y=self._scale(5), anchor="ne")
         self.escape_control.bind("<Button-1>", self._emergency_hide)
 
-        self.speech = OutlinedText(
-            hero, self._pick_dialogue("playful", time_sensitive=True), family=self.FONT_FAMILY, size=p.message_text_size,
-            fg=p.message_text_color, outline=_outline_for(p.message_text_color),
-            bg=self.TRANSPARENT_KEY, wraplength=min(360, max(250, self._scale(self.BUBBLE_WRAP))),
-            justify="center", cursor="hand2",
-        )
+        self.speech = self._new_speech_bubble(self._pick_dialogue("playful", time_sensitive=True))
         self.speech.place(
             relx=0.5, x=self._message_x_offset(), rely=1.0,
             y=-self._message_bottom_gap(), anchor="s",
@@ -1003,6 +1164,19 @@ class CompactDesktopApp(DesktopApp):
         self.character.bind("<ButtonRelease-1>", self._stop_character_drag)
         self.speech.bind("<Button-1>", self._cycle_message)
         self._apply_widget_appearance()
+
+    def _new_speech_bubble(self, text):
+        p = self.preferences
+        speech = SpeechBubble(self.hero, text, family=self.FONT_FAMILY, size=p.message_text_size,
+                              fg=p.message_text_color, bg=self.TRANSPARENT_KEY,
+                              wraplength=self._message_wrap_width())
+        speech.bind("<Configure>", self._on_speech_resize, add="+")
+        return speech
+
+    def _on_speech_resize(self, event):
+        if self.current_page == "timer" and event.widget is self._visible_speech():
+            self._apply_widget_appearance()
+            self._resize_for_page("timer")
 
     def _cycle_message(self, _event=None):
         mode = self._current_workday_state().mode
@@ -1078,31 +1252,44 @@ class CompactDesktopApp(DesktopApp):
             size=p.status_text_size, fg=p.status_text_color,
             outline=_outline_for(p.status_text_color),
         )
-        self.speech.set_style(
+        speech = self._visible_speech()
+        speech.set_wraplength(self._message_wrap_width())
+        speech.set_style(
             size=p.message_text_size, fg=p.message_text_color,
             outline=_outline_for(p.message_text_color),
         )
 
-        if self._effective_display_flag("show_time"):
+        show_time = self._effective_display_flag("show_time")
+        show_status = self._effective_display_flag("show_status")
+        if show_time:
             if not self.cont.winfo_manager():
-                self.cont.pack(anchor="w")
+                if self.main_status.winfo_manager():
+                    self.cont.pack(anchor="w", before=self.main_status)
+                else:
+                    self.cont.pack(anchor="w")
         else:
             self.cont.pack_forget()
-        if self._effective_display_flag("show_status"):
-            if not self.main_status.winfo_manager():
-                self.main_status.pack(anchor="w", pady=(0, 1))
+        if show_status:
+            row_gap = self.clock._dpi_pixels(2) if show_time else 0
+            self.main_status.pack(anchor="w", pady=(row_gap, 0))
         else:
             self.main_status.pack_forget()
+        if speech is not self.speech:
+            self.speech.place_forget()
         if self._effective_display_flag("show_message"):
-            self.speech.place(
+            speech.place(
                 relx=0.5, x=self._message_x_offset(), rely=1.0,
                 y=-self._message_bottom_gap(), anchor="s",
             )
         else:
-            self.speech.place_forget()
+            speech.place_forget()
 
-        clock_x, clock_y = self._clock_offset()
-        self.clock.place(x=clock_x, y=clock_y)
+        if show_time or show_status:
+            self.clock.fit_rows(self.cont, self.main_status, show_time, show_status)
+            clock_x, clock_y = self._clock_offset()
+            self.clock.place(x=clock_x, y=clock_y)
+        else:
+            self.clock.place_forget()
         self.character.place(
             relx=0.5, x=self._character_x_offset(), rely=1.0,
             y=-self._character_bottom_gap(), anchor="s",
@@ -1445,7 +1632,7 @@ class CompactDesktopApp(DesktopApp):
             anchor="w", pady=(2, 2), **pad
         )
 
-        self._label(content, "경희 말투", size=11, bg=core.PANEL).pack(anchor="w", pady=(14, 4), **pad)
+        self._label(content, "승아 말투", size=11, bg=core.PANEL).pack(anchor="w", pady=(14, 4), **pad)
         personality_labels = {
             "balanced": "균형형", "warm": "다정형", "playful": "장난형", "strict": "잔소리형",
         }
@@ -1514,7 +1701,7 @@ class CompactDesktopApp(DesktopApp):
             ).pack(anchor="w", pady=1, **pad)
         self._label(
             content,
-            "시간과 상태를 모두 꺼도 경희 이미지를 누른 채 움직이면 창을 이동할 수 있습니다.",
+            "시간과 상태를 모두 꺼도 승아 이미지를 누른 채 움직이면 창을 이동할 수 있습니다.",
             size=8, fg=core.MUTED, bg=core.PANEL,
         ).pack(anchor="w", pady=(2, 4), **pad)
 
@@ -1536,7 +1723,7 @@ class CompactDesktopApp(DesktopApp):
             "message": tk.StringVar(value=p.message_text_color),
         }
         self.color_swatches = {}
-        ranges = {"time": "14~24", "status": "7~12", "message": "9~16"}
+        ranges = {"time": "14~24", "status": "7~16", "message": "9~16"}
         labels = {"time": "시간", "status": "상태", "message": "메시지"}
         for key in ("time", "status", "message"):
             row = tk.Frame(content, bg=core.PANEL)
@@ -1558,7 +1745,7 @@ class CompactDesktopApp(DesktopApp):
             ).pack(side="left", ipady=2)
             self._button(row, "색상 선택", lambda k=key: self._choose_color(k)).pack(side="left", padx=(6, 0))
 
-        self._label(content, "상황별 경희 이미지", size=11, bg=core.PANEL).pack(anchor="w", pady=(16, 4), **pad)
+        self._label(content, "상황별 승아 이미지", size=11, bg=core.PANEL).pack(anchor="w", pady=(16, 4), **pad)
         self._label(
             content,
             "권장: 투명 PNG, 세로형 900×1200 이상(최소 600×800). 인물 주변 여백 5~10%. 프로필은 512×512 이상 권장.",
@@ -1778,7 +1965,7 @@ class CompactDesktopApp(DesktopApp):
     def _update_ui(self):
         super()._update_ui()
         away = self.state.session.is_away
-        status_color = core.AMBER if away else self.preferences.status_text_color
+        status_color = self.preferences.status_text_color
         self.main_status.configure(
             text="자리비움 중" if away else "집중 중",
             fg=status_color,

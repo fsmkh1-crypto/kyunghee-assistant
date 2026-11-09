@@ -103,13 +103,14 @@ class DesktopApp(App):
         self._set_small_avatar(avatar)
 
         self._label(row, title, size=10, weight="bold").pack(side="left")
-        if title == "경희 타이머":
+        if title == core.APP_NAME:
             self._label(row, "●", size=7, fg=core.GREEN).pack(side="left", padx=(7, 3))
             self.header_status = self._label(row, "집중 중", size=8, fg=core.MUTED)
             self.header_status.pack(side="left")
 
         if settings_command:
             self._button(row, "설정", settings_command).pack(side="right")
+        return row
 
     def _build_timer_page(self):
         page = self.timer_page
@@ -418,7 +419,8 @@ class DesktopApp(App):
         text_wrap = tk.Frame(win, bg=core.PANEL)
         text_wrap.pack(side="left", fill="both", expand=True, padx=(0, 12), pady=12)
         self._label(text_wrap, "휴식할 시간이에요", size=10, weight="bold", fg=core.GREEN, bg=core.PANEL).pack(anchor="w")
-        self._label(text_wrap, text, size=9, bg=core.PANEL, wraplength=250, justify="left").pack(anchor="w", pady=(3, 8))
+        win.body_label = self._label(text_wrap, text, size=9, bg=core.PANEL, wraplength=250, justify="left")
+        win.body_label.pack(anchor="w", pady=(3, 8))
         row = tk.Frame(text_wrap, bg=core.PANEL)
         row.pack(anchor="w")
         self._button(row, "알았어, 쉴게", self.accept_break, primary=True).pack(side="left", padx=(0, 6))
