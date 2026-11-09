@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 
-from assistant_ai.api import AIError, RESPONSES_URL, ResponsesClient, UsageLedger
+from assistant_ai.api import AIError, RESPONSES_URL, WEB_SEARCH_TOOL, ResponsesClient, UsageLedger, WebSource
 from assistant_ai.config import AISettings, ConfigStore, KeyVault, SettingsError
 
 
@@ -96,23 +96,25 @@ class AssistantAPITests(unittest.TestCase):
         self.requests = []
         self.input = [{"role": "user", "content": "오늘 사용량을 알려 줘."}]
 
-    def respond(self, *, settings=None, transport=None, input_items=None, tools=()):
+    def respond(self, *, settings=None, transport=None, input_items=None, tools=(), **options):
         client = ResponsesClient(TEST_KEY, self.ledger, transport=transport or self.successful_transport)
         return client.respond(settings or self.settings, self.input if input_items is None else input_items,
-                              instructions="타이머 도우미", tools=tools)
+                              instructions="타이머 도우미", tools=tools, **options)
 
     def successful_transport(self, request, *, timeout):
         self.requests.append(request)
         return self.response_stream()
 
     @staticmethod
-    def response_stream(*, output=None, usage=None, status="completed"):
+    def response_stream(*, output=None, usage=None, status="completed", **fields):
         if output is None:
             output = [{"type": "message", "content": [{"type": "output_text", "text": "확인했어요."}]}]
         if usage is None:
             usage = {"input_tokens": 100, "output_tokens": 10, "total_tokens": 110,
                      "input_tokens_details": {"cached_tokens": 20}}
-        return io.BytesIO(json.dumps({"id": "resp_test", "status": status, "output": output, "usage": usage}).encode())
+        return io.BytesIO(json.dumps({
+            "id": "resp_test", "status": status, "output": output, "usage": usage, **fields,
+        }).encode())
 
     def test_stateless_tool_history_and_usage_round_trip(self):
         output = [
@@ -243,3 +245,100 @@ class AssistantAPITests(unittest.TestCase):
         self.respond(settings=replace(self.settings, model="gpt-6.1-sol"),
                      transport=lambda *args, **kwargs: self.response_stream(usage=usage))
         self.assertAlmostEqual(self.ledger.summary().estimated_cost_usd, 1.125)
+
+    def test_search_uses_hosted_tool_and_returns_safe_sources(self):
+        cited_url = "https://example.com/news"
+        fallback_url = "https://another.example/story"
+        output = [
+            {"type": "web_search_call", "status": "completed", "action": {"type": "search", "sources": [
+                {"type": "url", "url": cited_url}, {"type": "url", "url": fallback_url},
+                {"type": "url", "url": "file:///tmp/secret"},
+                {"type": "url", "url": "https://trusted.example@malicious.example/path"},
+                {"type": "url", "url": "https://example.com/\nmalicious"},
+            ]}},
+            {"type": "web_search_call", "status": "completed", "action": {"type": "open_page", "url": cited_url}},
+            {"type": "web_search_call", "status": "failed", "action": {"type": "search", "sources": [
+                {"type": "url", "url": "https://failed.example"},
+            ]}},
+            {"type": "message", "content": [
+                {"type": "output_text", "text": "  첫 문장", "annotations": [
+                    {"type": "url_citation", "url": cited_url, "title": "자료\n이름", "start_index": 2, "end_index": 3},
+                    {"type": "url_citation", "url": "javascript:alert(1)", "start_index": 3, "end_index": 4},
+                ]},
+                {"type": "output_text", "text": "둘째 문장 ", "annotations": [
+                    {"type": "url_citation", "url": cited_url, "title": "자료 이름", "start_index": 0, "end_index": 2},
+                ]},
+            ]},
+        ]
+
+        def transport(request, *, timeout):
+            self.requests.append(request)
+            return self.response_stream(output=output)
+
+        functions = [{"type": "function", "name": "get_weather", "parameters": {"type": "object"}}]
+        result = self.respond(transport=transport, tools=(*functions, WEB_SEARCH_TOOL), force_web_search=True)
+        payload = json.loads(self.requests[0].data)
+        self.assertEqual(payload["tools"], [*functions, WEB_SEARCH_TOOL])
+        self.assertEqual(payload["tool_choice"], {"type": "web_search"})
+        self.assertFalse(payload["parallel_tool_calls"])
+        self.assertFalse(payload["store"])
+        self.assertEqual(payload["include"], ["reasoning.encrypted_content", "web_search_call.action.sources"])
+        self.assertEqual(payload["max_tool_calls"], 3)
+        self.assertEqual(result.text, "첫 문장\n둘째 문장")
+        self.assertEqual(result.output, output)
+        self.assertTrue(result.used_web_search)
+        self.assertEqual(result.web_search_calls, 1)
+        self.assertEqual(result.sources, (
+            WebSource("자료 이름", cited_url, 0, 1, True),
+            WebSource("자료 이름", cited_url, 5, 7, True),
+            WebSource("another.example", fallback_url),
+        ))
+        self.assertAlmostEqual(self.ledger.summary().estimated_cost_usd, 0.0101065)
+
+    def test_search_reserves_affordable_call_count_and_honors_reported_discount(self):
+        low_budget = replace(self.settings, daily_budget_usd=0.009)
+        with self.assertRaises(AIError) as error:
+            self.respond(settings=low_budget, tools=[WEB_SEARCH_TOOL])
+        self.assertEqual(error.exception.code, "web_search_budget_limit")
+        self.assertEqual(self.requests, [])
+        self.assertEqual(self.ledger.summary().requests, 0)
+
+        def discounted(request, *, timeout):
+            self.requests.append(request)
+            return self.response_stream(output=[
+                {"type": "web_search_call", "status": "completed", "action": {"type": "search"}},
+            ], tool_usage={"web_search": {"num_requests": 0}})
+
+        affordable = replace(self.settings, daily_budget_usd=0.025)
+        result = self.respond(settings=affordable, transport=discounted, tools=[WEB_SEARCH_TOOL])
+        payload = json.loads(self.requests[0].data)
+        self.assertEqual(payload["max_tool_calls"], 2)
+        self.assertNotIn("tool_choice", payload)
+        self.assertGreaterEqual(payload["max_output_tokens"], 16)
+        self.assertTrue(result.used_web_search)
+        self.assertEqual(result.web_search_calls, 0)
+        self.assertAlmostEqual(self.ledger.summary().estimated_cost_usd, 0.0001065)
+
+    def test_forced_weather_function_does_not_enable_hosted_search(self):
+        weather_tool = {"type": "function", "name": "get_weather", "parameters": {"type": "object"}}
+        choice = {"type": "function", "name": "get_weather"}
+        result = self.respond(tools=[weather_tool], tool_choice=choice)
+        payload = json.loads(self.requests[0].data)
+        self.assertEqual(payload["tool_choice"], choice)
+        self.assertEqual(payload["include"], ["reasoning.encrypted_content"])
+        self.assertNotIn("max_tool_calls", payload)
+        self.assertFalse(result.used_web_search)
+        self.assertEqual(result.sources, ())
+
+    def test_search_rejection_never_echoes_provider_details(self):
+        def rejected(request, *, timeout):
+            details = io.BytesIO(json.dumps({"error": {
+                "code": "unsupported_value", "message": f"web_search is not supported ({TEST_KEY})",
+            }}).encode())
+            raise HTTPError(request.full_url, 400, TEST_KEY, {}, details)
+
+        with self.assertRaises(AIError) as error:
+            self.respond(transport=rejected, tools=[WEB_SEARCH_TOOL])
+        self.assertEqual(error.exception.code, "web_search_unsupported")
+        self.assertNotIn(TEST_KEY, str(error.exception))
+        self.assertEqual(self.ledger.summary().estimated_cost_usd, 0.0)

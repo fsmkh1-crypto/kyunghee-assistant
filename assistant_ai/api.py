@@ -1,23 +1,28 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from http.client import HTTPException
 import json
 from pathlib import Path
 import sqlite3
+import unicodedata
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .config import AISettings, MODEL_PRICES, ModelPrice, SettingsError, validate_api_key
 
 
 RESPONSES_URL = "https://api.openai.com/v1/responses"
+WEB_SEARCH_TOOL = {"type": "web_search"}
 _NANOS_PER_USD = 1_000_000_000
 _MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 _MIN_OUTPUT_TOKENS = 16
+_MAX_WEB_SEARCH_CALLS = 3
+_WEB_SEARCH_CALL_NANOS = 10_000_000
 
 
 class AIError(RuntimeError):
@@ -33,6 +38,16 @@ class Usage:
     total_tokens: int = 0
     cached_input_tokens: int = 0
     cache_write_tokens: int = 0
+    web_search_calls: int = 0
+
+
+@dataclass(frozen=True)
+class WebSource:
+    title: str
+    url: str
+    start_index: int | None = None
+    end_index: int | None = None
+    cited: bool = False
 
 
 @dataclass(frozen=True)
@@ -42,6 +57,9 @@ class Response:
     usage: Usage = Usage()
     response_id: str | None = None
     status: str = "completed"
+    sources: tuple[WebSource, ...] = ()
+    used_web_search: bool = False
+    web_search_calls: int = 0
 
 
 @dataclass(frozen=True)
@@ -68,13 +86,14 @@ def _rates(price: ModelPrice, input_tokens: int) -> tuple[int, int, int, int]:
 
 
 def _cost_nanos(price: ModelPrice | None, usage: Usage) -> int | None:
+    tool_cost = usage.web_search_calls * _WEB_SEARCH_CALL_NANOS
     if price is None:
-        return None if usage.total_tokens else 0
+        return None if usage.total_tokens else tool_cost
     input_rate, cached_rate, write_rate, output_rate = _rates(price, usage.input_tokens)
     regular_tokens = usage.input_tokens - usage.cached_input_tokens - usage.cache_write_tokens
     return (
         regular_tokens * input_rate + usage.cached_input_tokens * cached_rate
-        + usage.cache_write_tokens * write_rate + usage.output_tokens * output_rate
+        + usage.cache_write_tokens * write_rate + usage.output_tokens * output_rate + tool_cost
     )
 
 
@@ -131,9 +150,12 @@ class UsageLedger:
             None if unpriced else cost / _NANOS_PER_USD, unconfirmed,
         )
 
-    def _reserve(self, settings: AISettings, estimated_input: int, output_cap: int | None) -> tuple[int, int | None]:
+    def _reserve(
+        self, settings: AISettings, estimated_input: int, output_cap: int | None, *, web_search: bool = False,
+    ) -> tuple[int, int | None, int]:
         day = self._today().isoformat()
         price = MODEL_PRICES.get(settings.model)
+        search_limit = _MAX_WEB_SEARCH_CALLS if web_search else 0
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             requests, tokens, cost, unpriced = connection.execute("""
@@ -156,6 +178,12 @@ class UsageLedger:
                     raise AIError("budget_usage_unknown", "오늘 요금을 알 수 없는 사용량이 있어 비용 한도를 적용할 수 없어요.")
                 budget = int(Decimal(str(settings.daily_budget_usd)) * _NANOS_PER_USD)
                 remaining_cost = budget - cost - estimated_input * reserved_rate[2]
+                if web_search:
+                    search_limit = min(search_limit, (remaining_cost - _MIN_OUTPUT_TOKENS * reserved_rate[3])
+                                       // _WEB_SEARCH_CALL_NANOS)
+                    if search_limit < 1:
+                        raise AIError("web_search_budget_limit", "오늘 남은 AI 추정 비용으로는 웹을 검색할 수 없어요.")
+                    remaining_cost -= search_limit * _WEB_SEARCH_CALL_NANOS
                 affordable = remaining_cost // reserved_rate[3]
                 if affordable < _MIN_OUTPUT_TOKENS:
                     raise AIError("budget_limit", "이 요청을 보내기에는 오늘 남은 AI 추정 비용 한도가 부족해요.")
@@ -166,7 +194,8 @@ class UsageLedger:
             reserved_output = output_cap if output_cap is not None else 2048
             reserved_cost = None
             if reserved_rate is not None:
-                reserved_cost = estimated_input * reserved_rate[2] + reserved_output * reserved_rate[3]
+                reserved_cost = (estimated_input * reserved_rate[2] + reserved_output * reserved_rate[3]
+                                 + search_limit * _WEB_SEARCH_CALL_NANOS)
             row = connection.execute("""
                 INSERT INTO calls(day, created_at, model, status, input_tokens, output_tokens, total_tokens, cost_nanos)
                 VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)
@@ -174,7 +203,7 @@ class UsageLedger:
                 day, datetime.now(timezone.utc).isoformat(), settings.model,
                 estimated_input, reserved_output, estimated_input + reserved_output, reserved_cost,
             ))
-            return row.lastrowid, output_cap
+            return row.lastrowid, output_cap, search_limit
 
     def _finish(self, call_id: int, model: str, usage: Usage | None, *, failed: bool = False) -> None:
         with self._connection() as connection:
@@ -198,15 +227,16 @@ class _NoRedirect(HTTPRedirectHandler):
 _open_responses = build_opener(_NoRedirect()).open
 
 
-def _error_response(error: HTTPError) -> AIError:
-    code = ""
+def _error_response(error: HTTPError, *, web_search: bool = False) -> AIError:
+    details = {}
     with error:
         try:
             body = json.loads(error.read(65_536)) if error.fp is not None else None
             if isinstance(body, dict) and isinstance(body.get("error"), dict):
-                code = body["error"].get("code")
+                details = body["error"]
         except (OSError, ValueError, RecursionError, HTTPException):
             pass
+    code = details.get("code")
     if error.code == 401:
         return AIError("authentication", "OpenAI API 키를 확인해 주세요. 인증에 실패했어요.")
     if code == "model_not_found" or error.code == 404:
@@ -223,13 +253,20 @@ def _error_response(error: HTTPError) -> AIError:
     if code == "context_length_exceeded":
         return AIError("context_limit", "선택한 모델에 보낼 수 있는 대화 길이를 넘었어요.")
     if error.code in (400, 422):
+        message = details.get("message")
+        if web_search and isinstance(message, str):
+            message = message.lower()
+            if "web_search" in message and any(phrase in message for phrase in (
+                "not supported", "unsupported", "does not support", "not available",
+            )):
+                return AIError("web_search_unsupported", "선택한 모델 또는 API 프로젝트에서 웹 검색을 사용할 수 없어요.")
         return AIError("request_invalid", "OpenAI가 요청을 받지 못했어요. 모델 ID와 지원 기능을 확인해 주세요.")
     if error.code >= 500:
         return AIError("service_unavailable", "OpenAI API가 일시적으로 응답하지 못했어요. 잠시 후 다시 시도해 주세요.")
     return AIError("http_error", "OpenAI API 요청을 완료하지 못했어요.")
 
 
-def _read_usage(raw: object) -> Usage | None:
+def _read_usage(raw: object, web_search_calls: int = 0) -> Usage | None:
     if not isinstance(raw, dict):
         return None
     input_tokens = raw.get("input_tokens")
@@ -246,12 +283,40 @@ def _read_usage(raw: object) -> Usage | None:
     total = raw.get("total_tokens")
     if type(total) is not int or not input_tokens + output_tokens <= total <= 200_000_000:
         total = input_tokens + output_tokens
-    return Usage(input_tokens, output_tokens, total, cached, written)
+    return Usage(input_tokens, output_tokens, total, cached, written, web_search_calls)
 
 
-def _response_text(output: list[dict]) -> str:
+def _web_source(data: dict, *, offset: int | None = None, length: int = 0) -> WebSource | None:
+    url = data.get("url")
+    if not isinstance(url, str) or not 1 <= len(url) <= 4096 or "\\" in url:
+        return None
+    if any(character.isspace() or unicodedata.category(character).startswith("C") for character in url):
+        return None
+    try:
+        parsed = urlsplit(url)
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return None
+    if (parsed.scheme not in {"http", "https"} or not host or parsed.username is not None
+            or parsed.password is not None or port == 0):
+        return None
+    raw_title = data.get("title")
+    title = ""
+    if isinstance(raw_title, str):
+        safe_title = "".join(c for c in raw_title[:512] if not unicodedata.category(c).startswith("C") or c.isspace())
+        title = " ".join(safe_title.split())[:160]
+    start, end = data.get("start_index"), data.get("end_index")
+    if offset is not None and type(start) is int and type(end) is int and 0 <= start < end <= length:
+        return WebSource(title or host, url, offset + start, offset + end, True)
+    return WebSource(title or host, url, cited=offset is not None)
+
+
+def _response_content(output: list[dict]) -> tuple[str, tuple[WebSource, ...]]:
     text = []
     refusals = []
+    citations = []
+    offset = 0
     for item in output:
         content = item.get("content")
         if item.get("type") != "message" or not isinstance(content, list):
@@ -260,10 +325,73 @@ def _response_text(output: list[dict]) -> str:
             if not isinstance(part, dict):
                 continue
             if part.get("type") == "output_text" and isinstance(part.get("text"), str):
-                text.append(part["text"])
+                fragment = part["text"]
+                text.append(fragment)
+                annotations = part.get("annotations")
+                if isinstance(annotations, list):
+                    for annotation in annotations:
+                        if isinstance(annotation, dict) and annotation.get("type") == "url_citation":
+                            source = _web_source(annotation, offset=offset, length=len(fragment))
+                            if source is not None:
+                                citations.append(source)
+                offset += len(fragment) + 1  # Account for the newline between text fragments.
             if part.get("type") == "refusal" and isinstance(part.get("refusal"), str):
                 refusals.append(part["refusal"])
-    return "\n".join(text or refusals).strip()
+    joined = "\n".join(text or refusals)
+    stripped = joined.strip()
+    leading = len(joined) - len(joined.lstrip())
+    return stripped, tuple(_trimmed_source(source, leading, len(stripped)) for source in citations)
+
+
+def _trimmed_source(source: WebSource, leading: int, length: int) -> WebSource:
+    if source.start_index is None or source.end_index is None:
+        return source
+    start = max(0, source.start_index - leading)
+    end = min(length, source.end_index - leading)
+    if start < end:
+        return replace(source, start_index=start, end_index=end)
+    return replace(source, start_index=None, end_index=None)
+
+
+def _search_results(output: list[dict]) -> tuple[int, tuple[WebSource, ...]]:
+    searches = 0
+    sources = []
+    for item in output:
+        if item.get("type") != "web_search_call" or item.get("status") != "completed":
+            continue
+        action = item.get("action")
+        if not isinstance(action, dict):
+            searches += 1
+            continue
+        if action.get("type") != "search":
+            continue  # Opening a page and searching within it are not billable searches.
+        searches += 1
+        retrieved = action.get("sources")
+        if isinstance(retrieved, list):
+            for data in retrieved:
+                if isinstance(data, dict) and data.get("type", "url") == "url":
+                    source = _web_source(data)
+                    if source is not None:
+                        sources.append(source)
+    return searches, tuple(sources)
+
+
+def _merge_sources(citations: tuple[WebSource, ...], retrieved: tuple[WebSource, ...]) -> tuple[WebSource, ...]:
+    # Keep repeat annotations because the same URL can support multiple passages.
+    merged = list(citations)
+    seen = {source.url for source in citations}
+    for source in retrieved:
+        if source.url not in seen:
+            merged.append(source)
+            seen.add(source.url)
+    return tuple(merged)
+
+
+def _billed_searches(result: dict, observed: int) -> int:
+    tool_usage = result.get("tool_usage")
+    web_usage = tool_usage.get("web_search") if isinstance(tool_usage, dict) else None
+    count = web_usage.get("num_requests") if isinstance(web_usage, dict) else None
+    return count if type(count) is int and 0 <= count <= 100_000 else observed
 
 
 class ResponsesClient:
@@ -275,7 +403,8 @@ class ResponsesClient:
 
     def respond(
         self, settings: AISettings, input_items: list[dict], *, instructions: str,
-        tools=(), max_output_tokens: int | None = None,
+        tools=(), max_output_tokens: int | None = None, force_web_search: bool = False,
+        tool_choice: str | dict | None = None,
     ) -> Response:
         settings.validate()
         if not settings.enabled:
@@ -295,9 +424,20 @@ class ResponsesClient:
             "model": settings.model, "input": input_items, "instructions": instructions,
             "store": False, "service_tier": "default", "include": ["reasoning.encrypted_content"],
         }
-        if tools:
-            payload["tools"] = list(tools)
+        tool_list = list(tools)
+        web_search = any(tool.get("type") == "web_search" for tool in tool_list)
+        if force_web_search:
+            if not web_search or tool_choice is not None:
+                raise AIError("request_invalid", "웹 검색 도구 설정을 확인해 주세요.")
+            tool_choice = {"type": "web_search"}
+        if tool_choice is not None:
+            payload["tool_choice"] = tool_choice
+        if tool_list:
+            payload["tools"] = tool_list
             payload["parallel_tool_calls"] = False
+        if web_search:
+            payload["include"].append("web_search_call.action.sources")
+            payload["max_tool_calls"] = _MAX_WEB_SEARCH_CALLS
         if settings.model == "gpt-5.6-luna":
             payload["reasoning"] = {"effort": "low"}
         try:
@@ -306,9 +446,14 @@ class ResponsesClient:
             raise AIError("request_invalid", "AI 요청에 보낼 데이터를 처리하지 못했어요.") from None
         # Conservative local estimate for text JSON, with room for server-side framing.
         estimated_input = len(body) + 256 + 16 * (len(input_items) + len(payload.get("tools", ())))
-        call_id, output_cap = self.usage_ledger._reserve(settings, estimated_input, max_output_tokens)
+        call_id, output_cap, search_limit = self.usage_ledger._reserve(
+            settings, estimated_input, max_output_tokens, web_search=web_search,
+        )
+        if web_search:
+            payload["max_tool_calls"] = search_limit
         if output_cap is not None:
             payload["max_output_tokens"] = output_cap
+        if output_cap is not None or web_search:
             body = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
         request = Request(RESPONSES_URL, method="POST", data=body, headers={
             "Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "Accept": "application/json",
@@ -318,7 +463,7 @@ class ResponsesClient:
             with self._open(request, timeout=self.timeout) as stream:
                 raw = stream.read(_MAX_RESPONSE_BYTES + 1)
         except HTTPError as error:
-            mapped_error = _error_response(error)
+            mapped_error = _error_response(error, web_search=web_search)
             # A rejected 4xx request counts toward request limits, with no reported usage.
             usage = Usage() if 400 <= error.code < 500 and error.code != 408 else None
             self.usage_ledger._finish(call_id, settings.model, usage, failed=True)
@@ -334,18 +479,24 @@ class ResponsesClient:
             result = json.loads(raw) if len(raw) <= _MAX_RESPONSE_BYTES else None
         except (ValueError, RecursionError):
             result = None
-        usage = _read_usage(result.get("usage")) if isinstance(result, dict) else None
+        output = result.get("output") if isinstance(result, dict) else None
+        valid_output = isinstance(output, list) and all(isinstance(item, dict) for item in output)
+        searches, retrieved = _search_results(output) if web_search and valid_output else (0, ())
+        billed = _billed_searches(result, searches) if web_search and isinstance(result, dict) else 0
+        usage = _read_usage(result.get("usage"), billed) if isinstance(result, dict) else None
         self.usage_ledger._finish(call_id, settings.model, usage)
         if not isinstance(result, dict):
             raise AIError("response_invalid", "OpenAI에서 읽을 수 없는 응답을 받았어요.")
         status = result.get("status", "completed")
         if status not in ("completed", "incomplete") or result.get("error"):
             raise AIError("response_failed", "OpenAI가 이번 답변을 완료하지 못했어요.")
-        output = result.get("output")
-        if not isinstance(output, list) or any(not isinstance(item, dict) for item in output):
+        if not valid_output:
             raise AIError("response_invalid", "OpenAI 응답에 대화 결과가 없어요.")
-        text = _response_text(output)
+        text, citations = _response_content(output)
         if status == "incomplete" and not text:
             raise AIError("response_incomplete", "OpenAI가 이번 답변을 끝내지 못했어요. 설정된 토큰 한도를 확인해 주세요.")
         response_id = result.get("id")
-        return Response(output, text, usage or Usage(), response_id if isinstance(response_id, str) else None, status)
+        return Response(
+            output, text, usage or Usage(), response_id if isinstance(response_id, str) else None, status,
+            _merge_sources(citations, retrieved) if web_search else (), bool(searches), billed,
+        )

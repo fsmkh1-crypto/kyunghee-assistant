@@ -7,13 +7,14 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from assistant_ai.api import AIError
+from assistant_ai.api import AIError, WebSource
 from assistant_ai.config import SettingsError
-from assistant_ai.service import AssistantService, MEMORY_TOOL_NAME
+from assistant_ai.service import AssistantService, MEMORY_TOOL_NAME, WEATHER_TOOL_NAME
+from assistant_ai.weather import WeatherError
 
 
-def reply(text="", calls=(), *, status="completed"):
-    return SimpleNamespace(text=text, output=list(calls), status=status)
+def reply(text="", calls=(), *, status="completed", sources=(), searched=False):
+    return SimpleNamespace(text=text, output=list(calls), status=status, sources=sources, used_web_search=searched)
 
 
 def tool_call(call_id="call_1", arguments='{"action":"resume"}'):
@@ -144,6 +145,58 @@ class AssistantServiceTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "cancelled")
         self.dispatch.assert_not_called()
         self.assertEqual(self.service.recent_turns(), [])
+
+    def test_web_lookup_requires_provider_sources_and_displays_lookup_time(self):
+        source = WebSource(title="정부 발표", url="https://example.com/update", start_index=0, end_index=5, cited=True)
+        self.api.respond.side_effect = [reply("확인 결과예요.", sources=[source], searched=True), reply("근거 없는 최신 정보")]
+        answer = self.ask("오늘 뉴스 검색해 줘")
+        self.assertTrue(self.api.respond.call_args.kwargs["force_web_search"])
+        self.assertIn("웹 조회 시각", answer)
+        self.assertIn(f"[1](<{source.url}>)", answer)
+        missing = self.ask("최신 뉴스 알려줘")
+        self.assertIn("출처", missing)
+        self.assertNotIn("근거 없는 최신 정보", missing)
+
+    def test_weather_chat_displays_provider_text_and_uses_configured_region(self):
+        call = tool_call(arguments='{"region":null}')
+        call["name"] = WEATHER_TOOL_NAME
+        self.api.respond.return_value = reply("근거 없는 기온", calls=[call])
+        self.service.save_settings(replace(self.settings, weather_location="대전"))
+        text = "대전 현재 기온 12°C\n조회 시각 2026-11-09\n출처 Open-Meteo"
+        report = Mock()
+        report.format_text.return_value = text
+        report.to_tool_result.return_value = {"region": "대전"}
+        self.service._weather.lookup = Mock(return_value=report)
+        self.assertEqual(self.ask("오늘 날씨 알려줘"), text)
+        self.service._weather.lookup.assert_called_once_with("대전")
+        self.api.respond.assert_called_once()
+        self.assertEqual(self.api.respond.call_args.kwargs["tool_choice"]["name"], WEATHER_TOOL_NAME)
+        self.dispatch.assert_not_called()
+
+    def test_weather_failure_does_not_use_model_text(self):
+        call = tool_call(arguments='{"region":"서울"}')
+        call["name"] = WEATHER_TOOL_NAME
+        self.api.respond.return_value = reply("서울은 맑아요.", calls=[call])
+        self.service._weather.lookup = Mock(side_effect=WeatherError("날씨 조회에 실패했어요."))
+        self.assertEqual(self.ask("서울 날씨 어때?"), "날씨 조회에 실패했어요.")
+        self.service._weather.lookup.assert_called_once_with("서울")
+
+    def test_indirect_weather_tool_failure_stops_unverified_followup(self):
+        call = tool_call(arguments='{"region":null}')
+        call["name"] = WEATHER_TOOL_NAME
+        self.api.respond.side_effect = [reply(calls=[call]), reply("맑을 것 같아요.")]
+        self.service._weather.lookup = Mock(side_effect=WeatherError("날씨 조회에 실패했어요."))
+        self.assertEqual(self.ask("우산 챙길까요?"), "날씨 조회에 실패했어요.")
+        self.api.respond.assert_called_once()
+
+    def test_weather_button_can_use_default_without_openai(self):
+        self.service.save_settings(replace(self.settings, enabled=False), remove_key=True)
+        report = Mock()
+        report.format_text.return_value = "세종시 관측 자료"
+        self.service._weather.lookup = Mock(return_value=report)
+        self.assertEqual(self.service.weather_report(), "세종시 관측 자료")
+        self.service._weather.lookup.assert_called_once_with("세종시")
+        self.api.respond.assert_not_called()
 
     def test_proactive_opt_in_silence_context_and_no_actions(self):
         cancel = threading.Event()

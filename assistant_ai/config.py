@@ -22,6 +22,7 @@ class ModelPrice:
 
 
 DEFAULT_MODEL = "gpt-5.4-mini"
+DEFAULT_WEATHER_LOCATION = "세종시"
 MODELS = (DEFAULT_MODEL, "gpt-5.6-luna", "gpt-6.1-sol")
 # Standard Responses text prices in USD from the official model pages.
 _MINI_PRICE = ModelPrice(0.75, 0.075, 4.50)
@@ -48,12 +49,16 @@ class AISettings:
     proactive_enabled: bool = False
     memory_enabled: bool = False
     daily_budget_usd: float | None = None
+    weather_location: str = DEFAULT_WEATHER_LOCATION
 
     def validate(self) -> None:
         if not isinstance(self.model, str) or not _MODEL_ID.fullmatch(self.model) or self.model.startswith("sk-"):
             raise SettingsError("OpenAI 모델 ID를 확인해 주세요.")
         if not all(type(value) is bool for value in (self.enabled, self.proactive_enabled, self.memory_enabled)):
             raise SettingsError("AI 기능의 사용 여부를 다시 설정해 주세요.")
+        location = self.weather_location
+        if not isinstance(location, str) or not 2 <= len(location.strip()) <= 80 or not location.isprintable():
+            raise SettingsError("기본 날씨 지역은 2~80자의 한 줄로 입력해 주세요.")
         if self.daily_request_limit is not None and (
             type(self.daily_request_limit) is not int or not 1 <= self.daily_request_limit <= 10_000
         ):

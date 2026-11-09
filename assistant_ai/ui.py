@@ -2,19 +2,29 @@ from __future__ import annotations
 
 from datetime import datetime
 from queue import Empty, SimpleQueue
+import re
 from threading import Event, Thread
 import tkinter as tk
 from tkinter import messagebox, ttk
 import tkinter.font as tkfont
+from urllib.parse import urlsplit
+import webbrowser
 
 from app import AMBER, BG, BORDER, MUTED, PANEL, PANEL_2, PURPLE, PURPLE_2, TEXT
 from app_brand import APP_NAME
 
 from .api import AIError
-from .config import AISettings, MODEL_PRICES, MODELS, SettingsError
+from .config import AISettings, DEFAULT_WEATHER_LOCATION, MODEL_PRICES, MODELS, SettingsError
+from .weather import WeatherError
 
 
 HISTORY_PAGE_SIZE = 40
+_SOURCE_LINK = re.compile(
+    r"\[(?P<label>[^\]\r\n]{1,160})\]\(\s*"
+    r"(?:<(?P<angled>[^\s<>]+)>|(?P<simple>[^\s()<>]+(?:\([^\s()]*\)[^\s()<>]*)*))\s*\)"
+    r"|(?P<bare>https?://[^\s<>\"`]+)",
+    re.IGNORECASE,
+)
 
 
 def _font(parent, size=10):
@@ -67,6 +77,75 @@ def _local_time(value):
         return ""
 
 
+def _source_url(raw, *, bare=True):
+    url = raw
+    if bare:
+        url = url.rstrip(".,;:!?}'")
+        while url.endswith(")") and url.count(")") > url.count("("):
+            url = url[:-1]
+        while url.endswith("]") and url.count("]") > url.count("["):
+            url = url[:-1]
+    if "\\" in url or any(ord(char) < 32 for char in url):
+        return ""
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+        if parts.scheme in {"http", "https"} and host and "%" not in host and parts.username is None:
+            if parts.port is None or parts.port > 0:
+                return url
+    except ValueError:
+        pass
+    return ""
+
+
+def _open_source(url):
+    Thread(target=webbrowser.open_new_tab, args=(url,), daemon=True).start()
+
+
+class _SourceLinks:
+    def __init__(self, widget):
+        self.widget = widget
+        self.targets = {}
+        widget.tag_configure("source", foreground="#B9D6FF", underline=True)
+        widget.tag_bind("source", "<Enter>", lambda _event: widget.configure(cursor="hand2"))
+        widget.tag_bind("source", "<Leave>", lambda _event: widget.configure(cursor="xterm"))
+        widget.tag_bind("source", "<ButtonRelease-1>", self._follow)
+
+    def _follow(self, event):
+        for tag in self.widget.tag_names(f"@{event.x},{event.y}"):
+            if tag in self.targets:
+                _open_source(self.targets[tag])
+                return "break"
+
+    def clear(self):
+        for tag in self.targets:
+            self.widget.tag_delete(tag)
+        self.targets.clear()
+        self.widget.configure(cursor="xterm")
+
+    def insert(self, text):
+        widget = self.widget
+        start = 0
+        for match in _SOURCE_LINK.finditer(text):
+            bare = match.group("bare")
+            url = _source_url(bare or match.group("angled") or match.group("simple"), bare=bare is not None)
+            if not url:
+                continue
+            widget.insert("end", text[start:match.start()])
+            label = match.group("label")
+            if bare:
+                label = url
+                start = match.start() + len(url)
+            else:
+                if label.isdecimal():
+                    label = f"[{label}]"
+                start = match.end()
+            tag = f"source_{len(self.targets)}"
+            self.targets[tag] = url
+            widget.insert("end", label, ("source", tag))
+        widget.insert("end", text[start:])
+
+
 class AssistantWindows:
     """The timer owns one Tk loop. Workers pass AI results to it through a queue."""
 
@@ -85,6 +164,10 @@ class AssistantWindows:
         self.chat_window = None
         self.memory_window = None
         self.settings_window = None
+        self.reply_window = None
+        self.weather_window = None
+        self._weather_results = SimpleQueue()
+        self._weather_poll_id = None
         self._poll_id = None
         self._cancel = None
         self._results = SimpleQueue()
@@ -186,6 +269,59 @@ class AssistantWindows:
         self.settings_window.refresh_usage()
         self.settings_window.show()
 
+    def open_reply(self, text):
+        if self._closed:
+            return
+        if self.reply_window is None:
+            self.reply_window = _ReadoutWindow(self, "승아의 답변")
+            self.reply_window.add_action("대화 계속하기", self._resume_chat)
+        self.reply_window.set_text(text)
+        self.reply_window.show()
+        self.reply_window.text.focus_set()
+
+    def _resume_chat(self):
+        self.reply_window.withdraw()
+        self.open_chat()
+
+    def open_weather(self):
+        if self._closed:
+            return
+        if self.weather_window is None:
+            self.weather_window = _ReadoutWindow(self, "날씨 조회")
+            self.weather_window.add_action("기본 지역 설정", self.open_weather_settings)
+            self.weather_window.add_action("다시 조회", self.open_weather)
+        self.weather_window.show()
+        if self._weather_poll_id is not None:
+            return
+        self.weather_window.set_text("기상정보를 조회하고 있어요…")
+        Thread(target=self._request_weather, daemon=True).start()
+        self._weather_poll_id = self.root.after(70, self._poll_weather)
+
+    def open_weather_settings(self):
+        if not self._closed:
+            self.open_settings()
+            self.settings_window.weather_entry.focus_set()
+
+    def _request_weather(self):
+        try:
+            report = self.service.weather_report()
+        except (AIError, SettingsError, WeatherError) as error:
+            report = str(error)
+        except Exception:
+            report = "기상정보를 가져오지 못했어요. 잠시 뒤 다시 시도해 주세요."
+        if not isinstance(report, str) or not report.strip():
+            report = "조회 결과를 표시할 수 없어요. 잠시 뒤 다시 시도해 주세요."
+        self._weather_results.put(report)
+
+    def _poll_weather(self):
+        self._weather_poll_id = None
+        try:
+            report = self._weather_results.get_nowait()
+        except Empty:
+            self._weather_poll_id = self.root.after(70, self._poll_weather)
+            return
+        self.weather_window.set_text(report)
+
     def close(self):
         if self._closed:
             return
@@ -195,13 +331,16 @@ class AssistantWindows:
         if self._poll_id is not None:
             self.root.after_cancel(self._poll_id)
             self._poll_id = None
+        if self._weather_poll_id is not None:
+            self.root.after_cancel(self._weather_poll_id)
+            self._weather_poll_id = None
         self._set_chat_state("idle")
-        for window in (self.chat_window, self.memory_window, self.settings_window):
+        for window in (self.chat_window, self.memory_window, self.settings_window, self.reply_window, self.weather_window):
             if window is not None:
                 window.destroy()
 
     def hide(self):
-        for window in (self.chat_window, self.memory_window, self.settings_window):
+        for window in (self.chat_window, self.memory_window, self.settings_window, self.reply_window, self.weather_window):
             if window is not None:
                 window._hide()
 
@@ -353,6 +492,36 @@ class _Window(tk.Toplevel):
         self.lift()
 
 
+class _ReadoutWindow(_Window):
+    def __init__(self, owner, title):
+        super().__init__(owner, title, 700, 520)
+        self.minsize(430, 320)
+        _label(self.body, title, size=15).pack(anchor="w", padx=16, pady=(12, 8))
+        self.actions = tk.Frame(self.body, bg=PANEL)
+        self.actions.pack(side="bottom", fill="x", padx=16, pady=(10, 12))
+        _button(self.actions, "닫기", self._hide).pack(side="right")
+        frame = tk.Frame(self.body, bg=PANEL)
+        frame.pack(fill="both", expand=True, padx=16)
+        self.text = _text(frame, state="disabled")
+        font = _font(self, 15)
+        line_gap = max(1, round(tkfont.Font(root=self, font=font).metrics("linespace") * 0.4))
+        self.text.configure(font=font, fg="#FFFFFF", padx=14, pady=12, spacing2=line_gap, spacing3=line_gap)
+        _add_scrollbar(frame, self.text)
+        self._sources = _SourceLinks(self.text)
+
+    def add_action(self, caption, command):
+        _button(self.actions, caption, command).pack(side="left", padx=(0, 6))
+
+    def set_text(self, text):
+        widget = self.text
+        widget.configure(state="normal")
+        widget.delete("1.0", "end")
+        self._sources.clear()
+        self._sources.insert(text)
+        widget.configure(state="disabled")
+        widget.yview_moveto(0)
+
+
 class _ChatWindow(_Window):
     DEFAULT_SIZE = (640, 590)
     MIN_SIZE = (500, 420)
@@ -365,6 +534,7 @@ class _ChatWindow(_Window):
         _label(header, "승아와 대화", size=15).pack(side="left")
         _button(header, "API 설정", owner.open_settings).pack(side="right")
         _button(header, "기억 관리", owner.open_memories).pack(side="right", padx=(0, 6))
+        _button(header, "날씨", owner.open_weather).pack(side="right", padx=(0, 6))
         self.privacy = tk.StringVar(master=self)
         privacy = _label(self.body, color=MUTED, textvariable=self.privacy, wraplength=580)
         privacy.pack(fill="x", padx=12, pady=(0, 7))
@@ -375,6 +545,7 @@ class _ChatWindow(_Window):
         self.history.tag_configure("user", foreground="#C4B5FD", spacing1=6)
         self.history.tag_configure("assistant", foreground="#86EFAC", spacing1=6)
         self.history.tag_configure("note", foreground=MUTED)
+        self._sources = _SourceLinks(self.history)
         _add_scrollbar(history_frame, self.history)
 
         composer = tk.Frame(self.body, bg=PANEL)
@@ -455,6 +626,7 @@ class _ChatWindow(_Window):
     def render(self, turns, *, pending="", reply=""):
         self.history.configure(state="normal")
         self.history.delete("1.0", "end")
+        self._sources.clear()
         if not turns and not pending:
             self.history.insert("end", "승아에게 인사를 건네거나 필요한 일을 물어보세요.\n", "note")
         for turn in turns:
@@ -476,7 +648,11 @@ class _ChatWindow(_Window):
 
     def _write(self, sender, text, tag):
         self.history.insert("end", f"{sender}\n", tag)
-        self.history.insert("end", f"{text}\n\n")
+        if tag == "assistant":
+            self._sources.insert(text)
+        else:
+            self.history.insert("end", text)
+        self.history.insert("end", "\n\n")
 
 
 class _MemoryWindow(_Window):
@@ -675,6 +851,16 @@ class _SettingsWindow(_Window):
             size=9, color=MUTED, wraplength=530,
         ).pack(fill="x", padx=12, pady=(3, 0))
 
+        weather = tk.Frame(content, bg=PANEL)
+        weather.pack(fill="x", padx=12, pady=(12, 2))
+        weather.columnconfigure(1, weight=1)
+        self.weather_location = tk.StringVar(master=self, value=DEFAULT_WEATHER_LOCATION)
+        self.weather_entry = _entry(weather, self.weather_location)
+        self._field(weather, 0, "기본 날씨 지역", self.weather_entry)
+        _label(weather, "예시 세종시, 대전시, 서울시. 별도 날씨 조회는 API 키 없이 이용할 수 있어요.", color=MUTED, size=9).grid(
+            row=1, column=1, sticky="w"
+        )
+
         form = tk.Frame(content, bg=PANEL)
         form.pack(fill="x", padx=12, pady=(9, 0))
         form.columnconfigure(1, weight=1)
@@ -767,6 +953,7 @@ class _SettingsWindow(_Window):
         self.request_limit.set("" if settings.daily_request_limit is None else str(settings.daily_request_limit))
         self.token_limit.set("" if settings.daily_token_limit is None else str(settings.daily_token_limit))
         self.budget.set("" if settings.daily_budget_usd is None else str(settings.daily_budget_usd))
+        self.weather_location.set(settings.weather_location)
         storage = "Windows 보호 저장소에 보관" if self.service.persistent_key else "이번 실행 중에만 보관"
         self.key_status.set(f"{storage} · 빈 칸이면 기존 키 유지" if has_key else f"키 미등록 · {storage}")
         self.remove_check.configure(state="normal" if has_key else "disabled")
@@ -797,6 +984,7 @@ class _SettingsWindow(_Window):
                 daily_request_limit=int(request_limit) if request_limit else None,
                 daily_token_limit=int(token_limit) if token_limit else None,
                 daily_budget_usd=float(budget) if budget else None,
+                weather_location=self.weather_location.get().strip(),
             )
         except ValueError:
             self.status.set("요청·토큰 한도는 정수로, 비용 한도는 숫자로 입력해 주세요.")

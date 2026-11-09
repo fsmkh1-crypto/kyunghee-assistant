@@ -2,14 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
-import textwrap
+import re
 import threading
 import time
 import tkinter as tk
 from tkinter import messagebox
 
 import app as core
-from desktop_compact import OutlinedText, _outline_for
 
 from .service import AssistantService
 from .timer_tools import TimerTools, validate_arguments
@@ -22,8 +21,8 @@ _PERIODIC_MIN_SPACING = 5 * 60
 _PROACTIVE_MAX_AGE = 25
 _TOOL_TIMEOUT = 120
 _CHAT_REPLY_SECONDS = 22
-_CHAT_PAGE_SECONDS = 90
-_CHAT_PAGE_CHARS = 96
+_CHAT_EXPAND_SECONDS = 90
+_CHAT_PREVIEW_LINES = 3
 _CHAT_ROLE = {"composing": "rest", "waiting": "rest", "reply": "default", "error": "worry"}
 _CHAT_LABEL = {"composing": "듣는 중", "waiting": "생각 중", "reply": "답변", "error": "응답 오류"}
 _CHAT_LINES = {
@@ -48,13 +47,6 @@ def _failure(message):
     return {"ok": False, "error": message, "message": message}
 
 
-def _chat_pages(text):
-    pages = []
-    for paragraph in text.splitlines():
-        pages.extend(textwrap.wrap(paragraph, width=_CHAT_PAGE_CHARS, break_on_hyphens=False))
-    return pages or ["표시할 답변이 없어요."]
-
-
 class DesktopAssistantMixin:
     """Attach optional AI without changing the timer engine or its alert gate."""
 
@@ -68,8 +60,7 @@ class DesktopAssistantMixin:
         self._assistant_last_attempt = float("-inf")
         self._assistant_last_periodic = float("-inf")
         self._chat_phase = "idle"
-        self._chat_pages: list[str] = []
-        self._chat_page = 0
+        self._expandable_reply = ""
         self._chat_expiry = None
         self._chat_hitbox = None
         self._chat_hitbox_sync = None
@@ -99,17 +90,11 @@ class DesktopAssistantMixin:
         )
         button.place(relx=1.0, x=-43, y=13, anchor="ne")
         self._chat_button = button
-        p = self.preferences
-        self._chat_speech = OutlinedText(
-            self.hero, "", family=self.FONT_FAMILY, size=p.message_text_size,
-            fg=p.message_text_color, outline=_outline_for(p.message_text_color),
-            bg=self.TRANSPARENT_KEY, wraplength=self._message_wrap_width(),
-            justify="center", cursor="hand2",
-        )
-        self._chat_speech.bind("<Button-1>", self._advance_chat_page)
+        self._chat_speech = self._new_speech_bubble("")
+        self._chat_speech.bind("<Button-1>", self._activate_chat_reply)
         self._chat_speech.bind("<Button-3>", self._dismiss_chat_reply)
         if os.name == "nt":
-            self._chat_hitbox = SpeechHitbox(self.root, self._advance_chat_page, self._dismiss_chat_reply)
+            self._chat_hitbox = SpeechHitbox(self.root, self._activate_chat_reply, self._dismiss_chat_reply)
             for event in ("<Configure>", "<Map>", "<Unmap>"):
                 self.root.bind(event, self._queue_chat_hitbox_sync, add="+")
             self._chat_speech.bind("<Configure>", self._queue_chat_hitbox_sync, add="+")
@@ -162,8 +147,7 @@ class DesktopAssistantMixin:
         if phase == "idle" and self._chat_phase == "idle":
             return
         self._chat_phase = phase
-        self._chat_pages = []
-        self._chat_page = 0
+        self._expandable_reply = ""
         if phase == "idle":
             self._chat_button.configure(text="승아")
             self._chat_speech.place_forget()
@@ -173,8 +157,7 @@ class DesktopAssistantMixin:
             self._chat_button.configure(text=f"승아 {_CHAT_LABEL[phase]}")
             super()._set_character(_CHAT_ROLE[phase])
             if phase == "reply":
-                self._chat_pages = _chat_pages(text)
-                self._render_chat_page()
+                self._render_chat_reply(text)
             else:
                 self._chat_speech.configure(text=_CHAT_LINES[phase])
                 if phase == "error":
@@ -194,24 +177,25 @@ class DesktopAssistantMixin:
         self._chat_expiry = None
         self._show_chat_phase("idle")
 
-    def _render_chat_page(self):
-        count = len(self._chat_pages)
-        text = self._chat_pages[self._chat_page]
-        if count > 1:
-            action = "누르면 닫기" if self._chat_page + 1 == count else "누르면 계속"
-            text += f"\n{self._chat_page + 1}/{count}  {action}"
+    def _render_chat_reply(self, text):
+        text = text.strip() or "표시할 답변이 없어요."
+        preview = text.split("\n\n웹 조회 시각 ", 1)[0]
+        if "https://" in preview or "http://" in preview:
+            preview = re.sub(r"\[(\d+)\]\(<https?://[^>]+>\)", r"[\1]", preview)
+        lines = self._chat_speech.wrapped_lines(preview, limit=_CHAT_PREVIEW_LINES + 2)
+        if len(lines) > _CHAT_PREVIEW_LINES + 1 or "https://" in text or "http://" in text:
+            self._expandable_reply = text
+            text = "\n".join(lines[:_CHAT_PREVIEW_LINES]).rstrip() + "\n전체 답변 보기 ›"
         self._chat_speech.configure(text=text)
-        more_pages = self._chat_page + 1 < count and self._effective_display_flag("show_message")
-        self._schedule_chat_expiry(_CHAT_PAGE_SECONDS if more_pages else _CHAT_REPLY_SECONDS)
+        show_preview = self._expandable_reply and self._effective_display_flag("show_message")
+        self._schedule_chat_expiry(_CHAT_EXPAND_SECONDS if show_preview else _CHAT_REPLY_SECONDS)
 
-    def _advance_chat_page(self, _event=None):
+    def _activate_chat_reply(self, _event=None):
         if self._chat_phase != "reply":
             self._open_assistant_chat()
-        elif self._chat_page + 1 < len(self._chat_pages):
-            self._chat_page += 1
-            self._render_chat_page()
-            self._refresh_chat_layout()
         else:
+            if self._expandable_reply:
+                self._assistant_windows.open_reply(self._expandable_reply)
             self._show_chat_phase("idle")
         return "break"
 
