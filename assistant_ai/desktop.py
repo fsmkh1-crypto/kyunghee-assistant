@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from collections import deque
 from datetime import date, datetime
+import math
 import os
 import re
 import threading
@@ -19,9 +20,10 @@ from .ui import AssistantWindows
 from .windows_speech_hitbox import SpeechHitbox
 
 
-_PROACTIVE_MIN_SPACING = 2 * 60
+_PROACTIVE_MIN_SPACING = 60
 _RECENT_CHAT_QUIET_SECONDS = 5 * 60
 _PROACTIVE_MAX_AGE = 25
+_IMPORTANT_EVENT_SECONDS = 60
 _TOOL_TIMEOUT = 120
 _CHAT_REPLY_SECONDS = 22
 _CHAT_PREVIEW_LINES = 3
@@ -58,10 +60,10 @@ class DesktopAssistantMixin:
         self._assistant_ui_thread = threading.get_ident()
         self._assistant_shutdown = threading.Event()
         self._assistant_pending = None
-        self._assistant_periodic_due = False
         self._assistant_last_attempt = float("-inf")
         self._assistant_last_periodic = time.monotonic()
         self._assistant_last_chat_at = float("-inf")
+        self._assistant_important_event_at = float("-inf")
         self._assistant_local_rotation = 0
         self._chat_phase = "idle"
         self._last_chat_reply = ""
@@ -84,6 +86,7 @@ class DesktopAssistantMixin:
                 self.root, self._assistant_service,
                 context=self._assistant_tools.context, dispatch=self._dispatch_assistant_tool,
                 on_chat_state=self._show_chat_phase,
+                proactive_status=self._proactive_status,
                 chat_work_area=self._best_work_area,
                 image_catalog=lambda: self.image_action_catalog(),
                 image_propose=lambda action: self.propose_image_action(action),
@@ -104,14 +107,23 @@ class DesktopAssistantMixin:
             activeforeground=core.TEXT, activebackground=core.PURPLE_2,
             bd=0, relief="flat", cursor="hand2", padx=6,
         )
-        # Speech opens chat; keep this state holder unplaced rather than adding
-        # a second chat control over the compact timer.
+        # Retain the phase label holder; each reading bubble has its own small,
+        # explicit chat button so reading/scrolling never opens another window.
         self._chat_button = button
         self._chat_speech = self._new_speech_bubble("")
         self._chat_speech.bind("<Button-1>", self._activate_chat_reply)
         self._chat_speech.bind("<Button-3>", self._dismiss_chat_reply)
+        for bubble in (self.speech, self._chat_speech):
+            bubble.set_chat_command(self._open_assistant_chat)
+            bubble.set_activity_callback(self._note_assistant_activity)
+            bubble.text_widget.bind("<Button-3>", self._dismiss_chat_reply)
+            bubble.bind("<<SpeechLayoutChanged>>", self._queue_chat_hitbox_sync, add="+")
+            for widget in (bubble, bubble.text_widget, bubble.scrollbar, bubble.chat_button):
+                for event in ("<Configure>", "<Map>"):
+                    widget.bind(event, self._queue_chat_hitbox_sync, add="+")
         if os.name == "nt":
-            self._chat_hitbox = SpeechHitbox(self.root, self._activate_chat_reply, self._dismiss_chat_reply)
+            self._chat_hitbox = SpeechHitbox(self.root, self._activate_chat_reply, self._dismiss_chat_reply,
+                                             on_scroll=self._scroll_visible_speech)
             for event in ("<Configure>", "<Map>", "<Unmap>"):
                 self.root.bind(event, self._queue_chat_hitbox_sync, add="+")
             self._chat_speech.bind("<Configure>", self._queue_chat_hitbox_sync, add="+")
@@ -137,12 +149,14 @@ class DesktopAssistantMixin:
 
     def _sync_chat_hitbox(self):
         self._chat_hitbox_sync = None
+        if self._chat_hitbox is None:
+            return
         try:
+            speech = self._visible_speech()
             if (
-                self._chat_phase == "reply" and self.current_page == "timer"
-                and self._chat_speech.winfo_viewable()
+                self.current_page == "timer" and speech is not None and speech.winfo_viewable()
             ):
-                self._chat_hitbox.show_over(self._chat_speech)
+                self._chat_hitbox.show_over(speech)
             else:
                 self._chat_hitbox.hide()
         except (OSError, tk.TclError):
@@ -178,6 +192,8 @@ class DesktopAssistantMixin:
         return pick(kind, personality=personality)
 
     def _say(self, kind, text=None, work_mode="normal"):
+        if text is not None or kind not in {"playful", "cheer"} or work_mode != "normal":
+            self._assistant_important_event_at = time.monotonic()
         if text is None:
             text = self._local_dialogue(kind, work_mode)
         result = super()._say(kind, text, work_mode)
@@ -192,6 +208,9 @@ class DesktopAssistantMixin:
             self._chat_expiry = None
 
     def _show_chat_phase(self, phase, text=""):
+        if phase == "activity":
+            self._note_assistant_activity()
+            return
         incoming_phase = phase
         if phase == "cleared":
             self._last_chat_reply = ""
@@ -240,23 +259,18 @@ class DesktopAssistantMixin:
 
     def _render_chat_reply(self, text):
         text = text.strip() or "표시할 답변이 없어요."
-        preview = text.split("\n\n웹 조회 시각 ", 1)[0]
-        if "https://" in preview or "http://" in preview:
-            preview = re.sub(r"\[(\d+)\]\(<https?://[^>]+>\)", r"[\1]", preview)
-        lines = self._chat_speech.wrapped_lines(preview, limit=_CHAT_PREVIEW_LINES + 2)
-        if len(lines) > _CHAT_PREVIEW_LINES + 1 or "https://" in text or "http://" in text:
-            self._expandable_reply = text
-            text = "\n".join(lines[:_CHAT_PREVIEW_LINES]).rstrip() + "\n전체 답변 보기 ›"
         self._chat_speech.configure(text=text)
         # Keep the answer until a new send, explicit dismissal, or a later
         # opt-in AI conversation. Ordinary timer chatter never erases it.
 
     def _activate_chat_reply(self, _event=None):
-        if self._chat_phase != "reply" or not self._expandable_reply:
-            self._open_assistant_chat()
-        else:
-            self._assistant_windows.open_reply(self._expandable_reply)
+        self._visible_speech().focus_reading()
         return "break"
+
+    def _scroll_visible_speech(self, delta):
+        if delta:
+            units = max(1, abs(int(delta / 120))) * 3
+            self._visible_speech().scroll(-units if delta > 0 else units)
 
     def _dismiss_chat_reply(self, _event=None):
         if self._chat_phase in {"reply", "error"}:
@@ -410,7 +424,6 @@ class DesktopAssistantMixin:
         previous_mode = self.last_work_mode
         previous_alert = self.break_gate.last_shown_at
         previous_toast = self.toast
-        self._assistant_periodic_due = False
         super()._tick_safe()
         away = self.state.session.is_away
         if self.break_gate.last_shown_at > previous_alert and self.toast is not previous_toast:
@@ -421,23 +434,38 @@ class DesktopAssistantMixin:
             if away and self.last_work_mode == "normal":
                 self._say("away_start")
             self._request_proactive("away" if away else "return", self.toast if self.toast is not previous_toast else None)
-        elif self._assistant_periodic_due:
+        else:
+            # AI cadence is independent of the local message rotation. An AI
+            # reply refreshes last_dialogue_at, which otherwise postpones the
+            # next one-minute attempt until the ordinary line changes again.
             self._request_proactive("periodic")
 
     def _update_dialogue(self):
-        # The original local dialogue always appears first, including when the
-        # AI is offline, throttled, busy, silent, or waiting on a slow network.
-        previous_time, previous_mode = self.last_dialogue_at, self.last_work_mode
+        # Keep the already visible local fallback during a short AI request,
+        # so an unrelated periodic line does not invalidate the arriving AI
+        # text. Real timer transitions and alerts retain their normal path.
+        now = time.monotonic()
+        mode = self._current_workday_state().mode
+        if self._assistant_pending is not None and self._assistant_pending.cancel.is_set():
+            self._assistant_pending = None
+        if mode == self.last_work_mode:
+            if self._chat_blocks_proactive():
+                return
+            pending = self._assistant_pending
+            if pending is not None and now - pending.started_at < _PROACTIVE_MAX_AGE:
+                return
+            service = self._assistant_service
+            chatter = service is not None and service.load_settings().chatter_enabled
+            if chatter and mode == "normal":
+                # Chatter was explicitly selected as AI-only. Keep the last
+                # visible text during failures or limits; diagnostics explain
+                # the pause instead of disguising a canned line as AI output.
+                # Mode transitions and real timer alerts still run normally.
+                return
         super()._update_dialogue()
-        if self.last_dialogue_at != previous_time and previous_mode == self.last_work_mode and self._proactive_enabled():
-            self._assistant_periodic_due = True
 
     def _cycle_message(self, event=None):
         self._open_assistant_chat()
-
-    def _proactive_enabled(self):
-        service = self._assistant_service
-        return service is not None and service.can_proactively_speak()
 
     def _cancel_proactive(self):
         if self._assistant_pending is not None:
@@ -451,9 +479,69 @@ class DesktopAssistantMixin:
         return (self._chat_phase not in {"idle", "reply"}
                 or time.monotonic() - self._assistant_last_chat_at < _RECENT_CHAT_QUIET_SECONDS)
 
+    def _note_assistant_activity(self):
+        """Protect reading and typing without clearing the visible answer."""
+        self._assistant_last_chat_at = time.monotonic()
+        self._cancel_proactive()
+
+    def _proactive_status(self):
+        """A read-only UI snapshot; checking this never starts an API request."""
+        service = self._assistant_service
+        if service is None:
+            return {"reason": "AI 서비스를 준비하지 못했어요.", "next_in_seconds": None}
+        settings = service.load_settings()
+        snapshot = service.proactive_diagnostics()
+        now = time.monotonic()
+        remaining = max(
+            snapshot["retry_after_seconds"],
+            self._assistant_last_attempt + _PROACTIVE_MIN_SPACING - now,
+            self._assistant_last_periodic + settings.proactive_interval_minutes * 60 - now,
+            self._assistant_last_chat_at + _RECENT_CHAT_QUIET_SECONDS - now,
+            self._assistant_important_event_at + _IMPORTANT_EVENT_SECONDS - now,
+            0,
+        )
+        result = {**snapshot, "next_in_seconds": math.ceil(remaining)}
+        if not settings.proactive_enabled and not settings.chatter_enabled:
+            reason = "먼저 말 걸기와 AI 재잘대기가 모두 꺼져 있어요."
+        elif not settings.enabled:
+            reason = "AI 대화 사용이 꺼져 있어요."
+        elif not service.has_key():
+            reason = "API 키가 등록되지 않았어요."
+        elif settings.proactive_quiet_until == date.today().isoformat():
+            reason = "오늘은 AI 먼저 말 걸기를 쉬고 있어요."
+        elif snapshot["state"] == "requesting":
+            reason = "AI 응답을 기다리고 있어요. 추가 요청은 보내지 않아요."
+        elif self._assistant_windows is not None and self._assistant_windows.is_chat_active():
+            reason = self._assistant_windows.chat_activity_reason()
+        elif now - self._assistant_last_chat_at < _RECENT_CHAT_QUIET_SECONDS:
+            reason = "대화·읽기 뒤 5분 동안 쉬고 있어요."
+        elif now - self._assistant_important_event_at < _IMPORTANT_EVENT_SECONDS:
+            reason = "중요한 타이머 알림을 읽을 수 있도록 정기 대화를 1분 동안 쉬어요."
+        elif self._break_notifications_suppressed():
+            reason = "전체 화면 등 현재 알림을 보류하는 상태예요."
+        elif not self.preferences.show_message:
+            reason = "말풍선 표시가 꺼져 있어 정기 대화를 쉬고 있어요."
+        elif self.current_page != "timer" or not self.root.winfo_viewable():
+            reason = "타이머 위젯이 보일 때 정기 대화를 이어가요."
+        elif "periodic" not in settings.proactive_events and not settings.chatter_enabled:
+            reason = "정기 말 걸기는 꺼져 있고, 선택한 타이머 상황에서만 말해요."
+        else:
+            context = self._assistant_tools.context()
+            if context.get("is_away"):
+                reason = "자리비움 중에는 정기 대화를 쉬고 있어요."
+            elif context.get("workday_mode") != "normal":
+                reason = "업무 마무리 시간에는 정기 대화를 쉬고 있어요."
+            elif remaining:
+                reason = f"다음 정기 시도까지 약 {math.ceil(remaining)}초 남았어요."
+            else:
+                reason = "다음 타이머 갱신 때 정기 대화를 시도할 수 있어요. 사용량 한도는 계속 적용돼요."
+        result["reason"] = reason
+        return result
+
     def _request_proactive(self, event, toast=None):
         service = self._assistant_service
         if event != "periodic":
+            self._assistant_important_event_at = time.monotonic()
             self._assistant_events.append({"date": date.today().isoformat(), "time": datetime.now().astimezone().isoformat(timespec="seconds"), "event": event})
         if self._chat_blocks_proactive():
             return
@@ -472,12 +560,21 @@ class DesktopAssistantMixin:
         if now - self._assistant_last_attempt < _PROACTIVE_MIN_SPACING:
             return
         if event == "periodic":
+            if now - self._assistant_important_event_at < _IMPORTANT_EVENT_SECONDS:
+                return
             interval = service.load_settings().proactive_interval_minutes * 60
+            if now - self._assistant_last_periodic < interval:
+                return
             context = self._assistant_tools.context()
             if context.get("is_away") or context.get("workday_mode") != "normal":
                 return
-            if now - self._assistant_last_periodic < interval:
-                return
+        # The worker records its attempt slightly after this UI thread. Check
+        # its authoritative time gate before advancing either UI clock; a
+        # sub-second delay must not turn a one-minute interval into two.
+        admission = service.proactive_diagnostics(event)
+        if admission["state"] == "requesting" or admission["retry_after_seconds"] > 0:
+            return
+        if event == "periodic":
             self._assistant_last_periodic = now
         request = _ProactiveRequest(
             event, self._assistant_tools.context(), now, self.last_dialogue_at,
@@ -506,9 +603,10 @@ class DesktopAssistantMixin:
         if (
             self._assistant_shutdown.is_set() or request.cancel.is_set()
             or time.monotonic() - request.started_at > _PROACTIVE_MAX_AGE
-            or service is None or service.revision != request.revision or not service.can_proactively_speak()
+            or service is None or service.revision != request.revision or not service.can_proactively_speak(request.event)
             or self._break_notifications_suppressed()
             or self._chat_blocks_proactive()
+            or request.event == "periodic" and time.monotonic() - self._assistant_important_event_at < _IMPORTANT_EVENT_SECONDS
         ):
             return
         current = self._assistant_tools.context()

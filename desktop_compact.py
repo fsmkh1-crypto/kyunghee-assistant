@@ -219,18 +219,127 @@ class _RoundedPanel(tk.Canvas):
 
 
 class SpeechBubble(_RoundedPanel):
-    """A readable message surface over the transparent character window."""
+    """A three-line reading viewport; full text stays inside the same bubble."""
+
+    MAX_VISIBLE_LINES = 3
 
     def __init__(self, parent, text, *, family, size, fg, bg, wraplength):
-        super().__init__(parent, bg=bg, cursor="hand2")
+        super().__init__(parent, bg=bg, cursor="arrow")
         self._font = tkfont.Font(family=family, size=size)
-        self._text = text
+        self._button_font = tkfont.Font(family=family, size=max(9, min(11, size - 2)), weight="bold")
+        self._text = str(text)
         self._fg = fg
         self._wraplength = wraplength
+        self._activity_callback = None
+        self._chat_command = None
+        self._has_overflow = False
+        self._text_width = max(1, wraplength - 2 * self._dpi_pixels(18))
+        self.text_widget = tk.Text(
+            self, font=self._font, fg=fg, bg=PANEL_BG, wrap="word", state="disabled",
+            bd=0, highlightthickness=0, padx=0, pady=0, width=1, height=1,
+            cursor="xterm", takefocus=True, exportselection=False,
+            selectbackground=core.PURPLE_2, selectforeground=core.TEXT,
+        )
+        self.scrollbar = tk.Scrollbar(
+            self, orient="vertical", command=self._scroll_command, width=self._dpi_pixels(12),
+            bg=PANEL_BORDER, activebackground=core.PURPLE, troughcolor=PANEL_BG,
+            bd=0, highlightthickness=0, relief="flat", takefocus=True,
+        )
+        self.text_widget.configure(yscrollcommand=self._set_scrollbar)
+        self.chat_button = tk.Button(
+            self, text="대화", command=self._open_chat, font=self._button_font,
+            fg=core.TEXT, bg=core.PANEL_2, activeforeground=core.TEXT,
+            activebackground=core.PURPLE_2, bd=0, relief="flat", takefocus=True,
+            padx=self._dpi_pixels(5), pady=self._dpi_pixels(2), cursor="hand2",
+        )
+        self.chat_button.bind("<Return>", lambda _event: self.chat_button.invoke())
+        self._text_window = self.create_window(0, 0, anchor="nw", window=self.text_widget)
+        self._scroll_window = self.create_window(0, 0, anchor="nw", window=self.scrollbar)
+        self._chat_window = self.create_window(0, 0, anchor="nw", window=self.chat_button, state="hidden")
+        self.bind("<Button-1>", self.focus_reading)
+        self.text_widget.bind("<Button-1>", self._reading_click)
+        for widget in (self, self.text_widget, self.scrollbar, self.chat_button):
+            widget.bind("<MouseWheel>", self._mousewheel)
+            widget.bind("<Button-4>", lambda _event: self.scroll(-3))
+            widget.bind("<Button-5>", lambda _event: self.scroll(3))
+        self.text_widget.bind("<FocusIn>", lambda _event: self._note_activity())
+        self.text_widget.bind("<KeyPress>", lambda _event: self._note_activity(), add="+")
+        for sequence, amount, unit in (
+            ("<Up>", -1, "units"), ("<Down>", 1, "units"),
+            ("<Prior>", -1, "pages"), ("<Next>", 1, "pages"),
+        ):
+            self.text_widget.bind(sequence, lambda _event, n=amount, u=unit: self._scroll_command("scroll", n, u))
+        for sequence, position in (("<Home>", 0), ("<Control-Home>", 0), ("<End>", 1), ("<Control-End>", 1)):
+            self.text_widget.bind(sequence, lambda _event, p=position: self.scroll_to(p))
+        self.text_widget.bind("<Tab>", lambda _event: self._focus_next())
+        self._render(update_text=True)
+
+    def set_activity_callback(self, callback):
+        self._activity_callback = callback
+
+    def set_chat_command(self, command):
+        self._chat_command = command
         self._render()
 
+    def _note_activity(self):
+        if self._activity_callback is not None:
+            self._activity_callback()
+
+    def _open_chat(self):
+        self._note_activity()
+        if self._chat_command is not None:
+            self._chat_command()
+
+    def _focus_next(self):
+        (self.chat_button if self._chat_command else self.text_widget.tk_focusNext()).focus_set()
+        return "break"
+
+    def _reading_click(self, _event=None):
+        self.focus_reading()
+        # Let Text's class binding retain selection/copy behavior.
+
+    def focus_reading(self, _event=None):
+        self._note_activity()
+        self.text_widget.focus_set()
+        return "break"
+
+    def _scroll_command(self, *args):
+        self.focus_reading()
+        self.text_widget.yview(*args)
+        return "break"
+
+    def _set_scrollbar(self, first, last):
+        self.scrollbar.set(first, last)
+        overflow = float(last) - float(first) < 0.999999
+        if overflow != self._has_overflow:
+            self._has_overflow = overflow
+            if hasattr(self, "_scroll_window"):
+                self.itemconfigure(self._scroll_window, state="normal" if overflow else "hidden")
+                self.event_generate("<<SpeechLayoutChanged>>", when="tail")
+
+    def scroll(self, units):
+        return self._scroll_command("scroll", int(units), "units")
+
+    def scroll_to(self, fraction):
+        return self._scroll_command("moveto", min(1.0, max(0.0, float(fraction))))
+
+    def _mousewheel(self, event):
+        delta = getattr(event, "delta", 0)
+        if delta:
+            self.scroll(-max(1, abs(int(delta / 120))) * 3 if delta > 0 else max(1, abs(int(delta / 120))) * 3)
+        return "break"
+
+    def native_interaction_widgets(self):
+        """Opaque child controls must receive Windows input past the hitbox."""
+        result = [self.text_widget]
+        if self._has_overflow:
+            result.append(self.scrollbar)
+        if self._chat_command is not None:
+            result.append(self.chat_button)
+        return tuple(result)
+
     def wrapped_lines(self, text, *, limit=None):
-        available = max(1, self._wraplength - 2 * self._dpi_pixels(18))
+        available = max(1, self._text_width)
         lines = []
         for paragraph in text.expandtabs(4).split("\n"):
             remaining = paragraph.rstrip()
@@ -254,24 +363,45 @@ class SpeechBubble(_RoundedPanel):
                 return lines
         return lines
 
-    def _render(self):
-        pad_x, pad_y = self._dpi_pixels(18), self._dpi_pixels(12)
-        lines = self.wrapped_lines(self._text)
+    def _render(self, *, update_text=False):
+        first = self.text_widget.yview()[0]
+        pad_x, pad_y, gap = self._dpi_pixels(18), self._dpi_pixels(12), self._dpi_pixels(4)
+        scroll_width = self._dpi_pixels(12)
+        button_width = self._button_font.measure("대화") + 2 * self._dpi_pixels(5) if self._chat_command else 0
+        self._text_width = max(1, self._wraplength - 2 * pad_x - scroll_width - gap - (button_width + gap if button_width else 0))
+        lines = self.wrapped_lines(self._text, limit=self.MAX_VISIBLE_LINES + 1)
+        self._visible_line_count = max(1, min(self.MAX_VISIBLE_LINES, len(lines)))
+        self._has_overflow = len(lines) > self.MAX_VISIBLE_LINES
         font_height = self._font.metrics("linespace")
         font_pixels = self.winfo_fpixels(f"{self._font.actual('size')}p")
-        line_height = max(font_height, round(font_pixels * 1.4))
-        height = 2 * pad_y + font_height + (len(lines) - 1) * line_height
-        self.delete("line")
-        for index, line in enumerate(lines):
-            if line:
-                self.create_text(pad_x, pad_y + index * line_height, text=line, font=self._font,
-                                 fill=self._fg, anchor="nw", tags="line")
-        self._fit_panel(self._wraplength, height, 14)
+        self._line_height = max(font_height, round(font_pixels * 1.4))
+        self._viewport_height = self._visible_line_count * self._line_height
+        self.text_widget.configure(font=self._font, fg=self._fg, height=self._visible_line_count, spacing1=0,
+                                   spacing2=self._line_height - font_height, spacing3=self._line_height - font_height)
+        if update_text:
+            self.text_widget.configure(state="normal")
+            self.text_widget.delete("1.0", "end")
+            self.text_widget.insert("1.0", self._text)
+            self.text_widget.configure(state="disabled")
+        self.coords(self._text_window, pad_x, pad_y)
+        self.itemconfigure(self._text_window, width=self._text_width, height=self._viewport_height)
+        self.coords(self._scroll_window, pad_x + self._text_width + gap, pad_y)
+        self.itemconfigure(self._scroll_window, width=scroll_width, height=self._viewport_height,
+                           state="normal" if self._has_overflow else "hidden")
+        self.coords(self._chat_window, self._wraplength - pad_x - button_width, pad_y)
+        self.itemconfigure(self._chat_window, width=button_width or 1,
+                           state="normal" if self._chat_command else "hidden")
+        self._fit_panel(self._wraplength, 2 * pad_y + self._viewport_height, 14)
+        self.text_widget.yview_moveto(0 if update_text else first)
+        # Native exclusion regions must follow child geometry even when the
+        # bubble's outer three-line size did not change. Never pump Tk here.
+        self.event_generate("<<SpeechLayoutChanged>>", when="tail")
 
     def set_style(self, *, size=None, fg=None, outline=None):
         changed = False
         if size is not None and int(size) != int(self._font.cget("size")):
             self._font.configure(size=int(size))
+            self._button_font.configure(size=max(9, min(11, int(size) - 2)))
             changed = True
         if fg is not None and fg != self._fg:
             self._fg = fg
@@ -290,15 +420,15 @@ class SpeechBubble(_RoundedPanel):
         text = kwargs.pop("text", None)
         color = kwargs.pop("fg", kwargs.pop("foreground", None))
         kwargs.pop("outline", None)
-        changed = False
+        changed = update_text = False
         if text is not None and str(text) != self._text:
             self._text = str(text)
-            changed = True
+            changed = update_text = True
         if color is not None and color != self._fg:
             self._fg = color
             changed = True
         if changed:
-            self._render()
+            self._render(update_text=update_text)
         if kwargs:
             super().configure(**kwargs)
 
@@ -1170,7 +1300,7 @@ class CompactDesktopApp(DesktopApp):
         self.cont.configure(takefocus=True, highlightthickness=1,
                             highlightbackground=PANEL_BG, highlightcolor=core.PURPLE)
         self.cont.bind("<Return>", lambda _event: self._show_page("settings"))
-        self.speech.bind("<Button-1>", self._cycle_message)
+        self.speech.bind("<Button-1>", self.speech.focus_reading)
         self._apply_widget_appearance()
 
     def _new_speech_bubble(self, text):
@@ -1592,6 +1722,10 @@ class CompactDesktopApp(DesktopApp):
     def _settings_focus_visible(self, event):
         if self.current_page != "settings" or event.widget.winfo_toplevel() != self.root:
             return
+        # FocusIn is also delivered to ancestor Frames. Scrolling a tall body
+        # Frame into view after its button hides the very control being focused.
+        if event.widget is not self.root.focus_get():
+            return
         canvas = self._settings_canvases.get(self._settings_notebook.select())
         if canvas is None or not str(event.widget).startswith(str(canvas)):
             return
@@ -1677,7 +1811,7 @@ class CompactDesktopApp(DesktopApp):
         window.configure(bg=core.PANEL)
         self._label(window, "타이머는 AI 없이도 바로 사용할 수 있어요", size=13, bg=core.PANEL).pack(anchor="w", padx=20, pady=(20, 12))
         self._label(window,
-                    "말풍선 클릭 → 승아와 대화\n시계·캐릭터 클릭 → 설정 / 누른 채 움직이기 → 이동\n주사위 → 현재 그림 변경\n트레이 메뉴 → 오늘 기록·자리비움·복귀\nCtrl+Shift+H → 숨기기·다시 열기\nCtrl+Shift+A → 대화 열기\n\n창을 숨겨도 기록은 계속됩니다. 트레이에서 다시 열 수 있어요.\n이미지 팩은 설정 → 이미지, 데이터 백업은 AI·기억·데이터에서 관리해요.",
+                    "말풍선: 대화 버튼 / 긴 글은 휠·방향키로 읽기\n시계·캐릭터 클릭 → 설정 / 누른 채 움직이기 → 이동\n주사위 → 현재 그림 변경\n트레이 메뉴 → 오늘 기록·자리비움·복귀\nCtrl+Shift+H → 숨기기·다시 열기\nCtrl+Shift+A → 대화 열기\n\n창을 숨겨도 기록은 계속됩니다. 트레이에서 다시 열 수 있어요.\n이미지 팩은 설정 → 이미지, 데이터 백업은 AI·기억·데이터에서 관리해요.",
                     size=10, bg=core.PANEL, justify="left", wraplength=470).pack(anchor="w", padx=20, pady=8)
         row = tk.Frame(window, bg=core.PANEL)
         row.pack(fill="x", padx=20, pady=20)
@@ -1958,7 +2092,7 @@ class CompactDesktopApp(DesktopApp):
 
         content = self._settings_sections["images"]
         self._label(content, "상황별 승아 이미지", size=11, bg=core.PANEL).pack(anchor="w", pady=(16, 4), **pad)
-        self._label(content, "이미지 가져오기·갤러리 선택은 즉시 적용됩니다. 일반 설정과 표시 옵션은 아래에서 저장해 주세요.",
+        self._label(content, "파일 가져오기는 바로 저장되고, 갤러리는 선택 후 적용을 누릅니다. 일반 설정과 표시 옵션은 아래에서 저장해 주세요.",
                     size=9, fg=core.MUTED, bg=core.PANEL, wraplength=650, justify="left").pack(anchor="w", pady=4, **pad)
         self._label(
             content,
@@ -2021,7 +2155,12 @@ class CompactDesktopApp(DesktopApp):
             "top_left": "왼쪽 위", "top_right": "오른쪽 위",
             "bottom_left": "왼쪽 아래", "bottom_right": "오른쪽 아래",
         }
+        # Role controls must be real children of this container. Repacking
+        # sibling widgets into a later Frame can leave the Frame covering them.
+        self._image_role_detail_frame = tk.Frame(content, bg=core.PANEL)
+        self._image_role_detail_frame.pack(fill="x", padx=4, pady=4)
         self._image_role_rows = {}
+        self._image_role_action_rows = {}
         for key, caption in self.IMAGE_ROWS:
             path_value = getattr(p, f"image_{key}")
             config = self._image_set_store.get(key)
@@ -2034,39 +2173,51 @@ class CompactDesktopApp(DesktopApp):
                 value=self._builtin_override_label(getattr(p, f"builtin_image_{key}", ""))
             )
 
-            row = tk.Frame(content, bg=core.PANEL)
+            row = tk.Frame(self._image_role_detail_frame, bg=core.PANEL)
             row.pack(fill="x", pady=(3, 0), **pad)
-            self._label(row, caption, size=9, bg=core.PANEL).pack(side="left")
+            heading = tk.Frame(row, bg=core.PANEL)
+            heading.pack(fill="x")
+            self._label(heading, caption, size=9, bg=core.PANEL).pack(side="left")
             name_label = tk.Label(
-                row, textvariable=self.image_name_vars[key], width=18, anchor="w",
+                heading, textvariable=self.image_name_vars[key], width=24, anchor="w",
                 font=(self.FONT_FAMILY, 8, "normal"), fg=core.MUTED, bg=core.PANEL,
             )
             name_label.pack(side="left", padx=(10, 5))
-            self._button(row, "한 장", lambda k=key: self._choose_image(k)).pack(side="left", padx=2)
-            self._button(row, "여러 장", lambda k=key: self._choose_image_set(k)).pack(side="left", padx=2)
-            self._button(row, "폴더", lambda k=key: self._choose_image_folder(k)).pack(side="left", padx=2)
-            self._button(row, "기본값", lambda k=key: self._reset_image(k)).pack(side="left", padx=(2, 0))
-            options = tk.Frame(content, bg=core.PANEL)
+            actions = tk.Frame(row, bg=core.PANEL)
+            actions.pack(fill="x", pady=4)
+            self._image_role_action_rows[key] = actions
+            for index, (text, command) in enumerate((
+                ("한 장", lambda k=key: self._choose_image(k)),
+                ("여러 장", lambda k=key: self._choose_image_set(k)),
+                ("폴더", lambda k=key: self._choose_image_folder(k)),
+                ("기본값", lambda k=key: self._reset_image(k)),
+            )):
+                self._button(actions, text, command).grid(row=index // 3, column=index % 3, sticky="ew", padx=2, pady=2)
+            for column in range(3):
+                actions.grid_columnconfigure(column, weight=1, uniform="image-actions")
+            options = tk.Frame(self._image_role_detail_frame, bg=core.PANEL)
             options.pack(fill="x", pady=(0, 3), **pad)
             self._image_role_rows[key] = (row, options)
-            self._label(options, "내장", size=8, fg=core.MUTED, bg=core.PANEL).pack(side="left", padx=(70, 3))
+            builtin_field = tk.Frame(options, bg=core.PANEL)
+            builtin_field.pack(fill="x", pady=2)
+            self._label(builtin_field, "내장", size=8, fg=core.MUTED, bg=core.PANEL).pack(side="left", padx=(5, 3))
             tk.OptionMenu(
-                options, self.image_builtin_vars[key], "세트 기본값", "기본 모델", *self._builtin_set_labels,
-                command=lambda _value, k=key: self._select_settings_preview(k),
+                builtin_field, self.image_builtin_vars[key], "세트 기본값", "기본 모델", *self._builtin_set_labels,
+                command=lambda _value, k=key: self._select_settings_preview(k), width=14,
             ).pack(side="left", padx=(0, 5))
-            self._label(options, "표시", size=8, fg=core.MUTED, bg=core.PANEL).pack(side="left", padx=(5, 3))
-            tk.OptionMenu(
-                options, self.image_mode_vars[key], "자동 맞춤", "가운데 크롭",
-                command=lambda _value, k=key: self._select_settings_preview(k),
-            ).pack(side="left", padx=(0, 5))
-            self._label(options, "정렬", size=8, fg=core.MUTED, bg=core.PANEL).pack(side="left", padx=(5, 3))
-            tk.OptionMenu(
-                options, self.image_alignment_vars[key],
-                "가운데", "위", "아래", "왼쪽", "오른쪽",
-                "왼쪽 위", "오른쪽 위", "왼쪽 아래", "오른쪽 아래",
-                command=lambda _value, k=key: self._select_settings_preview(k),
-            ).pack(side="left")
-            self._button(options, "미리보기", lambda k=key: self._select_settings_preview(k)).pack(side="left", padx=(7, 0))
+            fields_row = tk.Frame(options, bg=core.PANEL)
+            fields_row.pack(fill="x", pady=2)
+            for label, variable, choices, width in (
+                ("표시", self.image_mode_vars[key], ("자동 맞춤", "가운데 크롭"), 14),
+                ("정렬", self.image_alignment_vars[key],
+                 ("가운데", "위", "아래", "왼쪽", "오른쪽", "왼쪽 위", "오른쪽 위", "왼쪽 아래", "오른쪽 아래"), 14),
+            ):
+                field = tk.Frame(fields_row, bg=core.PANEL)
+                field.pack(side="left", padx=(0, 5))
+                self._label(field, label, size=8, fg=core.MUTED, bg=core.PANEL).pack(side="left", padx=(5, 3))
+                tk.OptionMenu(field, variable, *choices, width=width,
+                              command=lambda _value, k=key: self._select_settings_preview(k)).pack(side="left")
+            self._button(fields_row, "미리보기", lambda k=key: self._select_settings_preview(k)).pack(side="left", padx=5)
 
         self._render_settings_preview("default")
 

@@ -1,4 +1,5 @@
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 import json
 import os
@@ -356,6 +357,64 @@ class AssistantServiceTests(unittest.TestCase):
         self.assertFalse(cancel.is_set())
         self.assertEqual(self.service.revision, revision)
 
+    def test_ai_chatter_toggle_during_chat_cancels_old_reply_but_preserves_event_opt_in(self):
+        self.service.save_settings(replace(self.settings, proactive_enabled=True, chatter_enabled=True))
+        revision = self.service.revision
+        cancel = threading.Event()
+
+        def toggle_ai_chatter(*args, **kwargs):
+            self.service.save_settings(replace(self.service.load_settings(), chatter_enabled=False, reading_text_size=16))
+            return reply("이전 AI 설정으로 만든 응답이에요.")
+
+        self.api.respond.side_effect = toggle_ai_chatter
+        with self.assertRaises(AIError) as error:
+            self.ask("대화 중 AI 말 걸기를 끌게요.", cancel)
+        self.assertEqual(error.exception.code, "cancelled")
+        self.assertTrue(cancel.is_set())
+        self.assertIsNone(self.service.recent_turns()[-1].assistant)
+        self.assertGreater(self.service.revision, revision)
+        self.assertFalse(self.service.load_settings().chatter_enabled)
+        self.assertTrue(self.service.load_settings().proactive_enabled)
+
+    def test_ai_chatter_off_during_proactive_discards_old_generated_result(self):
+        self.service.save_settings(replace(self.settings, proactive_enabled=False, chatter_enabled=True))
+        self.now += 60
+        revision = self.service.revision
+        cancel = threading.Event()
+
+        def toggle_ai_chatter(*args, **kwargs):
+            self.service.save_settings(replace(self.service.load_settings(), chatter_enabled=False))
+            return reply("이전 설정으로 만든 자동 대사예요.")
+
+        self.api.respond.side_effect = toggle_ai_chatter
+        with self.assertRaises(AIError) as error:
+            self.service.proactive("periodic", context={}, cancel=cancel)
+        self.assertEqual(error.exception.code, "cancelled")
+        self.assertTrue(cancel.is_set())
+        self.assertGreater(self.service.revision, revision)
+        self.assertFalse(self.service.can_proactively_speak())
+        self.assertEqual(self.service.proactive_diagnostics()["last_outcome"], "cancelled")
+
+    def test_ai_opt_in_or_interval_change_still_cancels_when_chatter_changes_too(self):
+        for change in ({"proactive_enabled": False}, {"proactive_interval_minutes": 2}):
+            with self.subTest(change=change):
+                self.service.save_settings(replace(self.settings, proactive_enabled=True))
+                cancel = threading.Event()
+                revision = self.service.revision
+
+                def change_ai_setting(*args, **kwargs):
+                    self.service.save_settings(replace(self.service.load_settings(), chatter_enabled=True, **change))
+                    return reply("이전 설정의 응답은 표시하면 안 돼요.")
+
+                self.api.respond.side_effect = change_ai_setting
+                with self.assertRaises(AIError) as error:
+                    self.service.proactive("rest", context={}, cancel=cancel)
+                self.assertEqual(error.exception.code, "cancelled")
+                self.assertTrue(cancel.is_set())
+                self.assertGreater(self.service.revision, revision)
+                self.assertEqual(self.service.proactive_diagnostics()["last_outcome"], "cancelled")
+                self.now += 60
+
     def test_web_switch_removes_tool_and_explicit_search_does_not_spend(self):
         self.service.save_settings(replace(self.settings, web_search_enabled=False))
         self.api.respond.return_value = reply("안녕하세요.")
@@ -401,7 +460,7 @@ class AssistantServiceTests(unittest.TestCase):
         self.api.respond.return_value = reply("오빠, 물 한 잔 마셔요.")
         self.assertIsNone(self.service.proactive("periodic", context={}, cancel=threading.Event()))
         self.assertIsNotNone(self.service.proactive("rest", context={}, cancel=threading.Event()))
-        self.now += 120
+        self.now += 60
         self.assertIsNone(self.service.proactive("rest", context={}, cancel=threading.Event()))
         self.assertIn("물 한 잔", self.api.respond.call_args.kwargs["instructions"])
         self.assertEqual(self.api.respond.call_args.kwargs["purpose"], "event")
@@ -414,6 +473,84 @@ class AssistantServiceTests(unittest.TestCase):
         self.service.save_settings(replace(self.settings, proactive_enabled=True))
         self.api.respond.return_value = reply("물을 마셔요.")
         self.assertIsNone(self.service.proactive("rest", context={"recent_dialogue": ["물을 마셔요."]}, cancel=threading.Event()))
+
+    def test_chatter_and_timer_event_opt_ins_are_independent_and_quiet_applies_to_both(self):
+        for chatter, proactive, events, expected in (
+            (False, False, ("rest", "periodic"), (False, False, False)),
+            (True, False, (), (True, True, False)),
+            (False, True, ("rest",), (True, False, True)),
+            (False, True, ("periodic",), (True, True, False)),
+            (False, True, (), (False, False, False)),
+            (True, True, ("rest",), (True, True, True)),
+        ):
+            with self.subTest(chatter=chatter, proactive=proactive, events=events):
+                self.service.save_settings(replace(self.settings, chatter_enabled=chatter,
+                                                   proactive_enabled=proactive, proactive_events=events))
+                actual = tuple(self.service.can_proactively_speak(event) for event in (None, "periodic", "rest"))
+                self.assertEqual(actual, expected)
+                self.assertFalse(self.service.can_proactively_speak("return"))
+                self.service.quiet_today()
+                self.assertFalse(any(self.service.can_proactively_speak(event) for event in (None, "periodic", "rest")))
+
+    def test_chatter_only_generates_new_topic_without_tools_or_silence_instruction(self):
+        self.service.save_settings(replace(self.settings, chatter_enabled=True, proactive_enabled=False, proactive_events=()))
+        self.now += 60
+        self.api.respond.return_value = reply("작은 책방에 들른다면 어떤 책부터 펼쳐보고 싶어요?")
+        context = {"current_time": "2026-11-09T14:05:00+09:00", "workday_mode": "normal", "is_away": False,
+                   "personality": "warm", "recent_dialogue": ["잠깐 창밖을 봐도 좋겠어요."]}
+        answer = self.service.proactive("periodic", context=context, cancel=threading.Event())
+        self.assertIn("책방", answer)
+        args, kwargs = self.api.respond.call_args
+        self.assertNotIn("tools", kwargs)
+        self.assertEqual(kwargs["purpose"], "event")
+        self.assertNotIn("SILENT", kwargs["instructions"])
+        for expected in ("새로운 화제", '"mode": "chatter"', '"personality": "warm"', '"time_of_day": "오후"',
+                         "도구나 웹 검색은 사용하지", "수치는 제공된 자료에 있을 때만"):
+            self.assertIn(expected, kwargs["instructions"])
+        self.assertIn("새로운 화제", args[1][-1]["content"])
+        self.api.respond.assert_called_once()
+        self.assertEqual(self.service.proactive_diagnostics()["last_outcome"], "generated")
+        self.assertEqual(self.service.proactive_diagnostics()["retry_after_seconds"], 60)
+
+    def test_both_modes_share_one_active_request_and_do_not_reset_user_activity(self):
+        self.service.save_settings(replace(self.settings, chatter_enabled=True, proactive_enabled=True))
+        self.now += 60
+        original_user_activity = self.service._last_chat_activity
+
+        def event_while_chattering(*args, **kwargs):
+            self.now += 61
+            self.assertIsNone(self.service.proactive("rest", context={}, cancel=threading.Event()))
+            return reply("새 화제를 하나 꺼내 보고 싶었어요.")
+
+        self.api.respond.side_effect = event_while_chattering
+        self.assertIsNotNone(self.service.proactive("periodic", context={}, cancel=threading.Event()))
+        self.api.respond.assert_called_once()
+        self.assertEqual(self.service._last_chat_activity, original_user_activity)
+        self.api.respond.side_effect = None
+        self.api.respond.return_value = reply("SILENT")
+        self.assertIsNone(self.service.proactive("periodic", context={}, cancel=threading.Event()))
+        self.assertEqual(self.api.respond.call_count, 2)
+        self.assertEqual(self.service.proactive_diagnostics()["last_outcome"], "silent")
+
+    def test_chatter_only_keeps_budget_limits_and_reports_repeated_results(self):
+        self.service.save_settings(replace(self.settings, chatter_enabled=True, proactive_enabled=False,
+                                           proactive_events=(), daily_budget_usd=0.001))
+        self.now += 60
+        self.api.respond.side_effect = AIError("budget_limit", "secret provider detail")
+        with self.assertRaises(AIError):
+            self.service.proactive("periodic", context={}, cancel=threading.Event())
+        self.assertEqual(self.api.respond.call_args.args[0].daily_budget_usd, 0.001)
+        self.assertEqual(self.service.proactive_diagnostics()["last_error_code"], "budget_limit")
+        self.now += 59
+        self.assertIsNone(self.service.proactive("periodic", context={}, cancel=threading.Event()))
+        self.api.respond.assert_called_once()
+        self.now += 1
+        self.api.respond.side_effect = None
+        self.api.respond.return_value = reply("책방에서 고른 책은 어떤 이야기일까요?")
+        self.assertIsNotNone(self.service.proactive("periodic", context={}, cancel=threading.Event()))
+        self.now += 60
+        self.assertIsNone(self.service.proactive("periodic", context={}, cancel=threading.Event()))
+        self.assertEqual(self.service.proactive_diagnostics()["last_outcome"], "repeated")
 
     def test_proactive_does_not_repackage_a_recent_chat_sentence(self):
         self.service.save_settings(replace(self.settings, proactive_enabled=True))
@@ -430,7 +567,7 @@ class AssistantServiceTests(unittest.TestCase):
         self.api.respond.side_effect = [AIError("network", "연결 실패"), reply("돌아오셨네요. 반가워요.")]
         with self.assertRaises(AIError):
             self.service.proactive("rest", context={}, cancel=threading.Event())
-        self.now += 119
+        self.now += 59
         self.assertIsNone(self.service.proactive("return", context={}, cancel=threading.Event()))
         self.assertEqual(self.api.respond.call_count, 1)
         self.now += 1
@@ -467,6 +604,79 @@ class AssistantServiceTests(unittest.TestCase):
         self.assertIsNone(self.service.proactive("periodic", context=context, cancel=threading.Event()))
         self.assertEqual(self.api.respond.call_count, 2)
 
+    def test_one_minute_periodic_waits_until_sixty_seconds_at_startup_and_after_attempt(self):
+        self.service.save_settings(replace(self.settings, proactive_enabled=True, proactive_interval_minutes=1))
+        self.api.respond.return_value = reply("SILENT")
+        context = {"workday_mode": "normal", "is_away": False}
+        self.assertIsNone(self.service.proactive("periodic", context=context, cancel=threading.Event()))
+        self.now += 59
+        self.assertIsNone(self.service.proactive("periodic", context=context, cancel=threading.Event()))
+        self.api.respond.assert_not_called()
+        self.now += 1
+        self.assertIsNone(self.service.proactive("periodic", context=context, cancel=threading.Event()))
+        self.assertEqual(self.api.respond.call_count, 1)
+        self.now += 59
+        self.assertIsNone(self.service.proactive("periodic", context=context, cancel=threading.Event()))
+        self.assertEqual(self.api.respond.call_count, 1)
+        self.now += 1
+        self.assertIsNone(self.service.proactive("periodic", context=context, cancel=threading.Event()))
+        self.assertEqual(self.api.respond.call_count, 2)
+
+    def test_timer_event_also_delays_periodic_until_sixty_seconds_after_its_attempt(self):
+        self.service.save_settings(replace(self.settings, proactive_enabled=True, proactive_interval_minutes=1))
+        self.api.respond.return_value = reply("SILENT")
+        self.now += 30
+        self.assertIsNone(self.service.proactive("rest", context={}, cancel=threading.Event()))
+        self.assertEqual(self.api.respond.call_count, 1)
+        self.now += 59
+        self.assertIsNone(self.service.proactive("periodic", context={}, cancel=threading.Event()))
+        self.assertEqual(self.api.respond.call_count, 1)
+        self.now += 1
+        self.assertIsNone(self.service.proactive("periodic", context={}, cancel=threading.Event()))
+        self.assertEqual(self.api.respond.call_count, 2)
+
+    def test_one_minute_periodic_keeps_budget_denial_cooldown_and_configuration(self):
+        settings = replace(self.settings, proactive_enabled=True, proactive_interval_minutes=1, daily_budget_usd=0.001)
+        self.service.save_settings(settings)
+        self.api.respond.side_effect = AIError("budget_limit", "오늘 남은 비용 한도가 부족해요.")
+        self.now += 60
+        with self.assertRaises(AIError) as first:
+            self.service.proactive("periodic", context={}, cancel=threading.Event())
+        self.assertEqual(first.exception.code, "budget_limit")
+        self.now += 59
+        self.assertIsNone(self.service.proactive("periodic", context={}, cancel=threading.Event()))
+        self.assertEqual(self.api.respond.call_count, 1)
+        self.now += 1
+        with self.assertRaises(AIError):
+            self.service.proactive("periodic", context={}, cancel=threading.Event())
+        self.assertEqual(self.api.respond.call_count, 2)
+        self.assertEqual(self.api.respond.call_args.args[0].daily_budget_usd, 0.001)
+        self.assertEqual(self.service.load_settings(), settings)
+
+    def test_one_minute_periodic_still_obeys_ai_off_and_quiet_today(self):
+        settings = replace(self.settings, proactive_enabled=True, proactive_interval_minutes=1)
+        self.service.save_settings(settings)
+        self.now += 60
+        self.service.quiet_today()
+        self.assertIsNone(self.service.proactive("periodic", context={}, cancel=threading.Event()))
+        self.service.save_settings(replace(settings, enabled=False))
+        self.assertIsNone(self.service.proactive("periodic", context={}, cancel=threading.Event()))
+        self.service.save_settings(replace(settings, proactive_enabled=False))
+        self.assertIsNone(self.service.proactive("periodic", context={}, cancel=threading.Event()))
+        self.api.respond.assert_not_called()
+
+    def test_periodic_does_not_interrupt_an_active_chat_even_after_five_minutes(self):
+        self.service.save_settings(replace(self.settings, proactive_enabled=True, proactive_interval_minutes=1))
+
+        def conversation_in_progress(*args, **kwargs):
+            self.now += 600
+            self.assertIsNone(self.service.proactive("periodic", context={}, cancel=threading.Event()))
+            return reply("대화 답변이에요.")
+
+        self.api.respond.side_effect = conversation_in_progress
+        self.assertEqual(self.ask("오래 생각해 주세요."), "대화 답변이에요.")
+        self.api.respond.assert_called_once()
+
     def test_proactive_context_keeps_local_time_personality_and_event_details(self):
         self.service.save_settings(replace(self.settings, proactive_enabled=True))
         self.api.respond.return_value = reply("오늘의 마무리는 조금 느긋해도 괜찮아요.")
@@ -479,6 +689,100 @@ class AssistantServiceTests(unittest.TestCase):
             self.assertIn(expected, instructions)
         self.assertIn("일을 더 권하지", instructions)
         self.assertNotIn("tools", self.api.respond.call_args.kwargs)
+
+    def test_proactive_diagnostics_is_a_read_only_snapshot_with_periodic_time_gates(self):
+        with patch.object(self.service.ledger, "summary", side_effect=AssertionError("must not read usage")):
+            initial = self.service.proactive_diagnostics()
+            self.assertEqual(initial["state"], "idle")
+            self.assertIsNone(initial["last_outcome"])
+            self.assertIsNone(initial["last_event"])
+            self.assertIsNone(initial["last_updated_at"])
+            self.assertEqual(initial["retry_after_seconds"], 60)
+            initial["last_message"] = "caller changed its snapshot"
+            self.assertNotEqual(self.service.proactive_diagnostics()["last_message"], initial["last_message"])
+            self.now += 0.5
+            self.assertEqual(self.service.proactive_diagnostics()["retry_after_seconds"], 60)
+            self.now += 58.5
+            self.assertEqual(self.service.proactive_diagnostics()["retry_after_seconds"], 1)
+            self.now += 1
+            self.assertEqual(self.service.proactive_diagnostics()["retry_after_seconds"], 0)
+        self.api.respond.assert_not_called()
+        self.api.respond.return_value = reply("대화 답변이에요.")
+        self.ask("질문이에요.")
+        self.assertEqual(self.service.proactive_diagnostics()["retry_after_seconds"], 300)
+
+    def test_proactive_diagnostics_reports_safe_generated_repeated_silent_and_incomplete_results(self):
+        self.service.save_settings(replace(self.settings, proactive_enabled=True))
+        private_reply = "절대 진단에 노출하면 안 되는 응답 sk-fake-private-content"
+        self.api.respond.return_value = reply(private_reply)
+        self.assertEqual(self.service.proactive("rest", context={}, cancel=threading.Event()), private_reply)
+        generated = self.service.proactive_diagnostics()
+        self.assertEqual((generated["state"], generated["last_outcome"], generated["last_event"]),
+                         ("idle", "generated", "rest"))
+        self.assertIsNone(generated["last_error_code"])
+        self.assertIn("화면 표시 여부", generated["last_message"])
+        self.assertIsNotNone(datetime.fromisoformat(generated["last_updated_at"]).tzinfo)
+        self.assertNotIn(private_reply, json.dumps(generated, ensure_ascii=False))
+        self.assertNotIn("sk-fake-private-content", json.dumps(generated))
+        self.assertIsNone(self.service.proactive("return", context={}, cancel=threading.Event()))
+        self.assertEqual(self.service.proactive_diagnostics()["last_event"], "rest")
+        self.now += 60
+        self.assertIsNone(self.service.proactive("rest", context={}, cancel=threading.Event()))
+        self.assertEqual(self.service.proactive_diagnostics()["last_outcome"], "repeated")
+        self.now += 60
+        self.api.respond.return_value = reply("SILENT")
+        self.assertIsNone(self.service.proactive("return", context={}, cancel=threading.Event()))
+        silent = self.service.proactive_diagnostics()
+        self.assertEqual(silent["last_outcome"], "silent")
+        self.assertTrue(silent["last_message"])
+        self.now += 60
+        self.api.respond.return_value = reply(private_reply, status="incomplete")
+        self.assertIsNone(self.service.proactive("return", context={}, cancel=threading.Event()))
+        self.assertEqual(self.service.proactive_diagnostics()["last_outcome"], "incomplete")
+        self.service.quiet_today()
+        self.now += 60
+        self.assertIsNone(self.service.proactive("rest", context={}, cancel=threading.Event()))
+        self.assertEqual(self.service.proactive_diagnostics()["last_outcome"], "incomplete")
+
+    def test_proactive_diagnostics_whitelists_error_codes_without_exception_or_response_text(self):
+        self.service.save_settings(replace(self.settings, proactive_enabled=True))
+        secret = "sk-fake-secret-key-and-private-provider-error"
+        for error, expected in (
+            (AIError("authentication", secret), "authentication"),
+            (AIError("budget_limit", secret), "budget_limit"),
+            (AIError("network", secret), "network"),
+            (AIError(secret, secret), "unexpected_error"),
+            (AIError({"private": secret}, secret), "unexpected_error"),
+            (ValueError(secret), "unexpected_error"),
+        ):
+            with self.subTest(code=expected):
+                self.now += 60
+                self.api.respond.side_effect = error
+                with self.assertRaises(type(error)):
+                    self.service.proactive("rest", context={}, cancel=threading.Event())
+                diagnostic = self.service.proactive_diagnostics()
+                self.assertEqual((diagnostic["state"], diagnostic["last_outcome"], diagnostic["last_error_code"]),
+                                 ("idle", "error", expected))
+                self.assertEqual(diagnostic["retry_after_seconds"], 60)
+                self.assertNotIn(secret, json.dumps(diagnostic, ensure_ascii=False))
+                self.assertTrue(diagnostic["last_message"])
+        self.now += 60
+        self.api.respond.side_effect = None
+        self.api.respond.return_value = reply("SILENT")
+        self.service.proactive("rest", context={}, cancel=threading.Event())
+        self.assertIsNone(self.service.proactive_diagnostics()["last_error_code"])
+
+    def test_proactive_diagnostics_sanitizes_context_failure_and_clears_worker_state(self):
+        self.service.save_settings(replace(self.settings, proactive_enabled=True))
+        secret = "sk-fake-private-storage-error"
+        with patch.object(self.service, "_history_context", side_effect=OSError(secret)):
+            with self.assertRaises(OSError):
+                self.service.proactive("rest", context={}, cancel=threading.Event())
+        diagnostic = self.service.proactive_diagnostics()
+        self.assertEqual((diagnostic["state"], diagnostic["last_outcome"], diagnostic["last_error_code"]),
+                         ("idle", "error", "unexpected_error"))
+        self.assertNotIn(secret, json.dumps(diagnostic, ensure_ascii=False))
+        self.api.respond.assert_not_called()
 
     def test_proactive_keeps_single_flight_until_cancelled_worker_returns(self):
         self.service.save_settings(replace(self.settings, proactive_enabled=True))
@@ -504,8 +808,12 @@ class AssistantServiceTests(unittest.TestCase):
         worker.start()
         try:
             self.assertTrue(entered.wait(5))
+            requesting = self.service.proactive_diagnostics()
+            self.assertEqual((requesting["state"], requesting["last_event"], requesting["last_outcome"]),
+                             ("requesting", "rest", None))
             cancel.set()
-            self.now += 121
+            self.now += 61
+            self.assertEqual(self.service.proactive_diagnostics()["state"], "requesting")
             self.assertIsNone(self.service.proactive("return", context={}, cancel=threading.Event()))
             self.assertEqual(self.api.respond.call_count, 1)
         finally:
@@ -515,6 +823,9 @@ class AssistantServiceTests(unittest.TestCase):
         self.assertEqual(errors, ["cancelled"])
         self.assertIsNone(self.service._active_proactive_cancel)
         self.assertEqual(list(self.service._proactive_recent), [])
+        cancelled = self.service.proactive_diagnostics()
+        self.assertEqual((cancelled["state"], cancelled["last_outcome"], cancelled["last_error_code"]),
+                         ("idle", "cancelled", None))
 
     def test_new_chat_cancels_in_flight_proactive_and_discards_its_result(self):
         self.service.save_settings(replace(self.settings, proactive_enabled=True))
@@ -549,7 +860,7 @@ class AssistantServiceTests(unittest.TestCase):
         self.assertEqual(error.exception.code, "cancelled")
         self.assertEqual(list(self.service._proactive_recent), [])
         self.service.quiet_today(False)
-        self.now += 120
+        self.now += 60
         self.api.respond.side_effect = None
         self.api.respond.return_value = reply("아직 끝나지 않은 문장", status="incomplete")
         self.assertIsNone(self.service.proactive("rest", context={}, cancel=threading.Event()))

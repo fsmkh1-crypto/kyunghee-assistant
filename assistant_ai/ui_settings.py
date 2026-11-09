@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime
 from threading import Event
 import tkinter as tk
 from tkinter import ttk
@@ -62,8 +62,34 @@ class _SettingsWindow(_Window):
         self.enabled = self._variable(tk.BooleanVar)
         self._check(content, self.enabled, "승아의 AI 대화 사용").pack(anchor="w", padx=12, pady=3)
         self.proactive = self._variable(tk.BooleanVar)
-        self._check(content, self.proactive, "승아가 상황에 맞춰 먼저 말 걸기").pack(anchor="w", padx=12, pady=3)
-        self._wrapped(content, "켜면 휴식·복귀·업무 마무리를 살펴 먼저 말 걸어요. 사용 중 정기 대화는 기본 20분 간격이며, 대화 중·작성 중이거나 최근 5분 안에 대화했다면 쉬어요. API 사용량이 생기며 간격·상황은 고급 설정에서 바꿀 수 있어요.", color=MUTED, size=9).pack(fill="x", padx=12, pady=(0, 6))
+        self.proactive_check = self._check(content, self.proactive, "상황별 AI 먼저 말 걸기")
+        self.proactive_check.pack(anchor="w", padx=12, pady=3)
+        interval_row = tk.Frame(content, bg=PANEL)
+        interval_row.pack(fill="x", padx=12, pady=(2, 4))
+        _label(interval_row, "정기 대화 간격", size=9).pack(side="left", padx=(0, 8))
+        self.proactive_interval = self._variable(value="1")
+        self.proactive_interval_entry = tk.Spinbox(
+            interval_row, from_=1, to=120, increment=1, textvariable=self.proactive_interval,
+            font=_font(self), fg=TEXT, bg=PANEL_2, insertbackground=TEXT,
+            highlightcolor=PURPLE, width=5,
+        )
+        self.proactive_interval_entry.pack(side="left")
+        self.proactive_interval_entry.bind("<MouseWheel>", self._scroll)
+        _label(interval_row, "분 · 1~120", size=9).pack(side="left", padx=6)
+        self.chatter = self._variable(tk.BooleanVar)
+        self.chatter_check = self._check(content, self.chatter, "AI 재잘대기 켜기 / 끄기")
+        self.chatter_check.pack(anchor="w", padx=12, pady=3)
+        self._wrapped(content, "AI 재잘대기는 위 간격으로 AI가 만든 말만 요청해요. 상황별 먼저 말 걸기가 꺼져 있어도 동작해요. 둘 다 켜면 하나의 AI 요청 일정과 한도를 공유해요. AI 대화 사용과 API 키가 필요하며 호출마다 사용량이 발생해요.", color=MUTED, size=9).pack(fill="x", padx=12, pady=(0, 4))
+        self.proactive_state = tk.StringVar(master=self)
+        self._wrapped(content, variable=self.proactive_state, color=AMBER, size=9).pack(fill="x", padx=12, pady=3)
+        self.proactive_runtime = tk.StringVar(master=self)
+        self.proactive_refresh = _button(content, "현재 안내 상태 확인", self._refresh_proactive_runtime)
+        self.proactive_refresh.pack(anchor="w", padx=12, pady=2)
+        self._wrapped(content, variable=self.proactive_runtime, color=MUTED, size=9).pack(fill="x", padx=12, pady=(0, 4))
+        self._wrapped(content, "두 기능은 처음에는 꺼져 있고 신규 간격은 1분이에요. 기존에 저장한 간격은 유지해요. 변경 후 아래 ‘설정 저장’을 누르면 적용돼요.", color=MUTED, size=9).pack(fill="x", padx=12, pady=(0, 6))
+        self._wrapped(content, "보류 조건이 있으면 간격이 지나도 미뤄질 수 있어요. 앱 시작 후 최소 1분을 기다리고, 응답 대기·숨긴 창의 미전송 초안이 있거나 최근 5분 안에 대화하거나 글을 작성·읽고 있었다면 보류해요.", color=MUTED, size=9).pack(fill="x", padx=12, pady=(0, 4))
+        self._wrapped(content, "정기 대화는 타이머와 말풍선이 보이는 사용 중에 나와요. 자리비움·퇴근 모드, 위젯 숨김, 설정·통계 화면에서는 쉬고 전체화면 등 알림 보류 중에도 나오지 않아요. 상황별 선택과 ‘오늘 쉬기’는 고급 설정에서 바꿔요.", color=MUTED, size=9).pack(fill="x", padx=12, pady=(0, 4))
+        self._wrapped(content, "먼저 말 걸기도 API 요청·토큰·비용 한도를 따라요. 답변이 표시되지 않거나 요청이 실패해도 서버에서 처리한 사용량에는 비용이 생길 수 있어요. 한도는 고급 설정에서 정해 주세요.", color=MUTED, size=9).pack(fill="x", padx=12, pady=(0, 6))
         form = tk.Frame(content, bg=PANEL)
         form.pack(fill="x", padx=12, pady=5)
         form.columnconfigure(0, weight=1)
@@ -126,7 +152,24 @@ class _SettingsWindow(_Window):
     def _wrapped(self, parent, text="", *, variable=None, color=TEXT, size=10):
         options = {"textvariable": variable} if variable is not None else {}
         label = _label(parent, text, color=color, size=size, wraplength=450, **options)
-        label.bind("<Configure>", lambda event: label.configure(wraplength=max(100, event.width)))
+        def fit(_event=None):
+            manager = label.winfo_manager()
+            if manager not in {"pack", "grid"}:
+                return
+            layout = label.pack_info() if manager == "pack" else label.grid_info()
+            value = layout.get("padx", 0)
+            padding = value if isinstance(value, (tuple, list)) else label.tk.splitlist(str(value))
+            horizontal = sum(label.winfo_pixels(value) for value in padding)
+            if len(padding) == 1:
+                horizontal *= 2
+            inset = 2 * sum(label.winfo_pixels(label.cget(option))
+                            for option in ("padx", "borderwidth", "highlightthickness"))
+            width = max(1, parent.winfo_width() - horizontal - inset)
+            if label.winfo_pixels(label.cget("wraplength")) != width:
+                label.configure(wraplength=width)
+        # The enclosing frame owns the width. A label changing height must not
+        # feed its own Configure event back into another wrapping calculation.
+        parent.bind("<Configure>", fit, add="+")
         return label
 
     def _check(self, parent, variable, caption, **kwargs):
@@ -156,21 +199,14 @@ class _SettingsWindow(_Window):
             check.pack(fill="x", padx=12, pady=2)
             check.bind("<Configure>", lambda event, widget=check: widget.configure(wraplength=max(120, event.width - 32)))
         self._wrapped(content, "기록 저장과 기억 사용은 각각 선택해요. 끄더라도 기존 데이터는 삭제되지 않으며 기억 관리·대화 기록에서 따로 지울 수 있어요.", size=9, color=MUTED).pack(fill="x", padx=12, pady=4)
-        _label(content, "먼저 말 걸기 · 간격과 상황", size=11).pack(anchor="w", padx=12, pady=(9, 3))
-        self.proactive_interval = self._variable(value="20")
-        interval = tk.Spinbox(content, from_=5, to=120, increment=5, textvariable=self.proactive_interval,
-                              font=_font(self), fg=TEXT, bg=PANEL_2, insertbackground=TEXT,
-                              highlightcolor=PURPLE, width=8)
-        interval.bind("<MouseWheel>", self._scroll)
-        _label(content, "사용 중 정기 대화 간격 · 5~120분", size=9).pack(anchor="w", padx=12)
-        interval.pack(anchor="w", padx=12, pady=(2, 4))
+        _label(content, "먼저 말 걸기 · 허용할 상황", size=11).pack(anchor="w", padx=12, pady=(9, 3))
         events = tk.Frame(content, bg=PANEL)
         events.pack(fill="x", padx=20, pady=3)
         self.event_vars = {event: self._variable(tk.BooleanVar) for event in PROACTIVE_EVENTS}
         for index, (event, variable) in enumerate(self.event_vars.items()):
             self._check(events, variable, _EVENT_LABELS[event]).grid(row=index // 2, column=index % 2, sticky="w", padx=(0, 12))
         self._check(content, self.quiet, "오늘은 자동 응원 쉬기 · 저장하면 적용").pack(anchor="w", padx=12, pady=4)
-        self._wrapped(content, "먼저 말 걸기도 요청·토큰·비용 한도를 따라요. 상황별 호출은 최소 2분 간격이고, 자리비움·퇴근 모드에는 정기 대화를 쉬어요. 꺼도 기존 타이머 알림과 기본 대사는 계속 나와요.", size=9, color=MUTED).pack(fill="x", padx=12, pady=(0, 6))
+        self._wrapped(content, "상황별 요청도 최소 1분 간격이에요. ‘정기 응원’을 꺼도 AI 재잘대기가 켜져 있으면 정기 AI 요청은 계속해요. 두 기능을 꺼도 기존 타이머 알림과 기본 대사는 유지돼요.", size=9, color=MUTED).pack(fill="x", padx=12, pady=(0, 6))
 
         form = tk.Frame(content, bg=PANEL)
         form.pack(fill="x", padx=12)
@@ -205,6 +241,8 @@ class _SettingsWindow(_Window):
                 self.reload()
             elif self.dirty and current != self._base_settings:
                 self.status.set("다른 화면에서 설정이 바뀌었어요. 입력 중인 초안을 확인한 뒤 저장해 주세요.")
+            self._refresh_proactive_state(current)
+            self._refresh_proactive_runtime()
         except Exception:
             self.status.set("최신 설정을 확인하지 못했어요. 입력 중인 초안은 유지했어요.")
         super().show()
@@ -265,6 +303,45 @@ class _SettingsWindow(_Window):
         if self.remove_key.get():
             self.key.set("")
 
+    def _refresh_proactive_state(self, settings, has_key=None):
+        """Describe saved prerequisites, never claim the runtime is ready now."""
+        interval = settings.proactive_interval_minutes
+        if not settings.proactive_enabled and not settings.chatter_enabled:
+            state = "자동 AI 안내 꺼짐"
+        elif not settings.enabled:
+            state = "AI 대화 사용을 켜야 해요"
+        elif not (self.service.has_key() if has_key is None else has_key):
+            state = "API 키 등록이 필요해요"
+        elif settings.proactive_quiet_until == date.today().isoformat():
+            state = "오늘은 쉬는 중"
+        elif not settings.chatter_enabled and not settings.proactive_events:
+            state = "허용된 상황 없음"
+        elif not settings.chatter_enabled and "periodic" not in settings.proactive_events:
+            state = "상황별 안내만 허용 · 정기 응원은 꺼짐"
+        else:
+            state = "아래 실행 조건을 따라요"
+        proactive = "켜짐" if settings.proactive_enabled else "꺼짐"
+        chatter = "켜짐" if settings.chatter_enabled else "꺼짐"
+        self.proactive_state.set(f"저장된 설정: 상황별 안내 {proactive} · AI 재잘대기 {chatter} · 간격 {interval}분\n{state}")
+
+    def _refresh_proactive_runtime(self):
+        callback = getattr(self.owner, "proactive_status", None)
+        if callback is None:
+            self.proactive_runtime.set("실행 조건은 아래 안내를 참고해 주세요.")
+            return
+        try:
+            status = callback()
+            reason = str(status.get("reason") or "현재 안내 상태를 확인했어요.")
+            lines = [f"현재 상태 ({datetime.now():%H:%M:%S} 조회): {reason}"]
+            remaining = status.get("next_in_seconds")
+            if isinstance(remaining, (int, float)) and remaining > 0:
+                lines.append(f"조회 시점의 다음 확인까지 약 {int(remaining)}초")
+            if status.get("last_message"):
+                lines.append(f"최근 결과: {status['last_message']}")
+            self.proactive_runtime.set("\n".join(lines))
+        except Exception:
+            self.proactive_runtime.set("현재 안내 상태를 불러오지 못했어요. 잠시 뒤 다시 확인해 주세요.")
+
     def _update_price(self, *_args):
         model = self.model.get().strip()
         prices = MODEL_PRICES.get(model)
@@ -303,6 +380,7 @@ class _SettingsWindow(_Window):
             self.history.set(settings.conversation_storage_enabled)
             self.memory.set(settings.memory_enabled)
             self.proactive.set(settings.proactive_enabled)
+            self.chatter.set(settings.chatter_enabled)
             self.proactive_interval.set(str(settings.proactive_interval_minutes))
             self.quiet.set(settings.proactive_quiet_until == date.today().isoformat())
             for event, variable in self.event_vars.items():
@@ -314,12 +392,14 @@ class _SettingsWindow(_Window):
             storage = "Windows 암호화 보관" if self.service.persistent_key else "이번 실행에만 보관"
             self.key_status.set(f"키 등록됨 · {storage}" if has_key else "키 미등록 · 입력 후 설정을 저장해 주세요.")
             self.remove_check.configure(state="normal" if has_key else "disabled")
+            self._refresh_proactive_state(settings, has_key)
             self.save_button.configure(state="normal")
             self.status.set(self.service.settings_issue)
             self._baseline = self._snapshot()
         finally:
             self._loading = False
         self._mark_dirty()
+        self._refresh_proactive_runtime()
         return True
 
     def refresh_usage(self):
@@ -344,7 +424,7 @@ class _SettingsWindow(_Window):
                 self._base_settings, enabled=self.enabled.get(), model=self.model.get().strip(),
                 key_persistence=self.key_persistence.get(), web_search_enabled=self.web_search.get(),
                 conversation_storage_enabled=self.history.get(), memory_enabled=self.memory.get(),
-                proactive_enabled=self.proactive.get(),
+                proactive_enabled=self.proactive.get(), chatter_enabled=self.chatter.get(),
                 proactive_interval_minutes=int(self.proactive_interval.get()),
                 proactive_events=tuple(event for event, variable in self.event_vars.items() if variable.get()),
                 proactive_quiet_until=date.today().isoformat() if self.quiet.get() else "",

@@ -252,7 +252,13 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
         return proposal
 
     def apply_image_action(self, proposal_id: str) -> dict:
-        return self._image_actions.apply(proposal_id)
+        result = self._image_actions.apply(proposal_id)
+        action = result.get('action', {})
+        if result.get('status') == 'applied' and result.get('changed') and action.get('role'):
+            result['summary'] += ' · ' + self._image_application_summary(action['role'])
+            if hasattr(self, 'settings_status'):
+                self.settings_status.configure(text=result['summary'], fg=core.GREEN)
+        return result
 
     def cancel_image_action(self, proposal_id: str) -> dict:
         return self._image_actions.cancel(proposal_id)
@@ -446,6 +452,15 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
             signatures[key] = signature
         self._settings_preview_source_signatures = signatures
         default_caption = dict(self.IMAGE_ROWS).get(key, key)
+        self._settings_preview_current_path = None
+        if hasattr(self, '_settings_preview_apply_button'):
+            self._settings_preview_apply_button.configure(text=f'{default_caption} 이미지로 적용', state='normal' if sources else 'disabled')
+        if hasattr(self, '_image_applied_label'):
+            role = self.SETTING_TO_CANONICAL_ROLE.get(key, 'default')
+            custom, _mode, _center = self._custom_image(role)
+            applied = custom or self._resolve_builtin_asset(role)
+            origin = '상황별 지정' if custom else '전체 세트 따라가기'
+            self._image_applied_label.configure(text=f'적용 중인 {default_caption}: {applied.name if applied else "이미지 없음"} · {origin}')
         if not sources:
             self.settings_preview_image.configure(image='', text='이미지 없음')
             self.settings_preview_image.image = None
@@ -457,7 +472,7 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
 
         index = self._settings_preview_indices.get(key, 0) % len(sources)
         self._settings_preview_indices[key] = index
-        source = Path(sources[index])
+        source = self._settings_preview_current_path = Path(sources[index])
         mode, alignment = self._settings_preview_style(key)
         try:
             stat = source.stat()
@@ -493,7 +508,9 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
             meta = f'설정 대상: {default_caption}\n' + meta
         if len(sources) == 1:
             meta += '\n1장만 등록되어 있어 이전·다음을 사용할 수 없습니다.'
-        meta += '\n둘러보기만 · 선택/저장 변경 없음'
+        meta += '\n이전·다음은 둘러보기만 · 선택/저장 변경 없음'
+        if hasattr(self, '_settings_preview_apply_button'):
+            meta += f'\n이 그림을 쓰려면 ‘{default_caption} 이미지로 적용’을 누르세요.'
         self.settings_preview_meta.configure(text=meta)
         nav_state = 'normal' if len(sources) > 1 else 'disabled'
         self.settings_preview_prev.configure(state=nav_state)
@@ -520,6 +537,8 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
                 for sibling in parent.winfo_children():
                     if isinstance(sibling, tk.Label) and sibling.cget('text') == '내장':
                         sibling.pack_forget()
+                if not parent.pack_slaves():
+                    parent.pack_forget()
 
     def _find_role_row(self, caption: str):
         for widget in self._all_descendants(self.settings_page):
@@ -540,14 +559,20 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
 
     def _decorate_image_rows(self):
         for key, caption in self.IMAGE_ROWS:
-            row = self._find_role_row(caption)
+            row = getattr(self, '_image_role_action_rows', {}).get(key) or self._find_role_row(caption)
             if row is None:
                 continue
             for child in row.winfo_children():
                 if isinstance(child, tk.Button) and child.cget('text') == '기본값':
                     child.configure(text='세트 따라가기')
-            self._button(row, '갤러리', lambda k=key: self._open_asset_gallery(k)).pack(side='left', padx=2)
-            self._button(row, '랜덤', lambda k=key: self._choose_random_manual(k)).pack(side='left', padx=2)
+            gallery_button = self._button(row, '갤러리', lambda k=key: self._open_asset_gallery(k))
+            random_button = self._button(row, '랜덤', lambda k=key: self._choose_random_manual(k))
+            if key in getattr(self, '_image_role_action_rows', {}):
+                gallery_button.grid(row=1, column=1, sticky='ew', padx=2, pady=2)
+                random_button.grid(row=1, column=2, sticky='ew', padx=2, pady=2)
+            else:
+                gallery_button.pack(side='left', padx=2)
+                random_button.pack(side='left', padx=2)
             manual = self._manual_override_path(key)
             if manual is not None:
                 self.image_name_vars[key].set(manual.name)
@@ -589,10 +614,39 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
         if result.get('status') != 'applied':
             raise ValueError(result['summary'])
 
+    def _image_application_summary(self, key: str) -> str:
+        caption = dict(self.IMAGE_ROWS).get(key, key)
+        if getattr(self, '_random_gallery_active', False) and getattr(self, '_random_gallery_pinned', False):
+            return f'{caption} 이미지로 저장됨 · 주사위 고정 해제 시 해당 상황에서 표시'
+        current_key = self.ROLE_TO_SETTING.get(getattr(self, 'character_role', None), 'default')
+        if current_key != key:
+            return f'{caption}로 저장됨 · {caption} 전환 때 표시'
+        return f'{caption} 이미지 적용됨 · 즉시 저장 · 되돌리기 가능'
+
+    def _apply_settings_preview(self):
+        key = self._settings_preview_role
+        path = getattr(self, '_settings_preview_current_path', None)
+        if path is None:
+            return
+        try:
+            require_image(path)
+            try:
+                self._encode_asset_ref(path)
+            except ValueError:
+                # Preserve legacy external images by importing a copy before
+                # applying an app-owned reference to the selected situation.
+                self._import_role_images(key, [path])
+            else:
+                self._apply_gallery_path(key, path)
+            self.settings_status.configure(text=self._image_application_summary(key), fg=core.GREEN)
+        except Exception as exc:
+            core.log.exception('settings preview image could not be applied')
+            self.settings_status.configure(text=f'이미지 적용 실패 · 기존 선택 유지: {exc}', fg=core.AMBER)
+
     def _apply_gallery_path(self, key: str, path: Path) -> None:
         self._set_manual_override(key, self._encode_asset_ref(path))
         if hasattr(self, 'settings_status'):
-            self.settings_status.configure(text=f'{dict(self.IMAGE_ROWS).get(key, key)} 이미지 적용 · 되돌리기 가능', fg=core.GREEN)
+            self.settings_status.configure(text=self._image_application_summary(key), fg=core.GREEN)
 
     def _follow_selected_set(self, key: str) -> None:
         self._set_manual_override(key, FOLLOW)
@@ -655,7 +709,7 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
             if not sources:
                 raise ValueError('지원하는 이미지가 없습니다.')
             self._import_role_images(key, sources)
-            self.settings_status.configure(text='이미지 가져오기 완료 · 즉시 적용', fg=core.GREEN)
+            self.settings_status.configure(text='이미지 가져오기 완료 · ' + self._image_application_summary(key), fg=core.GREEN)
         except Exception as exc:
             core.log.exception('role image import failed; previous selection preserved')
             self.settings_status.configure(text=f'이미지 가져오기 실패: {exc}', fg=core.AMBER)
@@ -729,7 +783,7 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
         row.pack(fill='x', padx=14, pady=5, before=section.winfo_children()[0])
         self._button(row, 'ZIP 세트 가져오기', self._open_asset_pack_import).pack(side='left')
         self._button(row, '직전 이미지 변경 취소', self.undo_image_action).pack(side='left', padx=5)
-        self._label(row, '이미지 선택은 즉시 적용 · 되돌리기 가능', size=8, fg=core.MUTED, bg=core.PANEL).pack(side='left', padx=5)
+        self._label(row, '선택 후 적용 버튼 · 되돌리기 가능', size=8, fg=core.MUTED, bg=core.PANEL).pack(side='left', padx=5)
         conflicts = getattr(self, '_asset_adoption', {}).get('conflicts', [])
         if conflicts:
             self._label(section, '기존 세트 ' + ', '.join(conflicts) + '은 다른 내용 때문에 자동 복사하지 않았습니다. 설치 폴더 원본은 보존됩니다.', size=8, fg=core.AMBER, bg=core.PANEL, wraplength=700).pack(fill='x', padx=14)
@@ -738,10 +792,11 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
             role_row = tk.Frame(section, bg=core.PANEL)
             role_row.pack(fill='x', padx=14, pady=6, after=row)
             self._label(role_row, '상황', size=9, bg=core.PANEL).pack(side='left')
-            role_var = tk.StringVar(value=dict(self.IMAGE_ROWS)['default'])
-            selector = ttk.Combobox(role_row, textvariable=role_var, state='readonly', values=[caption for _, caption in self.IMAGE_ROWS])
+            role_var = self._image_role_var = tk.StringVar(value=dict(self.IMAGE_ROWS)['default'])
+            selector = self._image_role_selector = ttk.Combobox(role_row, textvariable=role_var, state='readonly', values=[caption for _, caption in self.IMAGE_ROWS])
             selector.pack(side='left', padx=6)
-            details = tk.Frame(section, bg=core.PANEL)
+            details = self._image_role_detail_frame
+            details.pack_forget()
             details.pack(fill='x', padx=4, after=role_row)
             def select_role(_event=None):
                 key = next((key for key, caption in self.IMAGE_ROWS if caption == role_var.get()), 'default')
@@ -749,10 +804,15 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
                     for widget in pair:
                         widget.pack_forget()
                         if other == key:
-                            widget.pack(in_=details, fill='x', padx=10, pady=3)
+                            widget.pack(fill='x', padx=10, pady=3)
                 self._select_settings_preview(key)
             selector.bind('<<ComboboxSelected>>', select_role)
             select_role()
+        preview_info = self.settings_preview_title.master
+        self._image_applied_label = self._label(preview_info, '', size=9, fg=core.GREEN, bg=core.PANEL_2, wraplength=350, justify='left')
+        self._image_applied_label.pack(anchor='w', before=self.settings_preview_title, pady=(0, 8))
+        self._settings_preview_apply_button = self._button(preview_info, '평상시 이미지로 적용', self._apply_settings_preview, primary=True)
+        self._settings_preview_apply_button.pack(anchor='w', pady=(10, 0))
         self._refresh_global_set_picker()
 
     def _open_asset_pack_import(self):

@@ -4,20 +4,21 @@ Windows productivity timer and virtual secretary.
 
 ## Current development target
 
-`2.1.2` — fixes image-preview navigation, clipped approval buttons, the away clock and conversation continuity; improves message variety and optional proactive conversation. Includes the native speech-click crash fix from 2.1.1 and the complete review implementation based on Seunga Timer 2.0.3 (`15accd3`).
+`2.1.3` — makes situation-image selection and application accessible, displays long speech in a three-line scrollable bubble, and adds configurable one-minute proactive conversation and a separate chatter toggle. Preserves the native speech-click crash fix, away-clock and conversation fixes, and complete review implementation based on Seunga Timer 2.0.3 (`15accd3`).
 
 The implementation and verification ledger is [docs/IMPLEMENTATION_CHECKLIST_2_1.md](docs/IMPLEMENTATION_CHECKLIST_2_1.md). Windows acceptance steps and remaining physical-device checks are documented separately; automated checks do not imply a live API quality test.
 
 ## Desktop app
 
-Development is focused on the Windows desktop app. `RUN.cmd` and Windows source autostart launch `desktop_gallery_final.py`. The Windows job in the **tests** workflow publishes `seunga-timer-2.1.2-windows-x64` for branch pushes. Sign in to GitHub, open the successful workflow run, then select the package under **Artifacts**. Keep `SeungaTimer.exe` beside its `_internal` folder. The package includes Python.
+Development is focused on the Windows desktop app. `RUN.cmd` and Windows source autostart launch `desktop_gallery_final.py`. The Windows job in the **tests** workflow publishes `seunga-timer-2.1.3-windows-x64` for branch pushes. Sign in to GitHub, open the successful workflow run, then select the package under **Artifacts**. Keep `SeungaTimer.exe` beside its `_internal` folder. The package includes Python.
 
-- Click the speech bubble for chat, or the timer/character for settings; drag the timer/character to move the widget.
+- Read long speech by scrolling inside the bubble (at most three visible lines). Use its explicit chat button, tray or keyboard shortcut to open chat. Click the timer/character for settings; drag them to move the widget.
 - Screen dice changes the current image until the next situation. Explicit pinning and restoration are available.
 - Import complete image ZIP sets from the image settings tab. Imports live in the user profile and do not overwrite built-in artwork.
 - Image changes from chat use a validated proposal, explicit Apply/Cancel, and Undo. Local image controls do not require an API key.
-- Settings have tabs, a fixed save area, draft indicators and discard. Images selected from the gallery apply immediately and have their own Undo.
+- Settings have tabs, a fixed save area, draft indicators and discard. Gallery selections are previews until Apply is pressed; that action saves separately from general settings and has its own Undo.
 - Optional AI supports cancellation, retry/edit, local timer status, separate history/memory preferences, searchable/editable pinned memories, event controls and web search preferences.
+- Proactive conversation has a visible on/off control, 1–120 minute interval and current waiting/result status. New settings default to one minute; existing saved choices are preserved. Chatter is a separate optional AI-only mode using the same interval and bounded scheduler; enabling both modes does not duplicate requests.
 - Choose a session-only API key or Windows DPAPI storage. Connection testing is an explicit API request and may incur usage.
 - Selective user-data backup, validated restore with a recovery snapshot, and privacy-preserving diagnostics are available in the data panel. Keys are excluded.
 

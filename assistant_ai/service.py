@@ -11,6 +11,7 @@ from dataclasses import replace
 from datetime import date, datetime
 from difflib import SequenceMatcher
 from functools import wraps
+from math import ceil
 from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
@@ -46,7 +47,16 @@ SILENT만 출력하세요. 최근 기본 대사, AI 안내와 대화 답변에�
 사용자가 말하지 않은 업무, 감정이나 건강 상태를 추측하거나 답변을 재촉하지 마세요.
 쉬는 중, 저녁·밤이나 퇴근 시간에는 일을 더 권하지 마세요. 어떤 동작을 했다고 가정하지 마세요."""
 
-_PROACTIVE_MIN_SPACING = 120
+CHATTER = """사용자가 설정한 간격에 맞춰 승아가 먼저 짧은 대화를 시작하는 차례예요.
+현재 시각과 시간대, 타이머 상태, 말투 선호와 최근 대화를 바탕으로 새로운 화제의 자연스러운 한두 문장을 만들어 주세요.
+가벼운 관찰이나 작은 상상, 부담 없는 질문처럼 주제를 바꾸어 건네요. 질문이나 조언으로 매번 끝낼 필요는 없어요.
+최근 AI 안내·대화와 같은 문장이나 같은 조언을 말만 바꿔 반복하지 마세요. 물 마시기·스트레칭·집중 독려로만 돌리지 마세요.
+답변을 재촉하거나 일을 더 하라고 압박하지 마세요. 쉬는 중, 저녁·밤이나 퇴근 시간에는 휴식을 존중하세요.
+사용자가 말하지 않은 업무·감정·건강 상태를 지어내지 말고, 시간·통계 수치는 제공된 자료에 있을 때만 사용하세요.
+도구나 웹 검색은 사용하지 않아요. 실시간 확인이 필요한 뉴스·날씨·가격을 단정하지 말고 다른 대화 주제를 고르세요.
+어떤 앱 동작을 실행했다고 말하지 말고, 화면에 들어갈 짧은 대사만 출력하세요."""
+
+_PROACTIVE_MIN_SPACING = 60
 _PROACTIVE_AFTER_CHAT = 5 * 60
 _PROACTIVE_EVENT_GUIDANCE = {
     "rest": "휴식 알림이 표시됐어요. 같은 알림을 반복하지 말고 잠깐 쉬기 편하도록 짧게 배려해요.",
@@ -55,6 +65,37 @@ _PROACTIVE_EVENT_GUIDANCE = {
     "return": "자리에서 돌아왔어요. 가볍게 반기되 곧바로 더 일하라고 재촉하지 않아요.",
     "leave": "업무를 마무리할 시간이에요. 지금까지의 시간을 인정하고 이후 휴식을 존중해요.",
     "periodic": "현재 맥락에 새로 덧붙일 말이 있을 때만 편안한 안부나 짧은 대화를 먼저 건네요.",
+}
+_PROACTIVE_OUTCOME_MESSAGES = {
+    "generated": "AI 안내를 만들었어요. 화면 표시 여부는 앱 상태에 따라 달라요.",
+    "silent": "AI가 이번에는 말을 생략했어요.",
+    "repeated": "최근 대사와 비슷한 내용이라 이번 안내를 생략했어요.",
+    "incomplete": "AI 안내가 완성되지 않아 사용하지 않았어요.",
+    "cancelled": "먼저 말 걸기 요청을 취소했어요.",
+}
+_PROACTIVE_ERROR_MESSAGES = {
+    "authentication": "API 키 인증에 실패했어요. AI 설정에서 키를 확인해 주세요.",
+    "missing_key": "등록된 API 키가 없어요. AI 설정을 확인해 주세요.",
+    "disabled": "AI 대화가 꺼져 있어요.",
+    "not_configured": "AI 사용 설정과 API 키를 확인해 주세요.",
+    "permission": "API 프로젝트 또는 모델 사용 권한을 확인해 주세요.",
+    "model_unavailable": "선택한 모델을 사용할 수 없어요. 모델 설정을 확인해 주세요.",
+    "quota": "API 결제 상태나 계정 사용 한도를 확인해 주세요.",
+    "request_limit": "오늘 앱의 AI 요청 한도에 도달했어요.",
+    "token_limit": "오늘 앱의 남은 AI 토큰이 부족해요.",
+    "budget_limit": "오늘 앱의 남은 AI 추정 비용 한도가 부족해요.",
+    "budget_usage_unknown": "확인되지 않은 비용이 있어 오늘 비용 한도를 계산할 수 없어요.",
+    "rate_limit": "API 요청이 몰려 먼저 말 걸기를 잠시 쉬고 있어요.",
+    "timeout": "AI 안내를 기다리는 시간이 길어져 요청을 마쳤어요.",
+    "network": "API에 연결할 수 없어요. 인터넷 연결을 확인해 주세요.",
+    "service_unavailable": "API가 일시적으로 응답하지 못했어요.",
+    "context_limit": "AI에 보낼 대화 문맥이 모델의 허용 길이를 넘었어요.",
+    "request_invalid": "API가 먼저 말 걸기 요청을 받아들이지 못했어요.",
+    "response_invalid": "API 응답을 읽을 수 없었어요.",
+    "response_failed": "API가 이번 안내를 완료하지 못했어요.",
+    "response_incomplete": "API가 이번 안내를 끝내지 못했어요.",
+    "usage_storage": "AI 사용량을 기록하거나 읽을 수 없어요.",
+    "http_error": "API 요청을 완료하지 못했어요.",
 }
 
 
@@ -186,6 +227,10 @@ class AssistantService:
         self._proactive_last_attempt = float("-inf")
         self._proactive_last_periodic = time.monotonic()
         self._last_chat_activity = float("-inf")
+        self._proactive_last_result = {
+            "last_outcome": None, "last_event": None, "last_error_code": None,
+            "last_message": "아직 먼저 말 걸기를 요청하지 않았어요.", "last_updated_at": None,
+        }
         self._config = ConfigStore(data_dir)
         self._vault = KeyVault(data_dir)
         self.ledger = UsageLedger(data_dir)
@@ -290,14 +335,56 @@ class AssistantService:
         with self._lock:
             settings = self._settings
             busy = self._active_chat_cancel is not None and not self._active_chat_cancel.is_set()
+            if event is None:
+                allowed = settings.chatter_enabled or settings.proactive_enabled and bool(settings.proactive_events)
+            else:
+                allowed = (event == "periodic" and settings.chatter_enabled
+                           or settings.proactive_enabled and event in settings.proactive_events)
             return (
-                self.ready() and settings.proactive_enabled and not busy
+                self.ready() and allowed and not busy
                 and settings.proactive_quiet_until != date.today().isoformat()
-                and (event is None or event in settings.proactive_events)
             )
 
     def quiet_today(self, enabled: bool = True) -> None:
         self.save_settings(replace(self.load_settings(), proactive_quiet_until=date.today().isoformat() if enabled else ""))
+
+    def proactive_diagnostics(self, event: str = "periodic") -> dict:
+        """Return safe local diagnostics; generated does not mean displayed.
+
+        retry_after_seconds describes time gates for the requested event. It
+        defaults to periodic for the settings UI; timer events do not inherit
+        the periodic interval.
+        UI visibility, opt-in settings and a running worker may still prevent it.
+        Reading this snapshot never contacts the API or reads the usage ledger.
+        """
+        with self._lock:
+            now = time.monotonic()
+            remaining = max(
+                0, _PROACTIVE_MIN_SPACING - (now - self._proactive_last_attempt),
+                _PROACTIVE_AFTER_CHAT - (now - self._last_chat_activity),
+            )
+            if event == "periodic":
+                remaining = max(remaining, self._settings.proactive_interval_minutes * 60
+                                - (now - self._proactive_last_periodic))
+            return {
+                **self._proactive_last_result,
+                "state": "requesting" if self._active_proactive_cancel is not None else "idle",
+                "retry_after_seconds": ceil(remaining),
+            }
+
+    def _record_proactive_outcome(self, outcome: str, error: Exception | None = None) -> None:
+        """Called while holding _lock; never retain provider or exception text."""
+        code = None
+        if outcome == "error":
+            candidate = error.code if isinstance(error, AIError) else None
+            code = candidate if isinstance(candidate, str) and candidate in _PROACTIVE_ERROR_MESSAGES else "unexpected_error"
+            message = _PROACTIVE_ERROR_MESSAGES.get(code, "먼저 말 걸기 중 문제가 생겼어요. 잠시 뒤 다시 시도해 주세요.")
+        else:
+            message = _PROACTIVE_OUTCOME_MESSAGES[outcome]
+        self._proactive_last_result.update(
+            last_outcome=outcome, last_error_code=code, last_message=message,
+            last_updated_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+        )
 
     def save_settings(self, settings: AISettings, *, new_key: str | None = None, remove_key: bool = False) -> None:
         settings.validate()
@@ -727,39 +814,59 @@ class AssistantService:
             ):
                 return None
             settings, generation, client = self._request_state(timeout=20)
+            chatter = event == "periodic" and settings.chatter_enabled
             self._check_current(generation, cancel)
-            previous = self._history_context(event, recent_limit=3, relevant_limit=0, memory_limit=2)
-            recent_chat = [turn.assistant[:2500] for turn in previous.recent if turn.assistant]
-            context = self._proactive_context(event, context, recent_chat)
             self._active_proactive_cancel = cancel
             self._proactive_last_attempt = now
+            self._proactive_last_result.update(
+                last_outcome=None, last_event=event, last_error_code=None,
+                last_message="AI에 먼저 말 걸기 응답을 요청하고 있어요.",
+                last_updated_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+            )
             if event == "periodic":
                 self._proactive_last_periodic = now
         try:
-            self._check_current(generation, cancel)
-            instructions = self._instructions(context, previous) + "\n\n" + PROACTIVE
+            with self._lock:
+                self._check_current(generation, cancel)
+                previous = self._history_context(event, recent_limit=3, relevant_limit=0, memory_limit=2)
+                recent_chat = [turn.assistant[:2500] for turn in previous.recent if turn.assistant]
+                context = self._proactive_context(event, context, recent_chat, chatter=chatter)
+            instructions = self._instructions(context, previous) + "\n\n" + (CHATTER if chatter else PROACTIVE)
             inputs = self._messages(previous.recent, 2500)
-            inputs.append({"role": "user", "content": "현재 앱 이벤트 " + event})
+            request = "설정된 말 걸기 간격이에요. 새로운 화제로 짧게 먼저 말을 건네 주세요." if chatter else "현재 앱 이벤트 " + event
+            inputs.append({"role": "user", "content": request})
             result = client.respond(settings, inputs, instructions=instructions, max_output_tokens=1024, purpose="event")
             with self._lock:
                 self._check_current(generation, cancel)
                 if not self.can_proactively_speak(event):
+                    self._record_proactive_outcome("cancelled")
                     return None
                 speech = " ".join(result.text.split())
-                if result.status != "completed" or not speech or speech.strip(" .!\"'`").upper() == "SILENT":
+                if result.status != "completed":
+                    self._record_proactive_outcome("incomplete")
+                    return None
+                if not speech or speech.strip(" .!\"'`").upper() == "SILENT":
+                    self._record_proactive_outcome("silent")
                     return None
                 speech = speech[:177].rstrip() + "…" if len(speech) > 180 else speech
                 recent_lines = [*self._proactive_recent, *context.get("recent_dialogue", ()), *recent_chat]
                 if _repeats_dialogue(speech, recent_lines):
+                    self._record_proactive_outcome("repeated")
                     return None
                 self._proactive_recent.append(speech)
+                self._record_proactive_outcome("generated")
                 return speech
+        except Exception as error:
+            with self._lock:
+                cancelled = cancel.is_set() or isinstance(error, AIError) and error.code == "cancelled"
+                self._record_proactive_outcome("cancelled" if cancelled else "error", error)
+            raise
         finally:
             with self._lock:
                 if self._active_proactive_cancel is cancel:
                     self._active_proactive_cancel = None
 
-    def _proactive_context(self, event: str, context: dict, recent_chat: list[str]) -> dict:
+    def _proactive_context(self, event: str, context: dict, recent_chat: list[str], *, chatter: bool = False) -> dict:
         try:
             now = datetime.fromisoformat(context.get("current_time", ""))
         except (TypeError, ValueError):
@@ -771,7 +878,10 @@ class AssistantService:
             **context,
             "current_time": now.isoformat(timespec="seconds"),
             "time_of_day": period,
-            "proactive_event": {"kind": event, "guidance": _PROACTIVE_EVENT_GUIDANCE.get(event, "")},
+            "proactive_event": {
+                "kind": event, "mode": "chatter" if chatter else "event",
+                "guidance": "최근 대화와 다른 새 화제로 짧고 편안한 대화를 먼저 건네요." if chatter else _PROACTIVE_EVENT_GUIDANCE.get(event, ""),
+            },
             "recent_ai_dialogue": [*self._proactive_recent, *recent_chat],
         }
 

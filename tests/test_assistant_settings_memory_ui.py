@@ -123,6 +123,151 @@ class SettingsAndMemoryWindowTests(unittest.TestCase):
         self.assertEqual(self.settings.weather_location.get(), "서울시")
         self.assertTrue(self.settings.dirty)
 
+    def test_proactive_controls_are_visible_without_opening_advanced(self):
+        for dpi in (96, 144, 192):
+            with self.subTest(dpi=dpi):
+                self.root.tk.call("tk", "scaling", dpi / 72)
+                self.settings.show()
+                self.settings.canvas.yview_moveto(0)
+                self.root.update()
+                self.assertFalse(self.settings._advanced_open)
+                self.assertFalse(self.settings.advanced.winfo_ismapped())
+                for widget in (self.settings.proactive_check, self.settings.proactive_interval_entry, self.settings.chatter_check):
+                    self.assertTrue(widget.winfo_viewable())
+                    top = widget.winfo_rooty() - self.settings.canvas.winfo_rooty()
+                    left = widget.winfo_rootx() - self.settings.canvas.winfo_rootx()
+                    self.assertGreaterEqual(top, 0)
+                    self.assertGreaterEqual(left, 0)
+                    self.assertLessEqual(top + widget.winfo_height(), self.settings.canvas.winfo_height())
+                    self.assertLessEqual(left + widget.winfo_width(), self.settings.canvas.winfo_width())
+                self.assertEqual(float(self.settings.proactive_interval_entry.cget("from")), 1)
+                self.assertEqual(float(self.settings.proactive_interval_entry.cget("to")), 120)
+                self.assertEqual(float(self.settings.proactive_interval_entry.cget("increment")), 1)
+
+    def test_proactive_one_minute_save_reopen_and_toggle_preserve_other_settings(self):
+        self.current = replace(self.current, enabled=True, weather_location="대전시",
+                               proactive_interval_minutes=20, daily_request_limit=40, daily_token_limit=9000,
+                               daily_budget_usd=1.25, proactive_events=("return", "periodic"))
+        self.settings.reload()
+        original = self.current
+        self.assertEqual(self.settings.proactive_interval.get(), "20")
+        self.assertIn("간격 20분", self.settings.proactive_state.get())
+        self.settings.proactive_check.invoke()
+        self.settings.proactive_interval.set("1")
+        self.assertTrue(self.settings._save())
+        self.assertEqual(self.current, replace(original, proactive_enabled=True, proactive_interval_minutes=1))
+        self.settings._hide()
+        self.settings.show()
+        self.assertTrue(self.settings.proactive.get())
+        self.assertEqual(self.settings.proactive_interval.get(), "1")
+        self.settings.proactive_check.invoke()
+        self.assertTrue(self.settings._save())
+        self.assertEqual(self.current, replace(original, proactive_interval_minutes=1))
+
+    def test_proactive_existing_interval_and_unsaved_draft_are_kept(self):
+        self.current = replace(self.current, proactive_enabled=True, proactive_interval_minutes=20)
+        self.settings.reload()
+        self.settings.show()
+        self.assertEqual(self.settings.proactive_interval.get(), "20")
+        self.settings.proactive_interval.set("1")
+        self.settings.proactive.set(False)
+        self.settings._hide()
+        self.settings.show()
+        self.assertEqual(self.settings.proactive_interval.get(), "1")
+        self.assertFalse(self.settings.proactive.get())
+        self.assertTrue(self.settings.dirty)
+        self.assertEqual(self.current.proactive_interval_minutes, 20)
+        self.assertTrue(self.current.proactive_enabled)
+        self.assertIn("간격 20분", self.settings.proactive_state.get())
+        self.settings.reload()
+        self.assertEqual(self.settings.proactive_interval.get(), "20")
+        self.assertTrue(self.settings.proactive.get())
+
+    def test_proactive_interval_out_of_range_keeps_saved_settings_and_draft(self):
+        original = self.current
+        for interval in ("0", "121"):
+            self.settings.proactive_interval.set(interval)
+            self.assertFalse(self.settings._save())
+            self.assertEqual(self.current, original)
+            self.assertEqual(self.settings.proactive_interval.get(), interval)
+        self.service.save_settings.assert_not_called()
+
+    def test_proactive_status_reports_saved_prerequisites_and_runtime_without_saving(self):
+        self.current = replace(self.current, enabled=True, proactive_enabled=True, proactive_interval_minutes=20)
+        self.settings.reload()
+        self.assertIn("API 키 등록", self.settings.proactive_state.get())
+        self.has_key = True
+        self.current = replace(self.current, proactive_quiet_until=date.today().isoformat())
+        self.settings.reload()
+        self.assertIn("오늘은 쉬는 중", self.settings.proactive_state.get())
+        self.owner.proactive_status = Mock(return_value={"reason": "미전송 초안이 있어 기다리는 중이에요.",
+            "next_in_seconds": 30, "last_message": "최근 요청은 실패했어요. 사용량이 있을 수 있어요."})
+        self.settings.proactive_interval.set("1")
+        self.settings.proactive_refresh.invoke()
+        self.assertIn("조회", self.settings.proactive_runtime.get())
+        self.assertIn("미전송 초안", self.settings.proactive_runtime.get())
+        self.assertIn("30초", self.settings.proactive_runtime.get())
+        self.assertIn("최근 요청은 실패", self.settings.proactive_runtime.get())
+        self.assertEqual(self.settings.proactive_interval.get(), "1")
+        self.assertTrue(self.settings.dirty)
+        self.service.save_settings.assert_not_called()
+        self.service.connection_test.assert_not_called()
+
+    def test_settings_explanation_wrap_does_not_depend_on_label_configure(self):
+        import tkinter as tk
+        self.settings.show()
+        self.root.update()
+        label = next(widget for widget in self.settings.content.winfo_children()
+                     if isinstance(widget, tk.Label) and "처음에는" in widget.cget("text"))
+        before = label.cget("wraplength")
+        with patch.object(label, "configure", wraps=label.configure) as configure:
+            label.event_generate("<Configure>", width=73, height=111)
+            self.root.update_idletasks()
+            configure.assert_not_called()
+        self.assertEqual(label.cget("wraplength"), before)
+        self.settings.geometry("510x420")
+        self.root.update()
+        self.assertLess(label.winfo_pixels(label.cget("wraplength")), label.winfo_pixels(before))
+
+    def test_chatter_toggle_preserves_proactive_mode_and_interval_across_reopen(self):
+        self.current = replace(self.current, proactive_enabled=False, proactive_interval_minutes=20,
+                               weather_location="부산시", conversation_storage_enabled=True)
+        self.settings.reload()
+        original = self.current
+        self.assertFalse(self.settings.chatter.get())
+        self.settings.chatter_check.invoke()
+        self.settings._hide()
+        self.settings.show()
+        self.assertTrue(self.settings.chatter.get())
+        self.assertTrue(self.settings.dirty)
+        self.assertTrue(self.settings._save())
+        self.assertEqual(self.current, replace(original, chatter_enabled=True))
+        self.settings._hide()
+        self.settings.show()
+        self.assertTrue(self.settings.chatter.get())
+        self.assertFalse(self.settings.proactive.get())
+        self.assertEqual(self.settings.proactive_interval.get(), "20")
+        self.settings.proactive_check.invoke()
+        self.assertTrue(self.settings._save())
+        self.assertEqual(self.current, replace(original, chatter_enabled=True, proactive_enabled=True))
+        self.settings.chatter_check.invoke()
+        self.assertTrue(self.settings._save())
+        self.assertEqual(self.current, replace(original, proactive_enabled=True))
+
+    def test_chatter_only_saved_status_requires_ai_and_key_but_not_situation_toggle(self):
+        self.current = replace(self.current, enabled=False, proactive_enabled=False, chatter_enabled=True,
+                               proactive_events=())
+        self.settings.reload()
+        self.assertIn("AI 재잘대기 켜짐", self.settings.proactive_state.get())
+        self.assertIn("AI 대화 사용을 켜야", self.settings.proactive_state.get())
+        self.current = replace(self.current, enabled=True)
+        self.settings.reload()
+        self.assertIn("API 키 등록", self.settings.proactive_state.get())
+        self.has_key = True
+        self.settings.reload()
+        self.assertNotIn("허용된 상황 없음", self.settings.proactive_state.get())
+        self.assertNotIn("정기 응원은 꺼짐", self.settings.proactive_state.get())
+
     def test_memory_duplicate_selects_existing_and_long_draft_is_kept(self):
         self.memory.add_text.insert("1.0", "오전에는 짧게 답하기")
         self.assertTrue(self.memory._save_editor())

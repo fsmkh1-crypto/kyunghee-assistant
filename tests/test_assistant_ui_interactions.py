@@ -389,7 +389,15 @@ class AssistantInteractionTests(unittest.TestCase):
 
     def test_chat_activity_covers_visible_pending_and_unsent_hidden_drafts(self):
         self.root.update()
-        self.assertTrue(self.owner.is_chat_active())
+        self.assertFalse(self.owner.is_chat_active())  # A merely open empty window is not activity.
+        with patch("assistant_ai.ui.time.monotonic", return_value=100):
+            self.owner.chat_window.history.event_generate("<MouseWheel>", delta=-120)
+            self.root.update()
+            self.assertTrue(self.owner.is_chat_active())
+        with patch("assistant_ai.ui.time.monotonic", return_value=399):
+            self.assertTrue(self.owner.is_chat_active())
+        with patch("assistant_ai.ui.time.monotonic", return_value=400):
+            self.assertFalse(self.owner.is_chat_active())
         self.owner.chat_window._hide()
         self.assertFalse(self.owner.is_chat_active())
         self.owner.chat_window.input.insert("1.0", "아직 보내지 않은 초안")

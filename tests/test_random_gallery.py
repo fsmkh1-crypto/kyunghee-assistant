@@ -334,3 +334,153 @@ class RandomGalleryTkTests(unittest.TestCase):
         app.settings_preview_next.invoke()
         self.assertIn('cheer_26.png', app.settings_preview_meta.cget('text'))
         self.assertEqual(app._image_action_state(), follow_before)
+
+    def _show_image_settings(self):
+        app = self.app
+        app._show_page('settings')
+        tab = next(tab for tab in app._settings_notebook.tabs() if app._settings_notebook.tab(tab, 'text') == '이미지')
+        app._settings_notebook.select(tab)
+        app.root.update()
+        return app._settings_canvases[tab]
+
+    def _visible_hit(self, widget):
+        top = widget.winfo_toplevel()
+        top.lift()
+        top.focus_force()
+        widget.focus_set()
+        self.app.root.update()
+        self.assertTrue(widget.winfo_viewable())
+        self.assertGreaterEqual(widget.winfo_width(), widget.winfo_reqwidth())
+        self.assertGreaterEqual(widget.winfo_height(), widget.winfo_reqheight())
+        x, y = widget.winfo_rootx() + widget.winfo_width() // 2, widget.winfo_rooty() + widget.winfo_height() // 2
+        hit = self.app.root.winfo_containing(x, y)
+        self.assertEqual(hit, widget, f'{widget.cget("text")!r} is covered by {hit}')
+        return hit
+
+    def _click_hit(self, widget):
+        hit = self._visible_hit(widget)
+        x, y = hit.winfo_width() // 2, hit.winfo_height() // 2
+        hit.event_generate('<Motion>', x=x, y=y, warp=True)
+        hit.event_generate('<Enter>', x=x, y=y)
+        hit.event_generate('<ButtonPress-1>', x=x, y=y)
+        hit.event_generate('<ButtonRelease-1>', x=x, y=y)
+        self.app.root.update()
+
+    def _assert_current_character_uses_role(self, role):
+        app = self.app
+        self.assertEqual(app.character_role, role)
+        expected = app._clean_character_alpha(app._load_character_image(
+            role, (app._scale(app.CHARACTER_MAX[0]), app._scale(app.CHARACTER_MAX[1])), preserve_alpha=True))
+        actual = ImageTk.getimage(app.character_photo).convert('RGBA')
+        self.assertEqual(actual.size, expected.size)
+        def visible_pixels(image):
+            background = Image.new('RGBA', image.size, (19, 21, 29, 255))
+            background.alpha_composite(image)
+            return background.convert('RGB').tobytes()
+        self.assertEqual(visible_pixels(actual), visible_pixels(expected))
+
+    def test_role_action_buttons_are_uncovered_and_accessible_for_every_role_at_common_dpi(self):
+        real_tk = tk.Tk
+        for dpi in (96, 120, 144, 192):
+            with self.subTest(dpi=dpi):
+                self.close()
+                def create_root():
+                    root = real_tk()
+                    root.tk.call('tk', 'scaling', dpi / 72)
+                    return root
+                with patch.object(tk, 'Tk', create_root):
+                    self.app = FinalGalleryDesktopApp()
+                for token in self.app.root.tk.call('after', 'info'):
+                    self.app.root.after_cancel(token)
+                self._show_image_settings()
+                for key, caption in self.app.IMAGE_ROWS:
+                    with self.subTest(role=key):
+                        self.app._image_role_var.set(caption)
+                        self.app._image_role_selector.event_generate('<<ComboboxSelected>>')
+                        self.app.root.update()
+                        row, options = self.app._image_role_rows[key]
+                        self.assertIs(row.master, self.app._image_role_detail_frame)
+                        self.assertIs(options.master, self.app._image_role_detail_frame)
+                        buttons = [widget for widget in self.app._image_role_action_rows[key].winfo_children() if isinstance(widget, tk.Button)]
+                        self.assertEqual({button.cget('text') for button in buttons}, {'한 장', '여러 장', '폴더', '세트 따라가기', '갤러리', '랜덤'})
+                        for button in buttons:
+                            self._visible_hit(button)
+                        self._visible_hit(self.app._settings_preview_apply_button)
+
+    def test_real_gallery_click_can_assign_other_role_art_to_default_and_survive_save_restart(self):
+        app = self.app
+        self._show_image_settings()
+        gallery_button = next(widget for widget in app._image_role_action_rows['default'].winfo_children()
+                              if isinstance(widget, tk.Button) and widget.cget('text') == '갤러리')
+        self._click_hit(gallery_button)
+        top = next(widget for widget in app.root.winfo_children() if isinstance(widget, tk.Toplevel) and hasattr(widget, '_gallery_photos'))
+        search = next(widget for widget in app._all_descendants(top) if widget.winfo_class() == 'TEntry')
+        search.insert(0, 'settings_04.png')
+        app.root.update()
+        source = next(item.path for item in app._image_catalog.entries() if item.ref == 'builtin:settings/settings_04.png')
+        original_bytes = source.read_bytes()
+        before = app._image_action_state()
+        thumbnail = next(widget for widget in app._all_descendants(top) if isinstance(widget, tk.Button) and str(widget.cget('image')))
+        self._click_hit(thumbnail)
+        self.assertEqual(app._image_action_state(), before)
+        self._click_hit(next(widget for widget in app._all_descendants(top) if isinstance(widget, tk.Button) and widget.cget('text') == '적용'))
+        self.assertEqual(app._manual_override_path('default'), source)
+        self.assertEqual(app._image_action_state(), {**before, 'default': 'builtin:settings/settings_04.png'})
+        self._click_hit(next(widget for widget in app._all_descendants(top) if isinstance(widget, tk.Button) and widget.cget('text') == '취소'))
+        self.assertIn('settings_04.png', app._image_applied_label.cget('text'))
+        self._click_hit(next(widget for widget in app._all_descendants(app.settings_page) if isinstance(widget, tk.Button) and widget.cget('text') == '설정 저장'))
+        app._show_page('timer')
+        self._assert_current_character_uses_role('default')
+        self.assertEqual(app._custom_image('default')[0], source)
+        self.close()
+        self.app = FinalGalleryDesktopApp()
+        for token in self.app.root.tk.call('after', 'info'):
+            self.app.root.after_cancel(token)
+        self.assertEqual(self.app._manual_override_path('default'), source)
+        self._assert_current_character_uses_role('default')
+        self.assertEqual(source.read_bytes(), original_bytes)
+
+    def test_preview_apply_is_explicit_and_defers_default_picture_until_away_ends(self):
+        app = self.app
+        app._choose_base_set('04')
+        app.engine.start_manual_away()
+        app._set_character('away')
+        self._show_image_settings()
+        app._select_settings_preview('default')
+        before = app._image_action_state()
+        away_pixels = ImageTk.getimage(app.character_photo).tobytes()
+        index = [key for key, _caption in app.IMAGE_ROWS].index('settings')
+        for _ in range(index):
+            self._click_hit(app.settings_preview_next)
+        self.assertEqual(app._settings_preview_current_path.name, 'settings_04.png')
+        self.assertEqual(app._image_action_state(), before)
+        self.assertEqual(ImageTk.getimage(app.character_photo).tobytes(), away_pixels)
+        self._click_hit(app._settings_preview_apply_button)
+        self.assertEqual(app._manual_override_path('default').name, 'settings_04.png')
+        self.assertTrue(app.state.session.is_away)
+        self.assertEqual(app.character_role, 'away')
+        self.assertIn('평상시로 저장됨', app.settings_status.cget('text'))
+        self.assertIn('평상시 전환 때 표시', app.settings_status.cget('text'))
+        self.assertEqual(ImageTk.getimage(app.character_photo).tobytes(), away_pixels)
+        app.engine.stop_manual_away()
+        app._show_page('timer')
+        self._assert_current_character_uses_role('default')
+        self.assertEqual(app._custom_image('default')[0].name, 'settings_04.png')
+
+    def test_real_file_button_import_preserves_source_and_applies_default(self):
+        app = self.app
+        source = self.fixture('picked-file.png', '#1E7AA4')
+        original = source.read_bytes()
+        self._show_image_settings()
+        button = next(widget for widget in app._image_role_action_rows['default'].winfo_children()
+                      if isinstance(widget, tk.Button) and widget.cget('text') == '한 장')
+        with patch('desktop_gallery.filedialog.askopenfilename', return_value=str(source)):
+            self._click_hit(button)
+        selected = app._manual_override_path('default')
+        self.assertIsNotNone(selected)
+        self.assertNotEqual(selected, source)
+        self.assertEqual(selected.read_bytes(), original)
+        self.assertEqual(source.read_bytes(), original)
+        self.assertIn('평상시 이미지 적용됨', app.settings_status.cget('text'))
+        app._show_page('timer')
+        self._assert_current_character_uses_role('default')

@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import datetime
 from queue import Empty, SimpleQueue
 import re
+import time
 from threading import Event, Thread
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -221,7 +222,7 @@ class AssistantWindows:
 
     def __init__(self, root, service, *, context, dispatch, on_chat_state=None, chat_work_area=None,
                  image_catalog=None, image_propose=None, image_apply=None, image_cancel=None,
-                 image_undo=None, image_preview=None):
+                 image_undo=None, image_preview=None, proactive_status=None):
         self.root = root
         self.service = service
         self.context = context
@@ -234,6 +235,7 @@ class AssistantWindows:
         self.image_cancel = image_cancel
         self.image_undo = image_undo
         self.image_preview = image_preview
+        self.proactive_status = proactive_status
         self._extra_windows = []
         self._background_jobs = {}
         families = {name.casefold() for name in tkfont.families(root)}
@@ -257,6 +259,7 @@ class AssistantWindows:
         self._request_id = None
         self._failed_request = None
         self._editing_retry_id = None
+        self._last_chat_interaction = float("-inf")
 
     def run_background(self, operation, done):
         """Workers never call Tk; all completions are delivered by the root loop."""
@@ -536,18 +539,32 @@ class AssistantWindows:
             if window in self._extra_windows:
                 self._extra_windows.remove(window)
 
-    def is_chat_active(self):
+    def _note_chat_interaction(self, _event=None):
         if self._closed:
-            return False
+            return
+        self._last_chat_interaction = time.monotonic()
+        if self.on_chat_state is not None:
+            self.on_chat_state("activity", "")
+
+    def chat_activity_reason(self):
+        if self._closed:
+            return None
         if self._cancel is not None:
-            return True
+            return "대화 답변을 기다리고 있어요."
         if window_exists(self.chat_window):
             try:
-                return bool(self.chat_window.winfo_viewable() or
-                            self.chat_window.input.get("1.0", "end-1c").strip())
+                if self.chat_window.input.get("1.0", "end-1c").strip():
+                    return "아직 보내지 않은 메시지가 있어요. 초안을 보존하며 기다려요."
             except tk.TclError:
                 pass
-        return False
+        if time.monotonic() - self._last_chat_interaction < 300:
+            return "대화를 작성하거나 읽은 뒤 5분 동안 쉬고 있어요."
+        return None
+
+    def is_chat_active(self):
+        # An idle, empty window may stay open all day. Protect actual reading,
+        # typing and pending requests instead of its mere visibility.
+        return self.chat_activity_reason() is not None
 
     def open_weather_settings(self):
         if not self._closed:
@@ -1206,6 +1223,9 @@ class _ChatWindow(_Window):
         _add_scrollbar(input_frame, self.input)
         self.input.bind("<Control-Return>", self._send_from_keyboard)
         self.input.bind("<<Modified>>", self._input_modified)
+        for widget in (*history_frame.winfo_children(), *input_frame.winfo_children()):
+            for sequence in ("<KeyPress>", "<ButtonPress>", "<MouseWheel>", "<Button-4>", "<Button-5>"):
+                widget.bind(sequence, owner._note_chat_interaction, add="+")
         self.input_count = tk.StringVar(master=self, value="0자 · Tab으로 버튼 이동")
         _label(composer, textvariable=self.input_count, color=MUTED, size=9).pack(anchor="w", padx=12)
         self.status = tk.StringVar(master=self)

@@ -26,7 +26,8 @@ class ConfigMigrationTests(unittest.TestCase):
             self.assertFalse(defaults.memory_enabled)
             self.assertEqual(defaults.key_persistence, "session")
             self.assertFalse(defaults.proactive_enabled)
-            self.assertEqual(defaults.proactive_interval_minutes, 20)
+            self.assertFalse(defaults.chatter_enabled)
+            self.assertEqual(defaults.proactive_interval_minutes, 1)
             settings = replace(defaults, conversation_storage_enabled=True, web_search_enabled=False,
                                proactive_events=("away", "return"), proactive_quiet_until="2026-11-09",
                                reading_text_size=17, proactive_interval_minutes=35)
@@ -60,8 +61,9 @@ class ConfigMigrationTests(unittest.TestCase):
             {"proactive_events": ("away", "away")}, {"proactive_events": ["away"]},
             {"proactive_quiet_until": "2026-02-30"}, {"proactive_quiet_until": "20261109"},
             {"reading_text_size": True}, {"reading_text_size": 21},
-            {"proactive_interval_minutes": True}, {"proactive_interval_minutes": 4},
+            {"proactive_interval_minutes": True}, {"proactive_interval_minutes": 0},
             {"proactive_interval_minutes": 121}, {"proactive_interval_minutes": "20"},
+            {"chatter_enabled": "true"}, {"chatter_enabled": 1},
         ):
             with self.subTest(values=values), self.assertRaises(SettingsError) as caught:
                 replace(AISettings(), **values).validate()
@@ -78,7 +80,22 @@ class ConfigMigrationTests(unittest.TestCase):
             self.assertTrue(settings.proactive_enabled)
             self.assertEqual(settings.proactive_events, ("return",))
             self.assertEqual(settings.model, "gpt-6.1-sol")
-            self.assertEqual(settings.proactive_interval_minutes, 20)
+            self.assertEqual(settings.proactive_interval_minutes, 1)
+
+    def test_saved_intervals_and_opt_ins_are_not_reset_by_one_minute_default(self):
+        with TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory))
+            for minutes in (1, 5, 20, 35, 120):
+                for proactive in (False, True):
+                    with self.subTest(minutes=minutes, proactive=proactive):
+                        saved = AISettings(
+                            model="gpt-6.1-sol", enabled=True, proactive_enabled=proactive,
+                            proactive_interval_minutes=minutes, proactive_events=("return", "periodic"),
+                            key_persistence="session", memory_enabled=True, conversation_storage_enabled=True,
+                            chatter_enabled=not proactive,
+                        )
+                        store.save(saved)
+                        self.assertEqual(store.load(), saved)
 
 
 class KeyStorageChoiceTests(unittest.TestCase):
