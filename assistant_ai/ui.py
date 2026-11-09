@@ -507,8 +507,15 @@ class AssistantWindows:
             button.pack_forget()
         def arrange_actions(event=None):
             width = event.width if event else max(1, controls.winfo_width())
-            cell = max(button.winfo_reqwidth() for button in action_buttons) + 6
-            columns = max(1, min(3, width // cell))
+            # Grid columns have their own requested widths. Treating every
+            # column as wide as Undo needlessly stacks all three actions on
+            # narrow Windows dialogs, consuming the footer's full height.
+            requested = [button.winfo_reqwidth() + 4 for button in action_buttons]
+            columns = 1
+            for candidate in range(len(action_buttons), 0, -1):
+                if sum(max(requested[column::candidate]) for column in range(candidate)) <= width:
+                    columns = candidate
+                    break
             for column in range(3):
                 controls.grid_columnconfigure(column, weight=1 if column < columns else 0)
             for index, button in enumerate(action_buttons):

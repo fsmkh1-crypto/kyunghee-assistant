@@ -310,6 +310,12 @@ class AssistantInteractionTests(unittest.TestCase):
         self.assertGreaterEqual(button.winfo_height(), button.winfo_reqheight(), details)
         self.assertLessEqual(left + button.winfo_width(), window.winfo_width(), details)
         self.assertLessEqual(top + button.winfo_height(), window.winfo_height(), details)
+        parent_left = button.winfo_rootx() - button.master.winfo_rootx()
+        parent_top = button.winfo_rooty() - button.master.winfo_rooty()
+        self.assertGreaterEqual(parent_left, 0, details)
+        self.assertGreaterEqual(parent_top, 0, details)
+        self.assertLessEqual(parent_left + button.winfo_width(), button.master.winfo_width(), details)
+        self.assertLessEqual(parent_top + button.winfo_height(), button.master.winfo_height(), details)
 
     def test_timer_approval_actions_remain_visible_at_small_sizes_and_common_dpi(self):
         from assistant_ai.ui import _ConfirmWindow
@@ -414,6 +420,48 @@ class AssistantInteractionTests(unittest.TestCase):
         self.assertEqual(self.owner.image_apply.call_count, 8)
         self.assertEqual(self.owner.image_undo.call_count, 8)
         self.owner.image_cancel.assert_not_called()
+
+    def test_image_approval_fits_unequal_windows_button_sizes(self):
+        import tkinter as tk
+        from assistant_ai import ui
+        original_button = ui._button
+        widths = {"되돌리기": 131, "취소": 83, "적용": 83}
+
+        def fixed_pixel_button(parent, text, command, **options):
+            button = original_button(parent, text, command, **options)
+            # Reproduce the measured Windows requests on any font/DPI host.
+            button._test_image = tk.PhotoImage(master=parent, width=1, height=1)
+            button.configure(image=button._test_image, width=0, height=0,
+                             padx=0, pady=0, highlightthickness=0)
+            button._test_image.configure(width=widths[text] - button.winfo_reqwidth() + 1,
+                                         height=62 - button.winfo_reqheight() + 1)
+            return button
+
+        self.owner.chat_work_area = lambda *_: (0, 0, 320, 240)
+        self.owner.image_apply = Mock(return_value={"summary": "적용했어요", "changed": True})
+        self.owner.image_undo = Mock(return_value={"summary": "되돌렸어요", "changed": True})
+        with patch("assistant_ai.ui._button", side_effect=fixed_pixel_button):
+            self.owner.show_image_proposal({"id": "p-sized", "status": "pending",
+                "summary": "세트를 변경할까요? " * 25, "scope": "수동 지정은 유지돼요. " * 40})
+        window = self.owner._extra_windows[-1]
+        self.root.update()
+        self.wait_for_approval_layout(window)
+        buttons = (window.undo_button, window.cancel_button, window.apply_button)
+        self.assertEqual([(button.winfo_reqwidth(), button.winfo_reqheight()) for button in buttons],
+                         [(131, 62), (83, 62), (83, 62)])
+        self.assertEqual(window.apply_button.master.winfo_width(), 252)
+        for button in buttons:
+            self.assert_action_visible(button, window)
+        self.assertTrue(window.content_canvas.winfo_viewable())
+        self.assertGreater(window.content_canvas.winfo_height(), 10)
+        window.apply_button.invoke()
+        self.root.update()
+        self.wait_for_approval_layout(window)
+        for button in buttons:
+            self.assert_action_visible(button, window)
+        window.undo_button.invoke()
+        self.owner.image_apply.assert_called_once_with("p-sized")
+        self.owner.image_undo.assert_called_once()
 
     def test_image_wrapping_uses_viewport_width_without_label_feedback(self):
         import tkinter as tk
