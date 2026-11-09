@@ -8,6 +8,8 @@ import shutil
 import uuid
 from typing import Iterable, Sequence
 
+from image_catalog import require_image, valid_image
+
 
 SUPPORTED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 VALID_FIT_MODES = {"fit", "crop"}
@@ -28,7 +30,7 @@ def normalize_alignment(value: object) -> str:
 
 
 def is_supported_image(path: Path) -> bool:
-    return path.is_file() and path.suffix.lower() in SUPPORTED_IMAGE_SUFFIXES
+    return valid_image(path)
 
 
 @dataclass(frozen=True)
@@ -130,33 +132,35 @@ class ImageSetStore:
         self.invalidate(role)
         return updated
 
-    def import_files(self, role: str, paths: Iterable[Path]) -> ImageSetConfig:
+    def import_files(self, role: str, paths: Iterable[Path], *, replace: bool = False) -> ImageSetConfig:
         role = self._safe_role(role)
+        sources = [Path(path).expanduser() for path in paths]
+        for source in sources:
+            require_image(source)
         role_dir = self.roles_dir / role
-        role_dir.mkdir(parents=True, exist_ok=True)
-
         manifest = self._load_manifest()
         roles = manifest.setdefault("roles", {})
         current = ImageSetConfig.from_dict(role, roles.get(role, {}))
-        stored = list(current.images)
-
-        for source in paths:
-            source = Path(source).expanduser()
-            if not is_supported_image(source):
-                continue
-            suffix = source.suffix.lower()
-            target = role_dir / f"{uuid.uuid4().hex}{suffix}"
-            shutil.copy2(source, target)
-            stored.append(target.relative_to(self.root).as_posix())
-
-        updated = ImageSetConfig(
-            role=role,
-            images=tuple(stored),
-            fit_mode=current.fit_mode,
-            alignment=current.alignment,
-        )
-        roles[role] = updated.to_dict()
-        self._save_manifest(manifest)
+        stored = [] if replace else list(current.images)
+        created = []
+        try:
+            role_dir.mkdir(parents=True, exist_ok=True)
+            for source in sources:
+                target = role_dir / f"{uuid.uuid4().hex}{source.suffix.lower()}"
+                created.append(target)
+                shutil.copy2(source, target)
+                require_image(target)
+                stored.append(target.relative_to(self.root).as_posix())
+            updated = ImageSetConfig(role=role, images=tuple(stored),
+                                     fit_mode=current.fit_mode, alignment=current.alignment)
+            roles[role] = updated.to_dict()
+            self._save_manifest(manifest)
+        except Exception:
+            for path in created:
+                path.unlink(missing_ok=True)
+            raise
+        # Replaced images are retained so a failed later selection or Undo never
+        # destroys a user's only copy. Only explicit clear(delete_files=True) deletes.
         self.invalidate(role)
         return updated
 

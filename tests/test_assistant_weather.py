@@ -98,7 +98,7 @@ class WeatherTests(unittest.TestCase):
         self.assertIn("Ontario", str(raised.exception))
         self.assertEqual([req[0] for req in self.requests], [GEOCODING_URL])
 
-    def test_foreign_country_qualifier_uses_provider_country_filter(self):
+    def test_country_code_overlapping_state_is_not_assumed_to_be_us(self):
         self.geo["results"] = [location("London", 42.98, -81.24, country="Canada", area="Ontario")]
         self.forecast["utc_offset_seconds"] = -18000
         self.forecast["current"]["time"] = "2026-11-08T22:30"
@@ -106,9 +106,29 @@ class WeatherTests(unittest.TestCase):
         result = self.service.lookup("London, CA")
         self.assertEqual(result.current.time, "2026-11-08T22:30-05:00")
         self.assertEqual(result.daily[0].date, "2026-11-08")
-        self.assertEqual(self.requests[0][1]["countryCode"], ["CA"])
+        self.assertNotIn("countryCode", self.requests[0][1])
         self.assertEqual(self.requests[0][1]["name"], ["London"])
         self.assertEqual(self.requests[1][1]["longitude"], ["-81.24"])
+
+    def test_us_state_abbreviation_filters_real_admin_area_not_country(self):
+        self.geo["results"] = [
+            {**location("Portland", 45.52, -122.67, country="United States", area="Oregon"), "country_code": "US"},
+            {**location("Portland", 43.66, -70.25, country="United States", area="Maine"), "country_code": "US"},
+        ]
+        report = self.service.lookup("Portland, OR")
+        self.assertIn("Oregon", report.region)
+        self.assertNotIn("countryCode", self.requests[0][1])
+        self.assertEqual(self.requests[1][1]["longitude"], ["-122.67"])
+
+    def test_explicit_city_state_country_and_ambiguous_code(self):
+        self.geo["results"] = [
+            {**location("London", 40, -120, country="United States", area="California"), "country_code": "US"},
+            {**location("London", 42.98, -81.24, country="Canada", area="Ontario"), "country_code": "CA"},
+        ]
+        with self.assertRaisesRegex(WeatherError, "여러 곳"):
+            self.service.lookup("London, CA")
+        result = self.service.lookup("London, CA, US")
+        self.assertIn("California", result.region)
 
     def test_fuzzy_city_is_never_silently_substituted(self):
         self.geo["results"] = [location("Seoul", 37.55, 127.0, country="South Korea", area="Seoul")]

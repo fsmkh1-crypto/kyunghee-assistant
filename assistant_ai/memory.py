@@ -20,6 +20,11 @@ class ConversationTurn:
     user: str
     assistant: str | None
     created_at: str
+    status: str = ""
+
+    def __post_init__(self):
+        if not self.status:
+            object.__setattr__(self, "status", "completed" if self.assistant is not None else "pending")
 
 
 @dataclass(frozen=True)
@@ -27,6 +32,7 @@ class MemoryEntry:
     id: int
     text: str
     created_at: str
+    pinned: bool = False
 
 
 @dataclass(frozen=True)
@@ -50,9 +56,40 @@ _STOP_WORDS = frozenset(
     "때문에 말해줘 뭐야 뭐였지 무엇 무엇을 어떤 있어 있었지 오늘 우리가 이전 이제 "
     "저번 전에 최근 했어 했지 해줘 the about have what that with when your from".split()
 )
-_TURN_COLUMNS = "id, user_text, assistant_text, created_at"
-_MEMORY_COLUMNS = "id, text, created_at"
+_TURN_COLUMNS = "id, user_text, assistant_text, created_at, status"
+_MEMORY_COLUMNS = "id, text, created_at, pinned"
 _Entry = TypeVar("_Entry", ConversationTurn, MemoryEntry)
+MAX_MEMORY_CHARS = 2000
+TURN_STATUSES = frozenset({"pending", "completed", "failed", "cancelled", "interrupted"})
+_UNANSWERED_STATUSES = TURN_STATUSES - {"pending", "completed"}
+
+
+def _validate_unanswered_status(status: str) -> None:
+    if not isinstance(status, str) or status not in _UNANSWERED_STATUSES:
+        raise ValueError("완료되지 않은 대화의 상태를 확인해 주세요.")
+
+
+class MemoryValidationError(ValueError):
+    pass
+
+
+# Kept as a convenient public alias for callers handling memory input errors.
+MemoryError = MemoryValidationError
+
+
+def validate_memory_text(text: str, *, allow_empty: bool = False) -> str:
+    if not isinstance(text, str):
+        raise MemoryValidationError("기억할 내용을 글자로 입력해 주세요.")
+    text = text.strip()
+    if not text and allow_empty:
+        return text
+    if not 1 <= len(text) <= MAX_MEMORY_CHARS:
+        raise MemoryValidationError(f"기억할 내용을 1~{MAX_MEMORY_CHARS:,}자로 입력해 주세요.")
+    return text
+
+
+def _memory_entry(row) -> MemoryEntry:
+    return MemoryEntry(row[0], row[1], row[2], bool(row[3]))
 
 
 def _timestamp() -> str:
@@ -151,23 +188,39 @@ class MemoryStore:
                 CREATE TABLE IF NOT EXISTS storage_state (
                     id INTEGER PRIMARY KEY CHECK (id = 1),
                     enabled INTEGER NOT NULL,
-                    generation INTEGER NOT NULL
+                    generation INTEGER NOT NULL,
+                    history_enabled INTEGER NOT NULL DEFAULT 0
                 );
-                INSERT OR IGNORE INTO storage_state VALUES (1, 0, 0);
+                INSERT OR IGNORE INTO storage_state (id, enabled, generation) VALUES (1, 0, 0);
                 CREATE TABLE IF NOT EXISTS conversation_turns (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_text TEXT NOT NULL,
                     assistant_text TEXT,
                     created_at TEXT NOT NULL,
-                    generation INTEGER NOT NULL
+                    generation INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending'
                 );
                 CREATE TABLE IF NOT EXISTS memories (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     text TEXT NOT NULL,
                     normalized_text TEXT NOT NULL UNIQUE,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    pinned INTEGER NOT NULL DEFAULT 0
                 );
             """)
+            # Migrate in the same transaction; legacy opt-in controlled both features.
+            state_columns = {row[1] for row in connection.execute("PRAGMA table_info(storage_state)")}
+            if "history_enabled" not in state_columns:
+                connection.execute("ALTER TABLE storage_state ADD COLUMN history_enabled INTEGER NOT NULL DEFAULT 0")
+                connection.execute("UPDATE storage_state SET history_enabled = enabled")
+            memory_columns = {row[1] for row in connection.execute("PRAGMA table_info(memories)")}
+            if "pinned" not in memory_columns:
+                connection.execute("ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+            turn_columns = {row[1] for row in connection.execute("PRAGMA table_info(conversation_turns)")}
+            if "status" not in turn_columns:
+                connection.execute("ALTER TABLE conversation_turns ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'")
+                connection.execute("UPDATE conversation_turns SET status = CASE "
+                                   "WHEN assistant_text IS NULL THEN 'interrupted' ELSE 'completed' END")
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -184,12 +237,29 @@ class MemoryStore:
     def _enabled(connection: sqlite3.Connection) -> bool:
         return bool(connection.execute("SELECT enabled FROM storage_state WHERE id = 1").fetchone()[0])
 
+    @property
+    def history_enabled(self) -> bool:
+        with self._connection() as connection:
+            return self._history_enabled(connection)
+
+    @staticmethod
+    def _history_enabled(connection: sqlite3.Connection) -> bool:
+        return bool(connection.execute("SELECT history_enabled FROM storage_state WHERE id = 1").fetchone()[0])
+
     def set_enabled(self, enabled: bool) -> None:
         value = int(bool(enabled))
         with self._connection() as connection:
             connection.execute(
-                "UPDATE storage_state SET enabled = ?, generation = generation + 1 WHERE id = 1 AND enabled != ?",
+                "UPDATE storage_state SET enabled = ? WHERE id = 1 AND enabled != ?",
                 (value, value),
+            )
+
+    def set_history_enabled(self, enabled: bool) -> None:
+        value = int(bool(enabled))
+        with self._connection() as connection:
+            connection.execute(
+                "UPDATE storage_state SET history_enabled = ?, generation = generation + 1 "
+                "WHERE id = 1 AND history_enabled != ?", (value, value),
             )
 
     def begin_turn(self, text: str) -> int | None:
@@ -199,7 +269,7 @@ class MemoryStore:
         with self._connection() as connection:
             cursor = connection.execute(
                 """INSERT INTO conversation_turns (user_text, created_at, generation)
-                   SELECT ?, ?, generation FROM storage_state WHERE id = 1 AND enabled = 1""",
+                   SELECT ?, ?, generation FROM storage_state WHERE id = 1 AND history_enabled = 1""",
                 (text, _timestamp()),
             )
             return cursor.lastrowid if cursor.rowcount else None
@@ -210,26 +280,51 @@ class MemoryStore:
             return False
         with self._connection() as connection:
             cursor = connection.execute(
-                """UPDATE conversation_turns SET assistant_text = ?
-                   WHERE id = ? AND assistant_text IS NULL
-                   AND generation = (SELECT generation FROM storage_state WHERE id = 1 AND enabled = 1)""",
+                """UPDATE conversation_turns SET assistant_text = ?, status = 'completed'
+                   WHERE id = ? AND assistant_text IS NULL AND status = 'pending'
+                   AND generation = (SELECT generation FROM storage_state WHERE id = 1 AND history_enabled = 1)""",
                 (text, turn_id),
             )
             return cursor.rowcount == 1
 
+    def update_turn_status(self, turn_id: int, status: str) -> bool:
+        """Mark an unanswered pending turn terminal without adding synthetic dialogue."""
+        _validate_unanswered_status(status)
+        with self._connection() as connection:
+            cursor = connection.execute(
+                "UPDATE conversation_turns SET status = ? "
+                "WHERE id = ? AND assistant_text IS NULL AND status = 'pending'", (status, turn_id),
+            )
+            return cursor.rowcount == 1
+
+    def mark_interrupted_turns(self) -> int:
+        """Call once at app startup after confirming no previous worker remains active."""
+        with self._connection() as connection:
+            return connection.execute(
+                "UPDATE conversation_turns SET status = 'interrupted' "
+                "WHERE assistant_text IS NULL AND status = 'pending'",
+            ).rowcount
+
     @staticmethod
     def _recent(
         connection: sqlite3.Connection, limit: int | None, exclude_id: int | None = None,
+        *, completed_only: bool = False,
     ) -> list[ConversationTurn]:
+        status_filter = " AND status = 'completed'" if completed_only else ""
         rows = connection.execute(
-            f"SELECT {_TURN_COLUMNS} FROM conversation_turns WHERE id != ? ORDER BY id DESC LIMIT ?",
+            f"SELECT {_TURN_COLUMNS} FROM conversation_turns WHERE id != ?{status_filter} ORDER BY id DESC LIMIT ?",
             (exclude_id or 0, -1 if limit is None else max(0, limit)),
         ).fetchall()
         return [ConversationTurn(*row) for row in reversed(rows)]
 
     @staticmethod
-    def _turns(connection: sqlite3.Connection, exclude_id: int | None) -> Iterator[ConversationTurn]:
-        rows = connection.execute(f"SELECT {_TURN_COLUMNS} FROM conversation_turns WHERE id != ?", (exclude_id or 0,))
+    def _turns(
+        connection: sqlite3.Connection, exclude_id: int | None, *, completed_only: bool = False,
+    ) -> Iterator[ConversationTurn]:
+        status_filter = " AND status = 'completed'" if completed_only else ""
+        rows = connection.execute(
+            f"SELECT {_TURN_COLUMNS} FROM conversation_turns WHERE id != ?{status_filter}", (exclude_id or 0,),
+        )
         return (ConversationTurn(*row) for row in rows)
 
     def recent_turns(self, limit: int | None = 20) -> list[ConversationTurn]:
@@ -242,27 +337,55 @@ class MemoryStore:
 
     def add_memory(self, text: str) -> MemoryEntry | None:
         """Save text on explicit user request, returning the existing row for duplicates."""
-        text = text.strip()
+        return self.add_memory_with_result(text)[0]
+
+    def add_memory_with_result(self, text: str) -> tuple[MemoryEntry | None, bool]:
+        """Return the saved entry and whether it was newly created."""
+        text = validate_memory_text(text, allow_empty=True)
         if not text:
-            return None
+            return None, False
         normalized = " ".join(_normalize(text).split())
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             if not self._enabled(connection):
-                return None
-            connection.execute(
+                return None, False
+            cursor = connection.execute(
                 "INSERT OR IGNORE INTO memories (text, normalized_text, created_at) VALUES (?, ?, ?)",
                 (text, normalized, _timestamp()),
             )
             row = connection.execute(
                 f"SELECT {_MEMORY_COLUMNS} FROM memories WHERE normalized_text = ?", (normalized,),
             ).fetchone()
-            return MemoryEntry(*row)
+            return _memory_entry(row), cursor.rowcount == 1
+
+    def update_memory(self, memory_id: int, text: str) -> MemoryEntry | None:
+        text = validate_memory_text(text)
+        normalized = " ".join(_normalize(text).split())
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            duplicate = connection.execute(
+                "SELECT id FROM memories WHERE normalized_text = ? AND id != ?", (normalized, memory_id),
+            ).fetchone()
+            if duplicate:
+                raise MemoryValidationError("같은 내용의 기억이 이미 있어요. 기존 기억을 선택해 주세요.")
+            connection.execute(
+                "UPDATE memories SET text = ?, normalized_text = ? WHERE id = ?", (text, normalized, memory_id),
+            )
+            row = connection.execute(f"SELECT {_MEMORY_COLUMNS} FROM memories WHERE id = ?", (memory_id,)).fetchone()
+            return _memory_entry(row) if row else None
+
+    def set_memory_pinned(self, memory_id: int, pinned: bool) -> MemoryEntry | None:
+        if type(pinned) is not bool:
+            raise MemoryValidationError("기억 고정 여부를 다시 선택해 주세요.")
+        with self._connection() as connection:
+            connection.execute("UPDATE memories SET pinned = ? WHERE id = ?", (int(pinned), memory_id))
+            row = connection.execute(f"SELECT {_MEMORY_COLUMNS} FROM memories WHERE id = ?", (memory_id,)).fetchone()
+            return _memory_entry(row) if row else None
 
     @staticmethod
     def _memories(connection: sqlite3.Connection) -> Iterator[MemoryEntry]:
-        rows = connection.execute(f"SELECT {_MEMORY_COLUMNS} FROM memories ORDER BY id DESC")
-        return (MemoryEntry(*row) for row in rows)
+        rows = connection.execute(f"SELECT {_MEMORY_COLUMNS} FROM memories ORDER BY pinned DESC, id DESC")
+        return (_memory_entry(row) for row in rows)
 
     def list_memories(self) -> list[MemoryEntry]:
         with self._connection() as connection:
@@ -278,11 +401,36 @@ class MemoryStore:
     ) -> MemoryContext:
         with self._connection() as connection:
             connection.execute("BEGIN")
-            if not self._enabled(connection):
-                return MemoryContext()
-            recent = self._recent(connection, recent_limit, exclude_id)
-            memories = tuple(_ranked(self._memories(connection), query, memory_limit, _memory_score))
-            return _turn_context(recent, self._turns(connection, exclude_id), query, relevant_limit, memories)
+            memories = ()
+            if self._enabled(connection):
+                entries = list(self._memories(connection))
+                pinned = [entry for entry in entries if entry.pinned]
+                relevant = _ranked(
+                    (entry for entry in entries if not entry.pinned), query,
+                    max(0, memory_limit - len(pinned)), _memory_score,
+                )
+                memories = tuple(pinned + relevant)
+            if not self._history_enabled(connection):
+                return MemoryContext(memories=memories)
+            recent = self._recent(connection, recent_limit, exclude_id, completed_only=True)
+            return _turn_context(
+                recent, self._turns(connection, exclude_id, completed_only=True), query, relevant_limit, memories,
+            )
+
+    def counts(self) -> dict[str, int]:
+        with self._connection() as connection:
+            connection.execute("BEGIN")
+            return {name: connection.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0]
+                    for name in ("conversation_turns", "memories")}
+
+    def clear_data(self, *, conversations: bool = False, memories: bool = False) -> dict[str, int]:
+        deleted = {"conversation_turns": 0, "memories": 0}
+        with self._connection() as connection:
+            if conversations:
+                deleted["conversation_turns"] = connection.execute("DELETE FROM conversation_turns").rowcount
+            if memories:
+                deleted["memories"] = connection.execute("DELETE FROM memories").rowcount
+        return deleted
 
     def delete_turn(self, turn_id: int) -> bool:
         with self._connection() as connection:
@@ -301,9 +449,7 @@ class MemoryStore:
             return connection.execute("DELETE FROM memories").rowcount
 
     def clear_all(self) -> None:
-        with self._connection() as connection:
-            connection.execute("DELETE FROM conversation_turns")
-            connection.execute("DELETE FROM memories")
+        self.clear_data(conversations=True, memories=True)
 
 
 class SessionHistory:
@@ -330,10 +476,26 @@ class SessionHistory:
             return False
         with self._lock:
             turn = self._turns.get(turn_id)
-            if turn is None or turn.assistant is not None:
+            if turn is None or turn.assistant is not None or turn.status != "pending":
                 return False
-            self._turns[turn_id] = replace(turn, assistant=text)
+            self._turns[turn_id] = replace(turn, assistant=text, status="completed")
             return True
+
+    def update_turn_status(self, turn_id: int, status: str) -> bool:
+        _validate_unanswered_status(status)
+        with self._lock:
+            turn = self._turns.get(turn_id)
+            if turn is None or turn.assistant is not None or turn.status != "pending":
+                return False
+            self._turns[turn_id] = replace(turn, status=status)
+            return True
+
+    def mark_interrupted_turns(self) -> int:
+        with self._lock:
+            pending = [turn for turn in self._turns.values() if turn.status == "pending" and turn.assistant is None]
+            for turn in pending:
+                self._turns[turn.id] = replace(turn, status="interrupted")
+            return len(pending)
 
     def _snapshot(self, exclude_id: int | None = None) -> list[ConversationTurn]:
         with self._lock:
@@ -351,7 +513,7 @@ class SessionHistory:
         self, query: str, *, exclude_id: int | None = None, recent_limit: int = 6,
         relevant_limit: int = 4, memory_limit: int = 6,
     ) -> MemoryContext:
-        turns = self._snapshot(exclude_id)
+        turns = [turn for turn in self._snapshot(exclude_id) if turn.status == "completed"]
         recent = turns[-recent_limit:] if recent_limit > 0 else []
         return _turn_context(recent, turns, query, relevant_limit)
 

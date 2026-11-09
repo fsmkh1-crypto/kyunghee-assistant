@@ -4,13 +4,22 @@ Windows productivity timer and virtual secretary.
 
 ## Current development target
 
-`0.4.0-alpha`
+`2.1.0` — complete review implementation, based on Seunga Timer 2.0.3 (`15accd3`).
 
-The 0.4 line is focused on correctness before real-world testing.
+The implementation and verification ledger is [docs/IMPLEMENTATION_CHECKLIST_2_1.md](docs/IMPLEMENTATION_CHECKLIST_2_1.md). Windows acceptance steps and remaining physical-device checks are documented separately; automated checks do not imply a live API quality test.
 
 ## Desktop app
 
-Development is focused on the Windows desktop app. `RUN.cmd` launches the integrated desktop UI during development. The Windows job in the **tests** workflow publishes the `seunga-timer-windows` package for branch pushes. Keep `SeungaTimer.exe` beside its `_internal` folder. The package includes Python.
+Development is focused on the Windows desktop app. `RUN.cmd` and Windows source autostart launch `desktop_gallery_final.py`. The Windows job in the **tests** workflow publishes `seunga-timer-2.1.0-windows-x64` for branch pushes. Keep `SeungaTimer.exe` beside its `_internal` folder. The package includes Python.
+
+- Click the speech bubble for chat, or the timer/character for settings; drag the timer/character to move the widget.
+- Screen dice changes the current image until the next situation. Explicit pinning and restoration are available.
+- Import complete image ZIP sets from the image settings tab. Imports live in the user profile and do not overwrite built-in artwork.
+- Image changes from chat use a validated proposal, explicit Apply/Cancel, and Undo. Local image controls do not require an API key.
+- Settings have tabs, a fixed save area, draft indicators and discard. Images selected from the gallery apply immediately and have their own Undo.
+- Optional AI supports cancellation, retry/edit, local timer status, separate history/memory preferences, searchable/editable pinned memories, event controls and web search preferences.
+- Choose a session-only API key or Windows DPAPI storage. Connection testing is an explicit API request and may incur usage.
+- Selective user-data backup, validated restore with a recovery snapshot, and privacy-preserving diagnostics are available in the data panel. Keys are excluded.
 
 For the Seunga Timer Windows package, see the [Korean installation and usage guide](docs/AI_ASSISTANT_2_GUIDE.md).
 
@@ -71,13 +80,8 @@ When you enable the optional AI assistant, messages you send and relevant contex
 ## External review
 
 See [`REVIEW_FOR_CLAUDE.md`](REVIEW_FOR_CLAUDE.md).
-The repository is intentionally public so external reviewers can audit the current `main` branch directly.
+Review the implementation branch and its exact commit, rather than assuming `main` contains the current desktop product.
 
 ## Status
 
-Not yet a production release. The next gate is:
-
-1. green deterministic CI
-2. external code review of the current `main` branch
-3. finalized character/image assets
-4. Windows real-world testing
+No automatic merge is part of this work. See the implementation ledger for verified checks, Windows package results, and the manual acceptance items that remain.

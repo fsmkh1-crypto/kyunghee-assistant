@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import sqlite3
 from tempfile import TemporaryDirectory
 from threading import Event
 import unittest
@@ -67,7 +68,7 @@ class AssistantConfigTests(unittest.TestCase):
     def test_windows_key_is_encrypted_and_reopens(self):
         with TemporaryDirectory() as directory:
             path = Path(directory)
-            vault = KeyVault(path)
+            vault = KeyVault(path, persistent=True)
             self.assertTrue(vault.persistent)
             vault.set(TEST_KEY)
             self.assertNotIn(TEST_KEY.encode("ascii"), vault.path.read_bytes())
@@ -162,6 +163,11 @@ class AssistantAPITests(unittest.TestCase):
             first = workers.submit(self.respond, settings=settings, transport=wait_transport)
             try:
                 self.assertTrue(entered.wait(5))
+                pending = self.ledger.summary(settings)
+                self.assertEqual((pending.pending_requests, pending.unconfirmed_requests, pending.remaining_requests),
+                                 (1, 1, 0))
+                self.assertGreater(pending.reserved_tokens, 0)
+                self.assertEqual(pending.total_tokens, 0)
                 other = ResponsesClient(TEST_KEY, UsageLedger(self.path, today=lambda: self.day),
                                         transport=self.successful_transport)
                 with self.assertRaises(AIError) as error:
@@ -172,6 +178,9 @@ class AssistantAPITests(unittest.TestCase):
                 release.set()
             first.result(timeout=5)
         self.assertEqual(self.ledger.summary().requests, 1)
+        settled = self.ledger.summary(settings)
+        self.assertEqual((settled.pending_requests, settled.unconfirmed_requests, settled.reserved_tokens), (0, 0, 0))
+        self.assertEqual(settled.total_tokens, 110)
         self.day = date(2026, 11, 10)
         self.respond(settings=settings)
         self.assertEqual(self.ledger.summary().date, "2026-11-10")
@@ -221,6 +230,105 @@ class AssistantAPITests(unittest.TestCase):
         with self.assertRaises(AIError) as blocked:
             self.respond(settings=settings)
         self.assertEqual(blocked.exception.code, "token_limit")
+        summary = self.ledger.summary(settings)
+        self.assertEqual(summary.total_tokens, 0)
+        self.assertEqual(summary.reserved_tokens, 1200)
+        self.assertEqual(summary.allowance_tokens, 1200)
+        self.assertEqual(summary.remaining_tokens, 0)
+        self.assertGreater(summary.reserved_cost_usd, 0)
+        self.assertEqual(summary.estimated_cost_usd, 0)
+
+    def test_summary_distinguishes_confirmed_pending_unconfirmed_and_rejected_attempts(self):
+        settings = replace(self.settings, daily_request_limit=10, daily_token_limit=1000, daily_budget_usd=0.01)
+        self.respond(purpose="chat")
+        self.ledger._reserve(settings, 20, 16, purpose="event")
+        unknown_id, _, _ = self.ledger._reserve(settings, 10, 16, purpose="search")
+        self.ledger._finish(unknown_id, settings.model, None)
+
+        def rejected(request, *, timeout):
+            raise HTTPError(request.full_url, 401, "Unauthorized", {}, io.BytesIO(b"{}"))
+
+        with self.assertRaises(AIError):
+            self.respond(transport=rejected, purpose="test")
+        summary = self.ledger.summary(settings)
+        self.assertEqual((summary.requests, summary.confirmed_requests, summary.failed_requests), (4, 1, 1))
+        self.assertEqual((summary.pending_requests, summary.unconfirmed_requests), (1, 2))
+        self.assertEqual((summary.input_tokens, summary.output_tokens, summary.total_tokens), (100, 10, 110))
+        self.assertEqual((summary.reserved_input_tokens, summary.reserved_output_tokens, summary.reserved_tokens),
+                         (30, 32, 62))
+        self.assertEqual(summary.allowance_tokens, 172)
+        self.assertAlmostEqual(summary.estimated_cost_usd, 0.0001065)
+        self.assertAlmostEqual(summary.reserved_cost_usd, 0.0001665)
+        self.assertAlmostEqual(summary.allowance_cost_usd, 0.000273)
+        self.assertEqual((summary.remaining_requests, summary.remaining_tokens), (6, 828))
+        self.assertAlmostEqual(summary.remaining_budget_usd, 0.009727)
+        self.assertEqual(summary.requests_by_purpose, {"chat": 1, "event": 1, "search": 1, "test": 1})
+        unlimited = self.ledger.summary()
+        self.assertEqual((unlimited.remaining_requests, unlimited.remaining_tokens, unlimited.remaining_budget_usd),
+                         (None, None, None))
+        self.day = date(2026, 11, 10)
+        fresh = self.ledger.summary(settings)
+        self.assertEqual((fresh.requests, fresh.reserved_tokens, fresh.requests_by_purpose), (0, 0, {}))
+        self.assertEqual((fresh.remaining_requests, fresh.remaining_tokens, fresh.remaining_budget_usd),
+                         (10, 1000, 0.01))
+
+    def test_unknown_pending_price_does_not_hide_known_confirmed_cost(self):
+        self.respond()
+        pending_id, _, _ = self.ledger._reserve(replace(self.settings, model="custom-model"), 100, 16)
+        self.ledger._finish(pending_id, "custom-model", None)
+        summary = self.ledger.summary(replace(self.settings, daily_budget_usd=1, daily_token_limit=1000))
+        self.assertAlmostEqual(summary.estimated_cost_usd, 0.0001065)
+        self.assertIsNone(summary.reserved_cost_usd)
+        self.assertIsNone(summary.allowance_cost_usd)
+        self.assertIsNone(summary.remaining_budget_usd)
+        self.assertEqual(summary.remaining_tokens, 774)
+
+    def test_legacy_database_migration_preserves_existing_usage_and_ids(self):
+        with sqlite3.connect(self.ledger.path) as connection:
+            connection.execute("""CREATE TABLE calls (
+                id INTEGER PRIMARY KEY, day TEXT NOT NULL, created_at TEXT NOT NULL,
+                model TEXT NOT NULL, status TEXT NOT NULL, input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL, total_tokens INTEGER NOT NULL, cost_nanos INTEGER
+            )""")
+            connection.execute("INSERT INTO calls VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                               (44, self.day.isoformat(), "original timestamp", self.settings.model,
+                                "unconfirmed", 100, 20, 120, 165000))
+        migrated = self.ledger.summary()
+        self.assertEqual((migrated.requests, migrated.reserved_tokens, migrated.requests_by_purpose),
+                         (1, 120, {"legacy": 1}))
+        self.respond(purpose="test")
+        with sqlite3.connect(self.ledger.path) as connection:
+            rows = connection.execute("SELECT id, created_at, total_tokens, purpose FROM calls ORDER BY id").fetchall()
+        self.assertEqual(rows[0], (44, "original timestamp", 120, "legacy"))
+        self.assertEqual((rows[1][0], rows[1][2], rows[1][3]), (45, 110, "test"))
+        self.assertEqual(UsageLedger(self.path, today=lambda: self.day).summary().requests_by_purpose,
+                         {"legacy": 1, "test": 1})
+
+    def test_connection_probe_accepts_incomplete_response_without_visible_text(self):
+        def probe_transport(request, *, timeout):
+            self.requests.append(request)
+            return self.response_stream(output=[], status="incomplete")
+
+        result = self.respond(transport=probe_transport, purpose="test", max_output_tokens=256)
+        self.assertEqual((result.status, result.text), ("incomplete", ""))
+        payload = json.loads(self.requests[0].data)
+        self.assertEqual(payload["max_output_tokens"], 256)
+        self.assertNotIn("tools", payload)
+        self.assertNotIn("purpose", payload)
+        self.assertEqual(self.ledger.summary().requests_by_purpose, {"test": 1})
+        with self.assertRaises(AIError) as error:
+            self.respond(transport=lambda *args, **kwargs: self.response_stream(output=[], status="failed"),
+                         purpose="test")
+        self.assertEqual(error.exception.code, "response_failed")
+
+    def test_invalid_purpose_is_not_sent_or_saved(self):
+        for purpose in (TEST_KEY, {}, None):
+            with self.subTest(purpose=type(purpose).__name__), self.assertRaises(AIError) as error:
+                self.respond(purpose=purpose)
+            self.assertEqual(error.exception.code, "request_invalid")
+            self.assertNotIn(TEST_KEY, str(error.exception))
+        self.assertEqual(self.requests, [])
+        self.assertEqual(self.ledger.summary().requests, 0)
 
     def test_unpriced_model_keeps_token_counts_and_disables_usd_estimate(self):
         self.respond(settings=replace(self.settings, model="custom-model"))

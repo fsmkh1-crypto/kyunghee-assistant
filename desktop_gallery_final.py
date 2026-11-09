@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import sys
 from pathlib import Path
 
 import app as core
@@ -83,6 +84,9 @@ class FinalGalleryDesktopApp(DesktopAssistantMixin, gallery.GalleryDesktopApp):
 
 
 if __name__ == '__main__':
+    if len(sys.argv) == 3 and sys.argv[1] == '--self-test':
+        from package_smoke import run_packaged_smoke
+        raise SystemExit(run_packaged_smoke(FinalGalleryDesktopApp, Path(sys.argv[2])))
     if os.name != 'nt':
         raise SystemExit('Windows only')
     compact.enable_per_monitor_dpi_awareness()

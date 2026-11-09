@@ -88,6 +88,14 @@ class App:
     TRAY_TITLE = APP_NAME
 
     def __init__(self):
+        from user_data_backup import unfinished_restore_journals
+        if unfinished_restore_journals(DATA_DIR):
+            message = ("완료되지 않은 데이터 복원이 있어 타이머를 시작하지 않았어요.\n"
+                       "사용자 데이터 폴더의 .restore-journal-* 및 backups 폴더를 보존하고 복구 상태를 확인해 주세요.\n"
+                       "설치 폴더 docs/BACKUP_RESTORE.md의 복구 안내를 참고하세요.")
+            if os.name == "nt":
+                ctypes.windll.user32.MessageBoxW(None, message, "승아 타이머 데이터 복구 확인", 0x30)
+            raise RuntimeError(message)
         self.preferences = load_user_settings(SETTINGS_FILE)
         self.workday_policy = self.preferences.workday_policy()
         self.state = load_state(STATE_FILE)
@@ -748,7 +756,8 @@ class App:
     def _tray_menu_items(self):
         return (
             item("열기", lambda: self._tray_call(self.show), default=True),
-            item("자리비움 시작", lambda: self._tray_call(self.toggle_manual_away)),
+            item(lambda _item: "복귀하기" if self.state.session.is_away else "자리비움 시작",
+                 lambda: self._tray_call(self.toggle_manual_away)),
             item("오늘 기록 보기", lambda: self._tray_call(self.show_stats)),
             item("설정", lambda: self._tray_call(lambda: (self._show_page("settings"), self.show()))),
             item("종료", lambda: self._tray_call(self.quit)),

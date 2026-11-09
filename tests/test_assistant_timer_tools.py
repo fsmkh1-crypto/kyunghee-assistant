@@ -83,6 +83,18 @@ class AssistantTimerToolsTests(unittest.TestCase):
         self.assertEqual(stats["active_ratio_percent"], 90)
         self.assertEqual(self.confirmations, [])
 
+    def test_context_includes_local_clock_personality_events_and_recent_speech(self):
+        self.app.preferences = replace(self.app.preferences, personality="strict", custom_dialogue="짧게 말하기")
+        self.app._assistant_events = [{"date": self.app.state.daily.day, "event": "return"}, {"date": "1999-01-01", "event": "away"}]
+        self.app._assistant_recent_dialogue = ["물 마시기"]
+        context = self.tools.context()
+        self.assertIn("T", context["current_time"])
+        self.assertTrue(context["timezone"])
+        self.assertEqual(context["personality"], "strict")
+        self.assertEqual(context["custom_dialogue"], "짧게 말하기")
+        self.assertEqual(context["recent_dialogue"], ["물 마시기"])
+        self.assertEqual([item["event"] for item in context["today_events"]], ["return"])
+
     def test_actions_wait_for_confirmation_and_report_real_result(self):
         result = self.tools.execute("set_timer_action", {"action": "start_break"}, lambda _: False)
         self.assertFalse(result["ok"])

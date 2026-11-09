@@ -96,7 +96,7 @@ class WidgetReadabilityTests(unittest.TestCase):
             with self.subTest(dpi=dpi), tempfile.TemporaryDirectory() as temp:
                 directory = Path(temp)
                 settings_path = directory / "settings.json"
-                save_user_settings(settings_path, UserSettings(builtin_image_set="01", widget_scale=100))
+                save_user_settings(settings_path, UserSettings(builtin_image_set="01", widget_scale=100, welcome_seen=True))
 
                 def create_root():
                     root = create_tk()

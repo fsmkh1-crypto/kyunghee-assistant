@@ -6,6 +6,10 @@ on:
     branches:
       - ui/dark-kyunghee-redesign
     paths:
+      - '*.py'
+      - 'assistant_ai/**'
+      - 'tests/**'
+      - 'docs/**'
       - 'desktop_gallery_final.py'
       - 'desktop_gallery.py'
       - 'desktop_compact.py'
@@ -41,6 +45,8 @@ jobs:
           python-version: '3.12'
       - name: Install build dependencies
         run: python -m pip install -r requirements.txt pyinstaller
+      - name: Run regression tests
+        run: python -m unittest discover -s tests -v
       - name: Build standalone Windows app
         run: >-
           python -m PyInstaller
@@ -51,10 +57,23 @@ jobs:
           --name SeungaTimer
           --add-data "assets;assets"
           desktop_gallery_final.py
+      - name: Exercise packaged UI and DPI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:APPDATA = Join-Path $env:RUNNER_TEMP "seunga-package-validation"
+          $report = Join-Path $env:GITHUB_WORKSPACE "packaged-ui-report.json"
+          $process = Start-Process -FilePath dist\SeungaTimer\SeungaTimer.exe -ArgumentList @("--self-test", $report) -PassThru -Wait
+          if ($process.ExitCode -ne 0) {
+            if (Test-Path $report) { Get-Content $report }
+            throw "Packaged UI tests failed with exit code $($process.ExitCode)."
+          }
+          Get-Content $report
       - name: Smoke-test packaged app
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $env:APPDATA = Join-Path $env:RUNNER_TEMP "seunga-package-normal-start"
           $process = Start-Process -FilePath dist\SeungaTimer\SeungaTimer.exe -PassThru
           Start-Sleep -Seconds 8
           if ($process.HasExited) {
@@ -75,9 +94,11 @@ jobs:
           $ErrorActionPreference = "Stop"
           Copy-Item README.md dist\SeungaTimer\README.md
           Copy-Item LICENSE dist\SeungaTimer\LICENSE
+          Copy-Item docs dist\SeungaTimer\docs -Recurse
+          Copy-Item packaged-ui-report.json dist\SeungaTimer\
       - uses: actions/upload-artifact@v4
         with:
-          name: seunga-timer-desktop
+          name: seunga-timer-2.1.0-windows-x64
           path: dist/SeungaTimer
 
 # Package trigger: finalized settings gallery + duplicate-safe random 2026-09-10

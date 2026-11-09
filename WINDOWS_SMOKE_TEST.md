@@ -1,15 +1,33 @@
-# Windows smoke test — 0.4.0 alpha
+# Windows smoke test — 승아 타이머 2.1
 
 Run this on a real Windows PC before calling the build ready for daily use.
 
 ## Setup
 
-1. Install Python 3.12+.
-2. Run `python -m pip install -r requirements.txt`.
-3. Start with `RUN_DEBUG.cmd` for the first test session.
+1. For a packaged test, extract the Windows ZIP and keep `SeungaTimer.exe` beside `_internal`. Python is not required.
+2. For source testing only, install Python 3.12+ and run `python -m pip install -r requirements.txt`.
+3. Start the packaged EXE, or use `RUN_DEBUG.cmd` for source debugging.
 4. Confirm `%APPDATA%\KyungheeAssistant\kyunghee.log` is being written.
 
 ## Must-pass checks
+
+### 0. Review implementation acceptance
+
+- Open chat from the speech bubble; open settings with a short timer/character click; drag without opening settings. Verify tray/keyboard access with the bubble hidden.
+- Roll the screen dice, change to away/rest/return, and check situation images return. Explicitly pin and unpin. Restore the latest situation while pinned.
+- Open settings/records while away, return to the timer, change scale and save: the timer state and corresponding image must remain consistent.
+- Import the user's real complete ZIP, import it again, then try conflicting numbers, incomplete sets and a truncated PNG. Originals and previous selections must survive all failures. Restart and replace the app directory: profile imports should remain.
+- Change a whole set and one role, select a custom image, follow the set, and undo. Check displayed origin, saved state and restart. In chat, verify no change before Apply, ambiguous scope, Cancel, Undo, stale proposals and repeated Apply.
+- Edit unrelated settings while applying an image in chat; neither edit may overwrite the other. Close/reopen AI settings: drafts remain, key input follows its displayed handling rule.
+- At 1366×768 and 100/125/150/200% Windows scaling, inspect all tabs, gallery, chat, API settings, memories, weather and backup. Save/action controls must be reachable. Test left-side negative-coordinate monitors and unplug/reconnect a monitor.
+- Test Korean IME composition and Ctrl+Enter, Tab/Shift+Tab, Enter on a source, text enlargement, Narrator/NVDA, and always-on-top interactions.
+- With synthetic delayed API responses, cancel and send again immediately; late results must not replace the current response. Retry an error after an approved timer action: the completed action must not repeat.
+- Test invalid keys, offline mode, timeouts and exhausted limits. Timer/alerts and offline status/image controls must keep working. Event fallback must appear immediately, with stale/repeated AI lines suppressed.
+- Check session-only keys disappear after restart and saved keys decrypt only in the intended Windows account. Run the explicit live connection test only with the user's own key and consent to its API usage.
+- Toggle history saving OFF→ON→OFF and memory usage independently. Current chat must remain readable; earlier temporary chat must not be silently persisted. Check memory edit/pin/duplicate/length and scoped deletion counts.
+- Back up selected temporary test data, inspect it, restore, restart and compare. Inject a failure and confirm rollback. Keys must be absent and diagnostics must omit personal content. Do not test destructive restoration against the only copy of real data.
+
+The CI job runs the packaged `--self-test <report.json>` route using a temporary profile, blocked network transport and Tk scales 96/120/144/192. Its JSON report is included in the package. This does not replace physical-monitor, IME, screen-reader, sleep or live API tests.
 
 ### 1. Single instance
 

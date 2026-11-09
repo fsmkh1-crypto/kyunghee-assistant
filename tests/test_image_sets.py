@@ -2,13 +2,18 @@ from pathlib import Path
 import random
 import tempfile
 import unittest
+from unittest.mock import patch
+from PIL import Image
 
 from image_sets import ImageSetStore, normalize_alignment, normalize_fit_mode
 
 
 class ImageSetStoreTests(unittest.TestCase):
     def _write_image_stub(self, path: Path, content: bytes = b"stub") -> Path:
-        path.write_bytes(content)
+        if path.suffix in {".png", ".webp"}:
+            Image.new("RGBA", (8, 12), (sum(content) % 256, 100, 120, 255)).save(path)
+        else:
+            path.write_bytes(content)
         return path
 
     def test_import_files_copies_into_app_owned_role_folder(self):
@@ -101,6 +106,32 @@ class ImageSetStoreTests(unittest.TestCase):
             self.assertEqual(cleared.fit_mode, "crop")
             self.assertEqual(cleared.alignment, "bottom")
             self.assertEqual(store.list_images("leave"), ())
+
+    def test_corrupt_source_and_copy_failure_preserve_previous_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = self._write_image_stub(base / 'valid.png')
+            store = ImageSetStore(base / 'owned')
+            store.import_files('rest', [source])
+            old = store.manifest_path.read_bytes()
+            corrupt = base / 'corrupt.png'
+            corrupt.write_bytes(b'not an image')
+            with self.assertRaises(ValueError):
+                store.import_files('rest', [corrupt], replace=True)
+            with patch.object(store, '_save_manifest', side_effect=OSError('disk full')):
+                with self.assertRaises(OSError):
+                    store.import_files('rest', [source], replace=True)
+            self.assertEqual(store.manifest_path.read_bytes(), old)
+            self.assertEqual(len(list(store.roles_dir.rglob('*.png'))), 1)
+
+    def test_corrupt_registered_image_is_excluded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = self._write_image_stub(base / 'valid.png')
+            store = ImageSetStore(base / 'owned')
+            store.import_files('default', [source])
+            store.list_images('default')[0].write_bytes(b'corrupt')
+            self.assertEqual(store.list_images('default'), ())
 
 
 if __name__ == "__main__":

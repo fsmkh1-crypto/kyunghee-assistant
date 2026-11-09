@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from http.client import HTTPException
@@ -23,6 +23,7 @@ _MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 _MIN_OUTPUT_TOKENS = 16
 _MAX_WEB_SEARCH_CALLS = 3
 _WEB_SEARCH_CALL_NANOS = 10_000_000
+_REQUEST_PURPOSES = frozenset({"chat", "event", "search", "test"})
 
 
 class AIError(RuntimeError):
@@ -70,7 +71,21 @@ class UsageSummary:
     output_tokens: int = 0
     total_tokens: int = 0
     estimated_cost_usd: float | None = 0.0
+    # Kept as pending + unconfirmed for callers of the original summary API.
     unconfirmed_requests: int = 0
+    confirmed_requests: int = 0
+    pending_requests: int = 0
+    failed_requests: int = 0
+    reserved_input_tokens: int = 0
+    reserved_output_tokens: int = 0
+    reserved_tokens: int = 0
+    reserved_cost_usd: float | None = 0.0
+    allowance_tokens: int = 0
+    allowance_cost_usd: float | None = 0.0
+    remaining_requests: int | None = None
+    remaining_tokens: int | None = None
+    remaining_budget_usd: float | None = None
+    requests_by_purpose: dict[str, int] = field(default_factory=dict)
 
 
 def _rates(price: ModelPrice, input_tokens: int) -> tuple[int, int, int, int]:
@@ -121,9 +136,17 @@ class UsageLedger:
                         input_tokens INTEGER NOT NULL,
                         output_tokens INTEGER NOT NULL,
                         total_tokens INTEGER NOT NULL,
-                        cost_nanos INTEGER
+                        cost_nanos INTEGER,
+                        purpose TEXT NOT NULL DEFAULT 'legacy'
                     )
                 """)
+                if "purpose" not in {row[1] for row in connection.execute("PRAGMA table_info(calls)")}:
+                    # Recheck after acquiring the write lock: another instance may
+                    # have migrated this database while we were waiting for it.
+                    connection.execute("BEGIN IMMEDIATE")
+                    if "purpose" not in {row[1] for row in connection.execute("PRAGMA table_info(calls)")}:
+                        connection.execute("ALTER TABLE calls ADD COLUMN purpose TEXT NOT NULL DEFAULT 'legacy'")
+                    connection.commit()
                 connection.execute("CREATE INDEX IF NOT EXISTS calls_by_day ON calls(day)")
                 yield connection
         except (OSError, sqlite3.Error):
@@ -132,27 +155,76 @@ class UsageLedger:
             if connection is not None:
                 connection.close()
 
-    def summary(self) -> UsageSummary:
+    def summary(self, settings: AISettings | None = None) -> UsageSummary:
+        """Report confirmed usage separately from allowance held by uncertain calls.
+
+        Remaining values are None when no corresponding limit was provided. A
+        budget also has no numeric remainder if any recorded cost is unknown.
+        Request counts include every API attempt, including rejected requests.
+        """
         day = self._today().isoformat()
         with self._connection() as connection:
-            requests, input_tokens, output_tokens, total, cost, unpriced, unconfirmed = connection.execute("""
-                SELECT COUNT(*),
-                       COALESCE(SUM(CASE WHEN status = 'complete' THEN input_tokens ELSE 0 END), 0),
-                       COALESCE(SUM(CASE WHEN status = 'complete' THEN output_tokens ELSE 0 END), 0),
-                       COALESCE(SUM(CASE WHEN status = 'complete' THEN total_tokens ELSE 0 END), 0),
-                       COALESCE(SUM(CASE WHEN status = 'complete' THEN cost_nanos ELSE 0 END), 0),
-                       COUNT(*) - COUNT(cost_nanos),
-                       COALESCE(SUM(CASE WHEN status IN ('pending', 'unconfirmed') THEN 1 ELSE 0 END), 0)
+            rows = connection.execute("""
+                SELECT status, purpose, COUNT(*), SUM(input_tokens), SUM(output_tokens),
+                       SUM(total_tokens), COALESCE(SUM(cost_nanos), 0), COUNT(*) - COUNT(cost_nanos)
                 FROM calls WHERE day = ?
-            """, (day,)).fetchone()
+                GROUP BY status, purpose
+            """, (day,)).fetchall()
+        requests = confirmed = pending = failed = unconfirmed = 0
+        input_tokens = output_tokens = total = cost = unpriced = 0
+        reserved_input = reserved_output = reserved_tokens = reserved_cost = reserved_unpriced = 0
+        allowance_tokens = allowance_cost = allowance_unpriced = 0
+        purposes: dict[str, int] = {}
+        for status, purpose, count, row_input, row_output, row_total, row_cost, row_unpriced in rows:
+            requests += count
+            purposes[purpose] = purposes.get(purpose, 0) + count
+            allowance_tokens += row_total
+            allowance_cost += row_cost
+            allowance_unpriced += row_unpriced
+            confirmed += count if status == "complete" else 0
+            pending += count if status == "pending" else 0
+            failed += count if status == "failed" else 0
+            if status in {"pending", "unconfirmed"}:
+                unconfirmed += count
+                reserved_input += row_input
+                reserved_output += row_output
+                reserved_tokens += row_total
+                reserved_cost += row_cost
+                reserved_unpriced += row_unpriced
+            else:
+                input_tokens += row_input
+                output_tokens += row_output
+                total += row_total
+                cost += row_cost
+                unpriced += row_unpriced
+        remaining_requests = remaining_tokens = remaining_budget = None
+        if settings is not None:
+            if settings.daily_request_limit is not None:
+                remaining_requests = max(0, settings.daily_request_limit - requests)
+            if settings.daily_token_limit is not None:
+                remaining_tokens = max(0, settings.daily_token_limit - allowance_tokens)
+            if settings.daily_budget_usd is not None and not allowance_unpriced:
+                budget = int(Decimal(str(settings.daily_budget_usd)) * _NANOS_PER_USD)
+                remaining_budget = max(0, budget - allowance_cost) / _NANOS_PER_USD
         return UsageSummary(
-            day, requests, input_tokens, output_tokens, total,
-            None if unpriced else cost / _NANOS_PER_USD, unconfirmed,
+            date=day, requests=requests, input_tokens=input_tokens, output_tokens=output_tokens,
+            total_tokens=total, estimated_cost_usd=None if unpriced else cost / _NANOS_PER_USD,
+            unconfirmed_requests=unconfirmed, confirmed_requests=confirmed, pending_requests=pending,
+            failed_requests=failed, reserved_input_tokens=reserved_input, reserved_output_tokens=reserved_output,
+            reserved_tokens=reserved_tokens,
+            reserved_cost_usd=None if reserved_unpriced else reserved_cost / _NANOS_PER_USD,
+            allowance_tokens=allowance_tokens,
+            allowance_cost_usd=None if allowance_unpriced else allowance_cost / _NANOS_PER_USD,
+            remaining_requests=remaining_requests, remaining_tokens=remaining_tokens,
+            remaining_budget_usd=remaining_budget, requests_by_purpose=purposes,
         )
 
     def _reserve(
         self, settings: AISettings, estimated_input: int, output_cap: int | None, *, web_search: bool = False,
+        purpose: str = "chat",
     ) -> tuple[int, int | None, int]:
+        if not isinstance(purpose, str) or purpose not in _REQUEST_PURPOSES:
+            raise AIError("request_invalid", "AI 요청의 사용 목적을 확인해 주세요.")
         day = self._today().isoformat()
         price = MODEL_PRICES.get(settings.model)
         search_limit = _MAX_WEB_SEARCH_CALLS if web_search else 0
@@ -197,11 +269,11 @@ class UsageLedger:
                 reserved_cost = (estimated_input * reserved_rate[2] + reserved_output * reserved_rate[3]
                                  + search_limit * _WEB_SEARCH_CALL_NANOS)
             row = connection.execute("""
-                INSERT INTO calls(day, created_at, model, status, input_tokens, output_tokens, total_tokens, cost_nanos)
-                VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)
+                INSERT INTO calls(day, created_at, model, status, input_tokens, output_tokens, total_tokens, cost_nanos, purpose)
+                VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?)
             """, (
                 day, datetime.now(timezone.utc).isoformat(), settings.model,
-                estimated_input, reserved_output, estimated_input + reserved_output, reserved_cost,
+                estimated_input, reserved_output, estimated_input + reserved_output, reserved_cost, purpose,
             ))
             return row.lastrowid, output_cap, search_limit
 
@@ -404,7 +476,7 @@ class ResponsesClient:
     def respond(
         self, settings: AISettings, input_items: list[dict], *, instructions: str,
         tools=(), max_output_tokens: int | None = None, force_web_search: bool = False,
-        tool_choice: str | dict | None = None,
+        tool_choice: str | dict | None = None, purpose: str = "chat",
     ) -> Response:
         settings.validate()
         if not settings.enabled:
@@ -447,7 +519,7 @@ class ResponsesClient:
         # Conservative local estimate for text JSON, with room for server-side framing.
         estimated_input = len(body) + 256 + 16 * (len(input_items) + len(payload.get("tools", ())))
         call_id, output_cap, search_limit = self.usage_ledger._reserve(
-            settings, estimated_input, max_output_tokens, web_search=web_search,
+            settings, estimated_input, max_output_tokens, web_search=web_search, purpose=purpose,
         )
         if web_search:
             payload["max_tool_calls"] = search_limit
@@ -493,7 +565,7 @@ class ResponsesClient:
         if not valid_output:
             raise AIError("response_invalid", "OpenAI 응답에 대화 결과가 없어요.")
         text, citations = _response_content(output)
-        if status == "incomplete" and not text:
+        if status == "incomplete" and not text and purpose != "test":
             raise AIError("response_incomplete", "OpenAI가 이번 답변을 끝내지 못했어요. 설정된 토큰 한도를 확인해 주세요.")
         response_id = result.get("id")
         return Response(

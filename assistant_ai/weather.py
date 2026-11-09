@@ -168,6 +168,10 @@ def _location_name(value: str) -> str:
 
 
 _METRO_ALIASES = {_normal(alias): location for location, aliases in _METROS for alias in aliases}
+_US_STATES = dict(zip(
+    "AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC".split(),
+    "Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|Nebraska|Nevada|New Hampshire|New Jersey|New Mexico|New York|North Carolina|North Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|Tennessee|Texas|Utah|Vermont|Virginia|Washington|West Virginia|Wisconsin|Wyoming|District of Columbia".split("|"),
+))
 
 
 def _safe_label(value: object) -> str:
@@ -240,18 +244,26 @@ class WeatherService:
         return payload
 
     def _locate(self, region: str) -> _Location:
-        name, separator, qualifier = region.partition(",")
-        primary = name.strip()
-        qualifier = qualifier.strip()
+        parts = [part.strip() for part in region.split(",")]
+        primary = parts[0]
+        qualifier = parts[1] if len(parts) > 1 else ""
+        country = parts[2] if len(parts) == 3 else ""
+        separator = len(parts) > 1
         metro = _METRO_ALIASES.get(_normal(primary))
-        if metro and (not separator or _normal(qualifier) in {"kr", "south korea", "대한민국", "한국"}):
+        if (metro and (not separator or _normal(qualifier) in {"kr", "south korea", "대한민국", "한국"})
+                and (not country or _normal(country) in {"kr", "south korea", "대한민국", "한국"})):
             return metro
-        if len(primary) < 2 or separator and (not qualifier or "," in qualifier):
+        if len(primary) < 2 or len(parts) > 3 or separator and not qualifier or len(parts) == 3 and not country:
             raise WeatherError("도시 이름을 두 글자 이상 적어 주세요. 지역을 좁히려면 ‘도시, 시·도 또는 국가’로 적어 주세요.")
         language = "ko" if re.search(r"[가-힣]", region) else "en"
-        query = {"name": region, "count": 16, "language": language, "format": "json"}
-        if re.fullmatch(r"[A-Za-z]{2}", qualifier):
-            query.update(name=primary, countryCode=qualifier.upper())
+        query = {"name": primary, "count": 100 if qualifier else 16, "language": language, "format": "json"}
+        state = _US_STATES.get(qualifier.upper())
+        if state is None:
+            state = next((name for name in _US_STATES.values() if _normal(name) == _normal(qualifier)), None)
+        if state and country and _normal(country) in {"us", "usa", "united states", "미국"}:
+            query["countryCode"] = "US"
+        elif not state and re.fullmatch(r"[A-Za-z]{2}", country or qualifier):
+            query["countryCode"] = (country or qualifier).upper()
         payload = self._fetch(GEOCODING_URL, query)
         exact = []
         for row in _entries(payload.get("results")):
@@ -259,6 +271,25 @@ class WeatherService:
                 continue
             if _location_name(_safe_label(row.get("name"))) != _location_name(primary):
                 continue
+            labels = {_normal(_safe_label(row.get(key))) for key in ("admin1", "admin2", "country", "country_code")}
+            if qualifier:
+                requested = {_normal(qualifier)}
+                if state:
+                    requested.add(_normal(state))
+                # Country codes and US state codes can overlap (CA/California).
+                # Match actual provider geography and ask if both are present.
+                if qualifier.upper() == "CA":
+                    requested.add("canada")
+                if not requested.intersection(labels):
+                    continue
+            if country:
+                requested_country = {_normal(country)}
+                if _normal(country) in {"us", "usa", "united states", "미국"}:
+                    requested_country.update(("us", "united states"))
+                if country.upper() == "CA":
+                    requested_country.add("canada")
+                if not requested_country.intersection(labels):
+                    continue
             place = _place_from_result(row)
             if place is not None and place not in exact:
                 exact.append(place)

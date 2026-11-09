@@ -11,6 +11,8 @@ from PIL import Image, ImageTk
 import app as core
 import asset_manager
 from desktop_app import DesktopApp
+from image_catalog import valid_image
+from asset_rotation import next_nonrepeating_ref
 
 
 _INSTALLED = False
@@ -99,7 +101,7 @@ def _gallery_candidates() -> list[Path]:
         folder = root / role
         if not folder.is_dir():
             continue
-        candidates.extend(path for path in folder.glob("*.png") if path.is_file())
+        candidates.extend(path for path in folder.glob("*.png") if valid_image(path))
     return sorted(set(candidates), key=lambda path: str(path).lower())
 
 
@@ -109,6 +111,8 @@ def _render_gallery_image(app, path: Path) -> bool:
             app._scale(app.CHARACTER_MAX[0]),
             app._scale(app.CHARACTER_MAX[1]),
         )
+        if not valid_image(path):
+            return False
         with Image.open(path) as src:
             image = src.convert("RGBA")
             image.thumbnail(max_size, Image.Resampling.LANCZOS)
@@ -132,8 +136,14 @@ def _refresh_gallery_controls(app) -> None:
         app.random_gallery_control.place(x=18, y=14, anchor="nw")
         if app._random_gallery_active:
             app.random_gallery_restore.place(x=53, y=14, anchor="nw")
+            app.random_gallery_pin.configure(text="고정 해제" if app._random_gallery_pinned else "고정")
+            app.random_gallery_pin.place(x=82, y=14, anchor="nw")
+            app.random_gallery_scope.configure(text="고정된 이미지" if app._random_gallery_pinned else "다음 상황까지")
+            app.random_gallery_scope.place(x=140, y=16, anchor="nw")
         else:
             app.random_gallery_restore.place_forget()
+            app.random_gallery_pin.place_forget()
+            app.random_gallery_scope.place_forget()
     except (AttributeError, tk.TclError):
         pass
 
@@ -148,7 +158,13 @@ def _refresh_timer_layout(app) -> None:
 
 
 def _show_random_gallery_image(app, _event=None):
-    candidates = _gallery_candidates()
+    if hasattr(app, '_catalog_refs'):
+        refs = app._catalog_refs()
+        selected_ref = next_nonrepeating_ref(refs, app.GALLERY_RANDOM_FILE)
+        selected_path = app._decode_asset_ref(selected_ref or '')
+        candidates = [selected_path] if selected_path is not None else []
+    else:
+        candidates = _gallery_candidates()
     if not candidates:
         return "break"
 
@@ -181,6 +197,7 @@ def _restore_state_image(app, _event=None):
 
     role = getattr(app, "_random_gallery_state_role", None) or "default"
     app._random_gallery_active = False
+    app._random_gallery_pinned = False
     app._random_gallery_last_path = None
     app.character_role = None
     app._random_gallery_original_set_character(role)
@@ -198,8 +215,6 @@ def _install_dynamic_timer_layout(app) -> None:
     group and message keep the existing anchor rules; only the required window
     height is recomputed from the rendered image's visible top edge.
     """
-    if app.__class__.__name__ != "CompactDesktopApp":
-        return
     if getattr(app, "_dynamic_timer_layout_installed", False):
         return
     if not hasattr(app, "_timer_size"):
@@ -231,9 +246,27 @@ def _install_dynamic_timer_layout(app) -> None:
     app._timer_size = MethodType(dynamic_timer_size, app)
 
 
+def _accessible_image_control(app, widget, command, hint):
+    widget.configure(takefocus=True, highlightthickness=1,
+                     highlightbackground=app.TRANSPARENT_KEY, highlightcolor=app.ESCAPE_TEXT)
+    def activate(event=None):
+        widget.focus_set()
+        command(event)
+        return 'break'
+    def show_hint(_event=None):
+        app.random_gallery_hint.configure(text=hint)
+        app.random_gallery_hint.place(x=18, y=42, anchor='nw')
+    def hide_hint(_event=None):
+        app.random_gallery_hint.place_forget()
+    for event in ('<Button-1>', '<Return>', '<space>'):
+        widget.bind(event, activate)
+    for event in ('<Enter>', '<FocusIn>'):
+        widget.bind(event, show_hint)
+    for event in ('<Leave>', '<FocusOut>'):
+        widget.bind(event, hide_hint)
+
+
 def _install_random_gallery(app) -> None:
-    if app.__class__.__name__ != "CompactDesktopApp":
-        return
     if getattr(app, "_random_gallery_installed", False):
         return
     if not hasattr(app, "hero") or not hasattr(app, "character"):
@@ -241,6 +274,7 @@ def _install_random_gallery(app) -> None:
 
     app._random_gallery_installed = True
     app._random_gallery_active = False
+    app._random_gallery_pinned = False
     app._random_gallery_last_path = None
     app._random_gallery_state_role = getattr(app, "character_role", None) or "default"
     app._random_gallery_original_set_character = app._set_character
@@ -250,7 +284,14 @@ def _install_random_gallery(app) -> None:
     def random_aware_set_character(self, role: str):
         if getattr(self, "_random_gallery_active", False):
             self._random_gallery_state_role = role
-            return
+            if getattr(self, '_random_gallery_pinned', False):
+                return
+            # A dice choice is temporary. Even a same-role state event restores
+            # its role image; explicit Pin is the only cross-event override.
+            self._random_gallery_active = False
+            self._random_gallery_last_path = None
+            self.character_role = None
+            _refresh_gallery_controls(self)
 
         before = getattr(self, "character_role", None)
         result = original_set_character(role)
@@ -288,6 +329,28 @@ def _install_random_gallery(app) -> None:
     app.random_gallery_restore.bind(
         "<Button-1>", lambda event: _restore_state_image(app, event)
     )
+    app.random_gallery_pin = tk.Label(
+        app.hero, text="고정", font=(app.FONT_FAMILY, 9), fg=app.ESCAPE_TEXT,
+        bg=app.TRANSPARENT_KEY, cursor='hand2', bd=0)
+    def toggle_pin(_event=None):
+        app._random_gallery_pinned = not app._random_gallery_pinned
+        _refresh_gallery_controls(app)
+        return 'break'
+    app.random_gallery_pin.bind('<Button-1>', toggle_pin)
+    app.random_gallery_scope = tk.Label(
+        app.hero, text='다음 상황까지', font=(app.FONT_FAMILY, 8),
+        fg=app.ESCAPE_TEXT, bg=app.TRANSPARENT_KEY, bd=0)
+    app.random_gallery_hint = tk.Label(
+        app.hero, text='', font=(app.FONT_FAMILY, 8), fg=core.TEXT,
+        bg=core.PANEL, bd=1, relief='solid', padx=5, pady=3)
+    _accessible_image_control(app, app.random_gallery_control,
+                              lambda event: _show_random_gallery_image(app, event),
+                              '랜덤 이미지 · Enter 또는 Space')
+    _accessible_image_control(app, app.random_gallery_restore,
+                              lambda event: _restore_state_image(app, event),
+                              '현재 상황의 이미지로 복귀')
+    _accessible_image_control(app, app.random_gallery_pin, toggle_pin,
+                              '고정하면 상황이 바뀌어도 이 그림 유지')
     _refresh_gallery_controls(app)
 
 

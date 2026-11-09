@@ -92,6 +92,8 @@ def _builtin_set_choice(value: object, default: str = "random") -> str:
     value = str(value).strip().lower()
     if value in {"random", "canonical"}:
         return value
+    if value.startswith("pack:") and value[5:].isdigit() and 1 <= int(value[5:]) <= 99:
+        return f"pack:{int(value[5:]):02d}"
     if value.isdigit() and 1 <= int(value) <= 99:
         return f"{int(value):02d}"
     return default
@@ -127,6 +129,7 @@ def _clock_or(value: object, default: str) -> str:
 @dataclass(frozen=True)
 class UserSettings:
     schema_version: int = 8
+    welcome_seen: bool = False
     start_with_windows: bool = False
     always_on_top: bool = False
     break_reminders: bool = True
@@ -277,6 +280,7 @@ def settings_from_dict(raw: object) -> UserSettings:
         leave_mode=leave_mode,
         strong_leave=strong_leave,
         late_leave=late_leave,
+        welcome_seen=_coerce_bool(raw.get("welcome_seen"), d.welcome_seen),
         window_x=_position_int(raw.get("window_x"), d.window_x),
         window_y=_position_int(raw.get("window_y"), d.window_y),
         widget_scale=_bounded_int(raw.get("widget_scale"), d.widget_scale, 80, 200),
@@ -355,7 +359,7 @@ def startup_command() -> str:
         return f'"{executable}"'
     pythonw = executable.with_name("pythonw.exe")
     launcher = pythonw if pythonw.is_file() else executable
-    script = Path(__file__).resolve().parent / "desktop_compact.py"
+    script = Path(__file__).resolve().parent / "desktop_gallery_final.py"
     return f'"{launcher}" "{script}"'
 
 
