@@ -1,0 +1,367 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+import threading
+import time
+import tkinter as tk
+from tkinter import messagebox
+
+import app as core
+
+from .service import AssistantService
+from .timer_tools import TimerTools, validate_arguments
+from .ui import AssistantWindows
+
+
+_PROACTIVE_MIN_SPACING = 15
+_PERIODIC_MIN_SPACING = 5 * 60
+_PROACTIVE_MAX_AGE = 25
+_TOOL_TIMEOUT = 120
+
+
+@dataclass
+class _ProactiveRequest:
+    event: str
+    context: dict
+    started_at: float
+    last_dialogue_at: float
+    revision: int
+    toast: tk.Toplevel | None
+    cancel: threading.Event
+
+
+def _failure(message):
+    return {"ok": False, "error": message, "message": message}
+
+
+class DesktopAssistantMixin:
+    """Attach optional AI without changing the timer engine or its alert gate."""
+
+    TRAY_TITLE = "Kyunghee Timer AI 2.0"
+
+    def __init__(self):
+        self._assistant_service = None
+        self._assistant_windows = None
+        self._assistant_ui_thread = threading.get_ident()
+        self._assistant_shutdown = threading.Event()
+        self._assistant_pending = None
+        self._assistant_periodic_due = False
+        self._assistant_last_attempt = float("-inf")
+        self._assistant_last_periodic = float("-inf")
+        super().__init__()
+        self.root.title(self.TRAY_TITLE)
+        self.root.bind("<Control-Shift-A>", self._open_assistant_shortcut, add="+")
+        self._assistant_tools = TimerTools(self)
+        try:
+            self._assistant_service = AssistantService(core.DATA_DIR)
+            self._assistant_windows = AssistantWindows(
+                self.root, self._assistant_service,
+                context=self._assistant_tools.context, dispatch=self._dispatch_assistant_tool,
+            )
+        except Exception:
+            self._assistant_service = None
+            core.log.warning("AI assistant could not be initialized")
+
+    def _build_timer_page(self):
+        super()._build_timer_page()
+        button = tk.Button(
+            self.hero, text="승아", command=self._open_assistant_chat,
+            font=(self.FONT_FAMILY, 9, "bold"), fg=core.TEXT, bg=core.PANEL_2,
+            activeforeground=core.TEXT, activebackground=core.PURPLE_2,
+            bd=0, relief="flat", cursor="hand2", padx=6,
+        )
+        button.place(relx=1.0, x=-43, y=13, anchor="ne")
+
+    def _build_header(self, parent, title, back_command=None, settings_command=None):
+        row = super()._build_header(parent, title, back_command, settings_command)
+        if parent is self.settings_page:
+            self._button(row, "승아 AI 설정", self._open_assistant_settings).pack(side="right")
+        return row
+
+    def _tray_menu_items(self):
+        *existing, quit_item = super()._tray_menu_items()
+        return (
+            *existing,
+            core.item("승아와 대화", lambda: self._tray_call(self._open_assistant_chat)),
+            core.item("승아 AI 설정", lambda: self._tray_call(self._open_assistant_settings)),
+            quit_item,
+        )
+
+    def _open_assistant_chat(self):
+        if self._assistant_windows is None:
+            self._assistant_unavailable()
+            return
+        self._assistant_windows.open_chat()
+
+    def _open_assistant_shortcut(self, _event):
+        self._open_assistant_chat()
+        return "break"
+
+    def _open_assistant_settings(self):
+        if self._assistant_windows is None:
+            self._assistant_unavailable()
+            return
+        self._assistant_windows.open_settings()
+
+    def _assistant_unavailable(self):
+        messagebox.showerror("승아 AI", "AI 설정을 열 수 없어요. 타이머는 계속 작동해요.", parent=self.root)
+
+    def _emergency_hide(self, event=None):
+        if self._assistant_windows is not None:
+            self._assistant_windows.hide()
+        self._cancel_proactive()
+        return super()._emergency_hide(event)
+
+    def quit(self):
+        self._assistant_shutdown.set()
+        self._cancel_proactive()
+        try:
+            if self._assistant_windows is not None:
+                self._assistant_windows.close()
+        finally:
+            super().quit()
+
+    def _dispatch_assistant_tool(self, name, arguments, cancel):
+        # Only the chat worker calls dispatch. Tk is free to drain this queue and
+        # to keep ticking the timer while a local confirmation window is open.
+        if threading.get_ident() == self._assistant_ui_thread:
+            return _failure("타이머 요청을 처리할 수 없어요.")
+        try:
+            if name == "save_assistant_memory":
+                text = arguments.get("text") if isinstance(arguments, dict) and arguments.keys() == {"text"} else None
+                if not isinstance(text, str) or not text.strip() or len(text) > 2000 or "\x00" in text:
+                    raise ValueError("기억할 내용을 1~2,000자로 알려줘요.")
+                arguments = {"text": text.strip()}
+            else:
+                arguments = validate_arguments(name, arguments)
+        except ValueError as exc:
+            return _failure(str(exc))
+
+        finished = threading.Event()
+        deadline = time.monotonic() + _TOOL_TIMEOUT
+        result = _failure("타이머 요청이 취소됐어요.")
+
+        def cancelled():
+            return cancel.is_set() or self._assistant_shutdown.is_set() or time.monotonic() >= deadline
+
+        def run_tool():
+            nonlocal result
+            try:
+                if cancelled():
+                    return
+                confirm = lambda description: self._confirm_assistant_change(description, cancelled)
+                if name == "save_assistant_memory":
+                    result = self._save_assistant_memory(arguments["text"], confirm, cancelled)
+                else:
+                    result = self._assistant_tools.execute(name, arguments, confirm)
+            except Exception:
+                core.log.warning("AI timer tool failed: %s", name)
+                result = _failure("앱에서 요청을 처리하는 중 문제가 생겼어요.")
+            finally:
+                finished.set()
+
+        if cancelled():
+            return result
+        self.ui_commands.put(run_tool)
+        while not finished.wait(0.1):
+            if cancelled():
+                return _failure("타이머 요청이 취소됐거나 확인 시간이 지났어요.")
+        return result
+
+    def _save_assistant_memory(self, text, confirm, cancelled):
+        service = self._assistant_service
+        if not service.load_settings().memory_enabled:
+            return _failure("AI 설정에서 대화와 기억의 로컬 저장을 먼저 켜 주세요.")
+        if not confirm("이 내용을 기억에 저장해요.\n\n" + text) or cancelled():
+            return _failure("확인하지 않아 기억에 저장하지 않았어요.")
+        return service.save_assistant_memory(text)
+
+    def _confirm_assistant_change(self, description, cancelled):
+        if cancelled():
+            return False
+        parent = self._assistant_windows.confirmation_parent()
+        window = tk.Toplevel(parent, bg=core.BG)
+        window.title("승아 요청 확인")
+        if parent.winfo_viewable():
+            window.transient(parent)
+        window.minsize(420, 210)
+        window.geometry("480x255")
+        self._label(window, "이 요청을 적용할까요?", size=11, weight="bold").pack(anchor="w", padx=14, pady=(12, 6))
+        frame = tk.Frame(window, bg=core.BG)
+        frame.pack(fill="both", expand=True, padx=14)
+        body = tk.Text(frame, wrap="word", font=(self.FONT_FAMILY, 10), fg=core.TEXT, bg=core.PANEL, bd=0, padx=8, pady=7)
+        scroll = tk.Scrollbar(frame, command=body.yview)
+        body.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        body.pack(side="left", fill="both", expand=True)
+        body.insert("1.0", description)
+        body.configure(state="disabled")
+        controls = tk.Frame(window, bg=core.BG)
+        controls.pack(fill="x", padx=14, pady=12)
+        approved = False
+        poll_id = None
+
+        def close(apply=False):
+            nonlocal approved, poll_id
+            approved = apply and not cancelled()
+            if poll_id is not None:
+                window.after_cancel(poll_id)
+                poll_id = None
+            window.destroy()
+
+        def watch_cancellation():
+            nonlocal poll_id
+            poll_id = None
+            if cancelled():
+                close()
+            else:
+                poll_id = window.after(150, watch_cancellation)
+
+        self._button(controls, "적용", lambda: close(apply=True), primary=True).pack(side="right")
+        cancel_button = self._button(controls, "취소", close)
+        cancel_button.pack(side="right", padx=(0, 6))
+        window.bind("<Escape>", lambda _event: close())
+        window.protocol("WM_DELETE_WINDOW", close)
+        poll_id = window.after(150, watch_cancellation)
+        window.wait_visibility()
+        window.grab_set()
+        cancel_button.focus_set()
+        parent.wait_window(window)
+        return approved and not cancelled()
+
+    def _sync_assistant_preference_controls(self, changes):
+        controls = {
+            **self.settings_bool_vars, **self.settings_time_vars,
+            "break_interval_minutes": self.break_interval_var,
+            "snooze_minutes": self.snooze_minutes_var,
+        }
+        for field, value in changes.items():
+            controls[field].set(value)
+
+    def toggle_manual_away(self):
+        super().toggle_manual_away()
+        self._request_proactive("away" if self.state.session.is_away else "return")
+
+    def accept_break(self):
+        previous_toast = self.toast
+        super().accept_break()
+        self._request_proactive("break_started", self.toast if self.toast is not previous_toast else None)
+
+    def _tick_safe(self):
+        was_away = self.state.session.is_away
+        previous_mode = self.last_work_mode
+        previous_alert = self.break_gate.last_shown_at
+        previous_toast = self.toast
+        self._assistant_periodic_due = False
+        super()._tick_safe()
+        away = self.state.session.is_away
+        if self.break_gate.last_shown_at > previous_alert and self.toast is not previous_toast:
+            self._request_proactive("rest", self.toast)
+        elif self.last_work_mode != previous_mode and self.last_work_mode != "normal":
+            self._request_proactive("leave")
+        elif away != was_away:
+            if away and self.last_work_mode == "normal":
+                self._say("away_start")
+            self._request_proactive("away" if away else "return", self.toast if self.toast is not previous_toast else None)
+        elif self._assistant_periodic_due:
+            self._request_proactive("periodic")
+
+    def _update_dialogue(self):
+        if (
+            not self._proactive_enabled()
+            or self._current_workday_state().mode != self.last_work_mode
+        ):
+            return super()._update_dialogue()
+        now = time.monotonic()
+        if self.state.session.is_away or now - self.last_dialogue_at < core.DIALOGUE_INTERVAL_SEC:
+            return
+        if self.preferences.show_message and self.current_page == "timer" and self.root.winfo_viewable():
+            self.last_dialogue_at = now
+            self._assistant_periodic_due = True
+
+    def _cycle_message(self, event=None):
+        if self._proactive_enabled():
+            self._request_proactive("manual")
+        else:
+            super()._cycle_message(event)
+
+    def _proactive_enabled(self):
+        service = self._assistant_service
+        return service is not None and service.ready() and service.load_settings().proactive_enabled
+
+    def _cancel_proactive(self):
+        if self._assistant_pending is not None:
+            self._assistant_pending.cancel.set()
+
+    def _request_proactive(self, event, toast=None):
+        service = self._assistant_service
+        if self._assistant_pending is not None:
+            if event != "periodic":
+                self._cancel_proactive()
+            return
+        if service is None or not service.can_proactively_speak() or self._break_notifications_suppressed():
+            return
+        if toast is None and (not self.preferences.show_message or self.current_page != "timer" or not self.root.winfo_viewable()):
+            return
+        if self.last_work_mode == "hard_stop":
+            return
+        now = time.monotonic()
+        if now - self._assistant_last_attempt < _PROACTIVE_MIN_SPACING:
+            return
+        if event == "periodic":
+            if now - self._assistant_last_periodic < _PERIODIC_MIN_SPACING:
+                return
+            self._assistant_last_periodic = now
+        request = _ProactiveRequest(
+            event, self._assistant_tools.context(), now, self.last_dialogue_at,
+            service.revision, toast, threading.Event(),
+        )
+        self._assistant_pending = request
+        self._assistant_last_attempt = now
+
+        def work():
+            text = None
+            failed = False
+            try:
+                text = service.proactive(request.event, context=request.context, cancel=request.cancel)
+            except Exception:
+                failed = True
+            if not self._assistant_shutdown.is_set():
+                self.ui_commands.put(lambda: self._finish_proactive(request, text, failed))
+
+        threading.Thread(target=work, name="seunga-proactive", daemon=True).start()
+
+    def _finish_proactive(self, request, text, failed):
+        if self._assistant_pending is not request:
+            return
+        self._assistant_pending = None
+        service = self._assistant_service
+        if (
+            self._assistant_shutdown.is_set() or request.cancel.is_set()
+            or time.monotonic() - request.started_at > _PROACTIVE_MAX_AGE
+            or service is None or service.revision != request.revision or not service.can_proactively_speak()
+            or self._break_notifications_suppressed()
+        ):
+            return
+        current = self._assistant_tools.context()
+        if any(current[key] != request.context[key] for key in ("date", "is_away", "workday_mode", "break_reminders_enabled_today")):
+            return
+        if request.toast is not None:
+            toast = request.toast
+            if text and self.toast is toast and toast.winfo_exists() and hasattr(toast, "body_label"):
+                toast.body_label.configure(text=text[:90])
+            return
+        if (
+            self.last_dialogue_at != request.last_dialogue_at or not self.preferences.show_message
+            or self.current_page != "timer" or not self.root.winfo_viewable()
+        ):
+            return
+        if text:
+            self.speech.configure(text=text[:120])
+            self.last_dialogue_at = time.monotonic()
+            self._apply_widget_appearance()
+        elif failed and request.event == "manual":
+            super()._cycle_message()
+        elif failed and request.event == "periodic":
+            self.last_dialogue_at = 0
+            super()._update_dialogue()

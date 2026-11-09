@@ -85,6 +85,8 @@ class SingleInstance:
 
 
 class App:
+    TRAY_TITLE = APP_NAME
+
     def __init__(self):
         self.preferences = load_user_settings(SETTINGS_FILE)
         self.workday_policy = self.preferences.workday_policy()
@@ -678,7 +680,8 @@ class App:
         text_wrap = tk.Frame(win, bg=PANEL)
         text_wrap.pack(side="left", fill="both", expand=True, padx=(0, 12), pady=12)
         self._label(text_wrap, "경희 타이머", size=9, weight="bold", fg=PURPLE, bg=PANEL).pack(anchor="w")
-        self._label(text_wrap, text, size=9, bg=PANEL, wraplength=270, justify="left").pack(anchor="w", pady=(4, 0))
+        win.body_label = self._label(text_wrap, text, size=9, bg=PANEL, wraplength=270, justify="left")
+        win.body_label.pack(anchor="w", pady=(4, 0))
         win.after(8000, lambda w=win: self._destroy_specific(w))
 
     def show_break_toast(self, text, allow_snooze=True):
@@ -742,16 +745,19 @@ class App:
         draw.text((20, 19), "K", fill=TEXT)
         return icon
 
-    def _start_tray(self):
-        icon = self._make_tray_icon()
-        menu = pystray.Menu(
+    def _tray_menu_items(self):
+        return (
             item("열기", lambda: self._tray_call(self.show), default=True),
             item("자리비움 시작", lambda: self._tray_call(self.toggle_manual_away)),
             item("오늘 기록 보기", lambda: self._tray_call(self.show_stats)),
             item("설정", lambda: self._tray_call(lambda: (self._show_page("settings"), self.show()))),
             item("종료", lambda: self._tray_call(self.quit)),
         )
-        self.tray_icon = pystray.Icon("kyunghee_assistant", icon, APP_NAME, menu)
+
+    def _start_tray(self):
+        icon = self._make_tray_icon()
+        menu = pystray.Menu(*self._tray_menu_items())
+        self.tray_icon = pystray.Icon("kyunghee_assistant", icon, self.TRAY_TITLE, menu)
 
         def run_tray():
             try:

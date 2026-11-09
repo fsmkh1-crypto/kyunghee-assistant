@@ -10,7 +10,9 @@ The 0.4 line is focused on correctness before real-world testing.
 
 ## Desktop app
 
-Development is focused on the Windows desktop app. `RUN.cmd` launches the integrated desktop UI during development. The **Desktop Package** workflow builds a standalone `KyungheeTimer.exe` package that does not require Python on the user's PC.
+Development is focused on the Windows desktop app. `RUN.cmd` launches the integrated desktop UI during development. The Windows job in the **tests** workflow publishes the `kyunghee-timer-compact-windows` package for branch pushes. Keep `KyungheeTimer.exe` beside its `_internal` folder. The package includes Python.
+
+For the AI 2.0 Windows package, see the [Korean installation and usage guide](docs/AI_ASSISTANT_2_GUIDE.md).
 
 The earlier `android-prototype/` is retained only as inactive design history and is not a current development target.
 
@@ -63,8 +65,8 @@ Once leaving-work mode is active, the assistant should stop encouraging addition
 
 ## Privacy
 
-The app does **not** record key contents, window titles, clipboard data, browser data, or typed text.
-It only reads last-input timing metadata through Windows `GetLastInputInfo`.
+Timer activity tracking reads last-input timing metadata through Windows `GetLastInputInfo`.
+When you enable the optional AI assistant, messages you send and relevant context are sent to OpenAI for a response. You can opt in to saving conversation history and memory locally with a separate setting.
 
 ## External review
 
