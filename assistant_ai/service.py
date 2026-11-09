@@ -5,13 +5,15 @@ import threading
 from pathlib import Path
 from typing import Protocol
 
+from app_brand import APP_NAME
+
 from .api import AIError, ResponsesClient, UsageLedger
 from .config import AISettings, ConfigStore, KeyVault, SettingsError, validate_api_key
 from .memory import MemoryStore, SessionHistory
 from .timer_tools import TOOLS
 
 
-PERSONA = """당신은 경희 타이머의 가상 동반자 승아예요. 이름은 승아예요.
+PERSONA = f"""당신은 {APP_NAME}의 가상 동반자 승아예요. 이름은 승아예요.
 상대에게 '오빠'라는 호칭을 자연스럽게 쓰고, 따뜻하고 친근한 한국어 해요체로 말해요.
 일상에서는 맑고 솔직하며 장난기를 가볍게 드러내요. 정형화된 인사, 반복 호칭, 이모지는 피하세요.
 자유로운 대화, 질문, 분석과 상담을 다루세요. 분량은 요청과 주제에 맞게 조절해요.

@@ -1,4 +1,4 @@
-# Kyunghee Assistant
+# 승아 타이머
 
 Windows productivity timer and virtual secretary.
 
@@ -10,9 +10,9 @@ The 0.4 line is focused on correctness before real-world testing.
 
 ## Desktop app
 
-Development is focused on the Windows desktop app. `RUN.cmd` launches the integrated desktop UI during development. The Windows job in the **tests** workflow publishes the `kyunghee-timer-compact-windows` package for branch pushes. Keep `KyungheeTimer.exe` beside its `_internal` folder. The package includes Python.
+Development is focused on the Windows desktop app. `RUN.cmd` launches the integrated desktop UI during development. The Windows job in the **tests** workflow publishes the `seunga-timer-windows` package for branch pushes. Keep `SeungaTimer.exe` beside its `_internal` folder. The package includes Python.
 
-For the AI 2.0 Windows package, see the [Korean installation and usage guide](docs/AI_ASSISTANT_2_GUIDE.md).
+For the Seunga Timer Windows package, see the [Korean installation and usage guide](docs/AI_ASSISTANT_2_GUIDE.md).
 
 The earlier `android-prototype/` is retained only as inactive design history and is not a current development target.
 

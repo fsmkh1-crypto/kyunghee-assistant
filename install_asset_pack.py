@@ -6,6 +6,8 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
+from app_brand import APP_NAME
+
 ROOT = Path(__file__).resolve().parent
 ASSET_DIR = ROOT / "assets"
 CANONICAL = {
@@ -45,7 +47,7 @@ def main() -> int:
     root.update_idletasks()
     initial = Path.home() / "Downloads"
     selected = filedialog.askopenfilename(
-        title="경희 타이머 확정 에셋 ZIP 선택",
+        title=f"{APP_NAME} 확정 에셋 ZIP 선택",
         initialdir=str(initial if initial.exists() else Path.home()),
         filetypes=[("ZIP files", "*.zip"), ("All files", "*.*")],
     )

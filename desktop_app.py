@@ -103,7 +103,7 @@ class DesktopApp(App):
         self._set_small_avatar(avatar)
 
         self._label(row, title, size=10, weight="bold").pack(side="left")
-        if title == "경희 타이머":
+        if title == core.APP_NAME:
             self._label(row, "●", size=7, fg=core.GREEN).pack(side="left", padx=(7, 3))
             self.header_status = self._label(row, "집중 중", size=8, fg=core.MUTED)
             self.header_status.pack(side="left")

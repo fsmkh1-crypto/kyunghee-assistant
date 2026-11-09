@@ -219,7 +219,7 @@ class UserSettings:
         if not 9 <= self.message_text_size <= 16:
             raise ValueError("메시지 글자 크기는 9~16 사이로 설정해 주세요.")
         if self.personality not in PERSONALITIES:
-            raise ValueError("경희 말투 설정이 올바르지 않습니다.")
+            raise ValueError("승아 말투 설정이 올바르지 않습니다.")
         if _builtin_set_choice(self.builtin_image_set, "") != self.builtin_image_set:
             raise ValueError("기본 내장 이미지 세트 설정이 올바르지 않습니다.")
         for key in (

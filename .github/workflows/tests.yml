@@ -18,7 +18,7 @@ jobs:
       - name: Install runtime dependencies
         run: python -m pip install -r requirements.txt
       - name: Compile source
-        run: python -m py_compile desktop_app.py desktop_compact.py desktop_gallery.py desktop_gallery_final.py desktop_preview.py install_asset_pack.py asset_rotation.py app.py asset_manager.py break_reminder.py image_render.py messages.py settings.py state.py timer_engine.py windows_display.py windows_idle.py workday.py
+        run: python -m py_compile app_brand.py desktop_app.py desktop_compact.py desktop_gallery.py desktop_gallery_final.py desktop_preview.py install_asset_pack.py asset_rotation.py app.py asset_manager.py break_reminder.py image_render.py messages.py settings.py state.py timer_engine.py windows_display.py windows_idle.py workday.py
       - name: Run unit and asset tests
         run: python -m unittest discover -s tests -v
       - name: Install PyInstaller
@@ -32,7 +32,7 @@ jobs:
           --clean
           --onedir
           --windowed
-          --name KyungheeTimer
+          --name SeungaTimer
           --add-data "assets;assets"
           desktop_gallery_final.py
       - name: Smoke-test compact Windows app
@@ -40,7 +40,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $process = Start-Process -FilePath dist\KyungheeTimer\KyungheeTimer.exe -PassThru
+          $process = Start-Process -FilePath dist\SeungaTimer\SeungaTimer.exe -PassThru
           Start-Sleep -Seconds 8
           if ($process.HasExited) {
             throw "Packaged app exited during startup with code $($process.ExitCode)."
@@ -50,8 +50,8 @@ jobs:
         if: matrix.os == 'windows-latest'
         uses: actions/upload-artifact@v4
         with:
-          name: kyunghee-timer-compact-windows
-          path: dist/KyungheeTimer
+          name: seunga-timer-windows
+          path: dist/SeungaTimer
           retention-days: 7
 
   asset-import-tool:

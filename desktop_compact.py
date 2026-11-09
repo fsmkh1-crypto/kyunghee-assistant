@@ -146,6 +146,18 @@ class OutlinedText(tk.Canvas):
         if size_changed:
             self._refresh_geometry(force=True)
 
+    def set_wraplength(self, width):
+        if width == self._wraplength:
+            return
+        self._wraplength = width
+        x, y, _anchor = self._text_position()
+        for item, (dx, dy) in zip(self._outline_items, self.OFFSETS):
+            self.coords(item, x + dx, y + dy)
+            self.itemconfigure(item, width=width)
+        self.coords(self._main_item, x, y)
+        self.itemconfigure(self._main_item, width=width)
+        self._refresh_geometry(force=True)
+
     def configure(self, cnf=None, **kwargs):
         if cnf:
             kwargs.update(cnf)
@@ -210,7 +222,7 @@ class CompactDesktopApp(DesktopApp):
     DETAIL_SIZE = (410, 430)
     SETTINGS_SIZE = (650, 700)
     CHARACTER_MAX = (346, 384)
-    BUBBLE_WRAP = 270
+    BUBBLE_WRAP = 350
     FONT_FAMILY = "Pretendard"
     ESCAPE_TEXT = "#6B7280"
 
@@ -448,6 +460,9 @@ class CompactDesktopApp(DesktopApp):
     def _visible_speech(self):
         return getattr(self, "speech", None)
 
+    def _message_wrap_width(self):
+        return min(480, max(320, self._scale(self.BUBBLE_WRAP)))
+
     def _message_render_width(self) -> int:
         if not self._effective_display_flag("show_message"):
             return 0
@@ -459,8 +474,7 @@ class CompactDesktopApp(DesktopApp):
                     return req
             except tk.TclError:
                 pass
-        wrap = min(360, max(250, self._scale(self.BUBBLE_WRAP)))
-        return wrap + 8
+        return self._message_wrap_width() + 8
 
     def _horizontal_union_bounds(self) -> tuple[float, float, int, int]:
         visible_left, _visible_top, visible_right, _visible_bottom = self._character_visible_bounds()
@@ -993,7 +1007,7 @@ class CompactDesktopApp(DesktopApp):
         self.speech = OutlinedText(
             hero, self._pick_dialogue("playful", time_sensitive=True), family=self.FONT_FAMILY, size=p.message_text_size,
             fg=p.message_text_color, outline=_outline_for(p.message_text_color),
-            bg=self.TRANSPARENT_KEY, wraplength=min(360, max(250, self._scale(self.BUBBLE_WRAP))),
+            bg=self.TRANSPARENT_KEY, wraplength=self._message_wrap_width(),
             justify="center", cursor="hand2",
         )
         self.speech.place(
@@ -1082,6 +1096,7 @@ class CompactDesktopApp(DesktopApp):
             outline=_outline_for(p.status_text_color),
         )
         speech = self._visible_speech()
+        speech.set_wraplength(self._message_wrap_width())
         speech.set_style(
             size=p.message_text_size, fg=p.message_text_color,
             outline=_outline_for(p.message_text_color),
@@ -1451,7 +1466,7 @@ class CompactDesktopApp(DesktopApp):
             anchor="w", pady=(2, 2), **pad
         )
 
-        self._label(content, "경희 말투", size=11, bg=core.PANEL).pack(anchor="w", pady=(14, 4), **pad)
+        self._label(content, "승아 말투", size=11, bg=core.PANEL).pack(anchor="w", pady=(14, 4), **pad)
         personality_labels = {
             "balanced": "균형형", "warm": "다정형", "playful": "장난형", "strict": "잔소리형",
         }
@@ -1520,7 +1535,7 @@ class CompactDesktopApp(DesktopApp):
             ).pack(anchor="w", pady=1, **pad)
         self._label(
             content,
-            "시간과 상태를 모두 꺼도 경희 이미지를 누른 채 움직이면 창을 이동할 수 있습니다.",
+            "시간과 상태를 모두 꺼도 승아 이미지를 누른 채 움직이면 창을 이동할 수 있습니다.",
             size=8, fg=core.MUTED, bg=core.PANEL,
         ).pack(anchor="w", pady=(2, 4), **pad)
 
@@ -1564,7 +1579,7 @@ class CompactDesktopApp(DesktopApp):
             ).pack(side="left", ipady=2)
             self._button(row, "색상 선택", lambda k=key: self._choose_color(k)).pack(side="left", padx=(6, 0))
 
-        self._label(content, "상황별 경희 이미지", size=11, bg=core.PANEL).pack(anchor="w", pady=(16, 4), **pad)
+        self._label(content, "상황별 승아 이미지", size=11, bg=core.PANEL).pack(anchor="w", pady=(16, 4), **pad)
         self._label(
             content,
             "권장: 투명 PNG, 세로형 900×1200 이상(최소 600×800). 인물 주변 여백 5~10%. 프로필은 512×512 이상 권장.",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 import textwrap
 import threading
 import time
@@ -13,6 +14,7 @@ from desktop_compact import OutlinedText, _outline_for
 from .service import AssistantService
 from .timer_tools import TimerTools, validate_arguments
 from .ui import AssistantWindows
+from .windows_speech_hitbox import SpeechHitbox
 
 
 _PROACTIVE_MIN_SPACING = 15
@@ -21,6 +23,7 @@ _PROACTIVE_MAX_AGE = 25
 _TOOL_TIMEOUT = 120
 _CHAT_REPLY_SECONDS = 22
 _CHAT_PAGE_SECONDS = 90
+_CHAT_PAGE_CHARS = 96
 _CHAT_ROLE = {"composing": "rest", "waiting": "rest", "reply": "default", "error": "worry"}
 _CHAT_LABEL = {"composing": "듣는 중", "waiting": "생각 중", "reply": "답변", "error": "응답 오류"}
 _CHAT_LINES = {
@@ -48,14 +51,12 @@ def _failure(message):
 def _chat_pages(text):
     pages = []
     for paragraph in text.splitlines():
-        pages.extend(textwrap.wrap(paragraph, width=72, break_on_hyphens=False))
+        pages.extend(textwrap.wrap(paragraph, width=_CHAT_PAGE_CHARS, break_on_hyphens=False))
     return pages or ["표시할 답변이 없어요."]
 
 
 class DesktopAssistantMixin:
     """Attach optional AI without changing the timer engine or its alert gate."""
-
-    TRAY_TITLE = "Kyunghee Timer AI 2.0.1"
 
     def __init__(self):
         self._assistant_service = None
@@ -70,9 +71,10 @@ class DesktopAssistantMixin:
         self._chat_pages: list[str] = []
         self._chat_page = 0
         self._chat_expiry = None
+        self._chat_hitbox = None
+        self._chat_hitbox_sync = None
         self._timer_character_role = "default"
         super().__init__()
-        self.root.title(self.TRAY_TITLE)
         self.root.bind("<Control-Shift-A>", self._open_assistant_shortcut, add="+")
         self._assistant_tools = TimerTools(self)
         try:
@@ -101,16 +103,50 @@ class DesktopAssistantMixin:
         self._chat_speech = OutlinedText(
             self.hero, "", family=self.FONT_FAMILY, size=p.message_text_size,
             fg=p.message_text_color, outline=_outline_for(p.message_text_color),
-            bg=self.TRANSPARENT_KEY, wraplength=min(360, max(250, self._scale(self.BUBBLE_WRAP))),
+            bg=self.TRANSPARENT_KEY, wraplength=self._message_wrap_width(),
             justify="center", cursor="hand2",
         )
         self._chat_speech.bind("<Button-1>", self._advance_chat_page)
         self._chat_speech.bind("<Button-3>", self._dismiss_chat_reply)
+        if os.name == "nt":
+            self._chat_hitbox = SpeechHitbox(self.root, self._advance_chat_page, self._dismiss_chat_reply)
+            for event in ("<Configure>", "<Map>", "<Unmap>"):
+                self.root.bind(event, self._queue_chat_hitbox_sync, add="+")
+            self._chat_speech.bind("<Configure>", self._queue_chat_hitbox_sync, add="+")
 
     def _visible_speech(self):
         if self._chat_phase != "idle":
             return self._chat_speech
         return super()._visible_speech()
+
+    def _apply_widget_appearance(self):
+        super()._apply_widget_appearance()
+        self._queue_chat_hitbox_sync()
+
+    def _show_page(self, name):
+        super()._show_page(name)
+        self._queue_chat_hitbox_sync()
+
+    def _queue_chat_hitbox_sync(self, _event=None):
+        if self._chat_hitbox is None or self._assistant_shutdown.is_set():
+            return
+        if self._chat_hitbox_sync is None:
+            self._chat_hitbox_sync = self.root.after_idle(self._sync_chat_hitbox)
+
+    def _sync_chat_hitbox(self):
+        self._chat_hitbox_sync = None
+        try:
+            if (
+                self._chat_phase == "reply" and self.current_page == "timer"
+                and self._chat_speech.winfo_viewable()
+            ):
+                self._chat_hitbox.show_over(self._chat_speech)
+            else:
+                self._chat_hitbox.hide()
+        except (OSError, tk.TclError):
+            core.log.exception("speech hitbox failed")
+            self._chat_hitbox.close()
+            self._chat_hitbox = None
 
     def _set_character(self, role):
         self._timer_character_role = role
@@ -232,6 +268,10 @@ class DesktopAssistantMixin:
         self._assistant_shutdown.set()
         self._cancel_proactive()
         self._cancel_chat_expiry()
+        if self._chat_hitbox_sync is not None:
+            self.root.after_cancel(self._chat_hitbox_sync)
+        if self._chat_hitbox is not None:
+            self._chat_hitbox.close()
         try:
             if self._assistant_windows is not None:
                 self._assistant_windows.close()

@@ -13,6 +13,7 @@ on:
       - 'compact_runtime_features.py'
       - 'asset_rotation.py'
       - 'app.py'
+      - 'app_brand.py'
       - 'asset_manager.py'
       - 'break_reminder.py'
       - 'messages.py'
@@ -47,14 +48,14 @@ jobs:
           --clean
           --onedir
           --windowed
-          --name KyungheeTimer
+          --name SeungaTimer
           --add-data "assets;assets"
           desktop_gallery_final.py
       - name: Smoke-test packaged app
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $process = Start-Process -FilePath dist\KyungheeTimer\KyungheeTimer.exe -PassThru
+          $process = Start-Process -FilePath dist\SeungaTimer\SeungaTimer.exe -PassThru
           Start-Sleep -Seconds 8
           if ($process.HasExited) {
             throw "Packaged app exited during startup with code $($process.ExitCode)."
@@ -72,11 +73,11 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          Copy-Item README.md dist\KyungheeTimer\README.md
-          Copy-Item LICENSE dist\KyungheeTimer\LICENSE
+          Copy-Item README.md dist\SeungaTimer\README.md
+          Copy-Item LICENSE dist\SeungaTimer\LICENSE
       - uses: actions/upload-artifact@v4
         with:
-          name: kyunghee-timer-desktop
-          path: dist/KyungheeTimer
+          name: seunga-timer-desktop
+          path: dist/SeungaTimer
 
 # Package trigger: finalized settings gallery + duplicate-safe random 2026-09-10

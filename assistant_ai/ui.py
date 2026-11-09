@@ -8,6 +8,7 @@ from tkinter import messagebox, ttk
 import tkinter.font as tkfont
 
 from app import AMBER, BG, BORDER, MUTED, PANEL, PANEL_2, PURPLE, PURPLE_2, TEXT
+from app_brand import APP_NAME
 
 from .api import AIError
 from .config import AISettings, MODEL_PRICES, MODELS, SettingsError
@@ -336,7 +337,7 @@ class _Window(tk.Toplevel):
         self.service = owner.service
         self.font_family = owner.font_family
         self.withdraw()
-        self.title(f"{title} | 경희 타이머 AI 2.0.1")
+        self.title(f"{title} | {APP_NAME}")
         self.geometry(f"{width}x{height}")
         self.protocol("WM_DELETE_WINDOW", self._hide)
         self.bind("<Escape>", self._hide)

@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw, ImageTk
 import pystray
 from pystray import MenuItem as item
 
+from app_brand import APP_NAME
 from asset_manager import resolve_asset, role_for_dialogue, role_for_work_mode
 from break_reminder import BreakReminderGate
 from messages import pick
@@ -23,7 +24,6 @@ from state import load_state, save_state, rollover_daily, prepare_startup_state
 from timer_engine import TimerEngine
 from workday import WorkdayState, apply_reminder_preference, classify_workday, should_encourage_more_work
 
-APP_NAME = "경희 타이머"
 DIALOGUE_INTERVAL_SEC = 60
 
 DATA_DIR = Path(os.getenv("APPDATA", Path.home())) / "KyungheeAssistant"
@@ -233,7 +233,7 @@ class App:
 
     def _build_timer_page(self):
         page = self.timer_page
-        self._build_header(page, "경희 타이머", settings_command=lambda: self._show_page("settings"))
+        self._build_header(page, APP_NAME, settings_command=lambda: self._show_page("settings"))
 
         body = tk.Frame(page, bg=BG)
         body.pack(fill="both", expand=True, padx=18, pady=(4, 14))
@@ -442,7 +442,7 @@ class App:
         img = Image.new("RGB", (300, 420), PANEL)
         draw = ImageDraw.Draw(img)
         draw.ellipse((95, 45, 205, 155), outline=PURPLE, width=3)
-        draw.text((140, 180), "K", fill=TEXT)
+        draw.text((140, 180), "S", fill=TEXT)
         return img
 
     def _load_character_image(self, role: str, max_size=(310, 390)):
@@ -650,7 +650,7 @@ class App:
     def _toast_window(self, width, height):
         win = tk.Toplevel(self.root)
         self.toast = win
-        win.title("경희 타이머 알림")
+        win.title(f"{APP_NAME} 알림")
         win.configure(bg=PANEL)
         win.attributes("-topmost", True)
         win.resizable(False, False)
@@ -679,7 +679,7 @@ class App:
 
         text_wrap = tk.Frame(win, bg=PANEL)
         text_wrap.pack(side="left", fill="both", expand=True, padx=(0, 12), pady=12)
-        self._label(text_wrap, "경희 타이머", size=9, weight="bold", fg=PURPLE, bg=PANEL).pack(anchor="w")
+        self._label(text_wrap, APP_NAME, size=9, weight="bold", fg=PURPLE, bg=PANEL).pack(anchor="w")
         win.body_label = self._label(text_wrap, text, size=9, bg=PANEL, wraplength=270, justify="left")
         win.body_label.pack(anchor="w", pady=(4, 0))
         win.after(8000, lambda w=win: self._destroy_specific(w))
@@ -742,7 +742,7 @@ class App:
         icon = Image.new("RGB", (64, 64), BG)
         draw = ImageDraw.Draw(icon)
         draw.ellipse((7, 7, 57, 57), outline=PURPLE, width=3)
-        draw.text((20, 19), "K", fill=TEXT)
+        draw.text((20, 19), "S", fill=TEXT)
         return icon
 
     def _tray_menu_items(self):
