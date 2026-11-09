@@ -357,6 +357,11 @@ def _run_packaged_smoke(app_factory, report_path):
                     patch.object(app.App, "_start_tray"),
                     patch.object(app.App, "_current_workday_state", lambda self: WorkdayState("normal", None)),
                     patch.object(compact.CompactDesktopApp, "_start_global_hotkey"),
+                    # Physical pointer/keyboard input on the Windows runner
+                    # must not change a synthetic away scenario while testing
+                    # image controls. Timer input policies have separate fake-
+                    # clock tests; the native GUI still receives real messages.
+                    patch("windows_idle.last_input_info", return_value=(0.0, 1)),
                     patch.multiple(app_factory, MANUAL_OVERRIDE_FILE=directory / "manual_asset_overrides.json",
                                    GALLERY_RANDOM_FILE=directory / "gallery_random_shuffle.json",
                                    IMPORTED_ASSET_DIR=directory / "imported_assets"),
@@ -374,7 +379,7 @@ def _run_packaged_smoke(app_factory, report_path):
                         footer = desktop.settings_dirty_label
                         assert footer.winfo_viewable(), "settings save footer hidden"
                         assert 0 <= footer.winfo_rooty() - root.winfo_rooty() < root.winfo_height(), "footer outside screen"
-                        desktop.state.session.is_away = True
+                        desktop.engine.start_manual_away()
                         desktop._set_character("away")
                         desktop._show_page("timer")
                         root.update()
