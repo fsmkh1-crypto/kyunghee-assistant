@@ -42,17 +42,51 @@ def _descendants(widget):
 def _assert_action_visible(button, window):
     assert button.winfo_viewable(), f"{button.cget('text')} action is hidden"
     x, y = button.winfo_rootx() - window.winfo_rootx(), button.winfo_rooty() - window.winfo_rooty()
-    assert 0 <= x and x + button.winfo_width() <= window.winfo_width(), "action exceeds dialog width"
-    assert 0 <= y and y + button.winfo_height() <= window.winfo_height(), "action exceeds dialog height"
+    geometry = (x, y, button.winfo_width(), button.winfo_height(), window.winfo_width(), window.winfo_height())
+    assert 0 <= x and x + button.winfo_width() <= window.winfo_width(), f"action exceeds dialog width: {geometry}"
+    assert 0 <= y and y + button.winfo_height() <= window.winfo_height(), f"action exceeds dialog height: {geometry}"
     assert button.winfo_height() >= button.winfo_reqheight(), "action height is clipped"
 
 
 def _exercise_approval_actions(desktop):
     root, windows = desktop.root, desktop._assistant_windows
+    resize_samples = []
     with patch.object(windows, "chat_work_area", lambda *_args: (0, 0, 640, 360)):
         for action in ("취소", "적용"):
             errors, clicked = [], []
             deadline = time.monotonic() + 5
+
+            def sample(dialog):
+                button = dialog.apply_button
+                return {"window": [dialog.winfo_width(), dialog.winfo_height()],
+                        "apply": [button.winfo_rootx() - dialog.winfo_rootx(),
+                                  button.winfo_rooty() - dialog.winfo_rooty(),
+                                  button.winfo_width(), button.winfo_height()]}
+
+            def verify_and_click(dialog, initial):
+                try:
+                    resize_samples.append({"action": action, "after_idle": initial, "after_events": sample(dialog)})
+                    buttons = {item.cget("text"): item for item in _descendants(dialog)
+                               if item.winfo_class() == "Button"}
+                    for label in ("적용", "취소"):
+                        _assert_action_visible(buttons[label], dialog)
+                    assert dialog.description.winfo_viewable(), "approval description is hidden"
+                    assert dialog.description.winfo_height() > 24, "approval description has no readable area"
+                    clicked.append(action)
+                    buttons[action].invoke()
+                except Exception:
+                    errors.append(traceback.format_exc())
+                    dialog.tk.call(dialog.protocol("WM_DELETE_WINDOW"))
+
+            def wait_for_resize(dialog, initial, previous=None):
+                current = sample(dialog)
+                if current["window"] == [360, 240] and current == previous:
+                    verify_and_click(dialog, initial)
+                elif time.monotonic() >= deadline - 0.2:
+                    errors.append(f"approval resize did not settle: {current}")
+                    dialog.tk.call(dialog.protocol("WM_DELETE_WINDOW"))
+                else:
+                    root.after(20, lambda: wait_for_resize(dialog, initial, current))
 
             def click_action():
                 found = [item for item in root.winfo_children()
@@ -65,14 +99,11 @@ def _exercise_approval_actions(desktop):
                 try:
                     dialog.geometry("360x240")
                     dialog.update_idletasks()
-                    buttons = {item.cget("text"): item for item in _descendants(dialog)
-                               if item.winfo_class() == "Button"}
-                    for label in ("적용", "취소"):
-                        _assert_action_visible(buttons[label], dialog)
-                    assert dialog.description.winfo_viewable(), "approval description is hidden"
-                    assert dialog.description.winfo_height() > 24, "approval description has no readable area"
-                    clicked.append(action)
-                    buttons[action].invoke()
+                    # WM resize messages must pass through the OS event pump.
+                    # update_idletasks alone can still report the old child
+                    # positions with the new window size on Windows.
+                    initial = sample(dialog)
+                    root.after(20, lambda: wait_for_resize(dialog, initial))
                 except Exception:
                     errors.append(traceback.format_exc())
                     dialog.tk.call(dialog.protocol("WM_DELETE_WINDOW"))
@@ -100,6 +131,7 @@ def _exercise_approval_actions(desktop):
         assert dialog.content_canvas.winfo_viewable(), "image approval details are hidden"
         buttons["취소"].invoke()
         assert dialog.state() == "withdrawn", "image cancellation did not close the proposal"
+    return resize_samples
 
 
 def _exercise_away_clock(desktop):
@@ -295,7 +327,7 @@ def _run_packaged_smoke(app_factory, report_path):
                         assert windows is not None, "assistant failed to initialize"
                         _exercise_preview_navigation(desktop)
                         _exercise_away_clock(desktop)
-                        _exercise_approval_actions(desktop)
+                        approval_resize = _exercise_approval_actions(desktop)
                         _exercise_full_reply(desktop)
                         windows.open_chat()
                         windows.open_settings()
@@ -330,7 +362,7 @@ def _run_packaged_smoke(app_factory, report_path):
                         assert desktop.cancel_image_action(proposal["id"])["status"] == "cancelled"
                         assert network.call_count == 0, "unexpected network request"
                         assert not callback_errors, "Tk callback failed:\n" + "\n".join(callback_errors)
-                        report["checks"].append({"dpi": dpi, "status": "passed",
+                        report["checks"].append({"dpi": dpi, "status": "passed", "approval_resize": approval_resize,
                                                  "flows": ["dice", "settings", "preview previous/next pixels and selection preservation", "away clock and records", "small approval actions", "small image proposal actions", "full reply native click", "reply close/reopen/repeat", "conversation and draft preservation", "chat hide/reopen and retained answer", "AI settings", "model choices and unsaved preview", "memories", "image picker", "gallery", "backup", "weather", "offline status", "image cancel"]})
                     finally:
                         for timer_id in root.tk.splitlist(root.tk.call("after", "info")):
