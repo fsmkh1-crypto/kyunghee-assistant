@@ -167,6 +167,16 @@ def _run_packaged_smoke(app_factory, report_path):
                         _exercise_full_reply(desktop)
                         windows.open_chat()
                         windows.open_settings()
+                        from assistant_ai.config import MODELS
+                        model_settings = windows.settings_window
+                        assert tuple(model_settings.model_entry.cget("values")) == MODELS, "model choices missing"
+                        configured_model = desktop._assistant_service.load_settings().model
+                        model_settings.model.set("gpt-6-astra")
+                        root.update()
+                        assert "low" in model_settings.price.get(), "model reasoning description missing"
+                        assert model_settings.save_button.winfo_viewable(), "model settings save button hidden"
+                        assert desktop._assistant_service.load_settings().model == configured_model, "model preview saved itself"
+                        model_settings.model.set(configured_model)
                         windows.open_memories()
                         windows.open_image_picker()
                         desktop._open_asset_gallery("default")
@@ -189,7 +199,7 @@ def _run_packaged_smoke(app_factory, report_path):
                         assert network.call_count == 0, "unexpected network request"
                         assert not callback_errors, "Tk callback failed:\n" + "\n".join(callback_errors)
                         report["checks"].append({"dpi": dpi, "status": "passed",
-                                                 "flows": ["dice", "settings", "away", "full reply native click", "reply close/reopen/repeat", "conversation and draft preservation", "chat", "AI settings", "memories", "image picker", "gallery", "backup", "weather", "offline status", "image cancel"]})
+                                                 "flows": ["dice", "settings", "away", "full reply native click", "reply close/reopen/repeat", "conversation and draft preservation", "chat", "AI settings", "model choices and unsaved preview", "memories", "image picker", "gallery", "backup", "weather", "offline status", "image cancel"]})
                     finally:
                         for timer_id in root.tk.splitlist(root.tk.call("after", "info")):
                             root.tk.call("after", "cancel", timer_id)

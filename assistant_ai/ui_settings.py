@@ -8,7 +8,7 @@ from tkinter import ttk
 
 from app import AMBER, BORDER, MUTED, PANEL, PANEL_2, PURPLE, TEXT
 
-from .config import MODEL_PRICES, MODELS, PROACTIVE_EVENTS, SettingsError
+from .config import MODEL_DESCRIPTIONS, MODEL_PRICES, MODEL_REASONING_EFFORT, MODELS, PROACTIVE_EVENTS, SettingsError
 from .ui import _Window, _label, _button, _entry, _add_scrollbar, _font, _usage_text
 
 
@@ -95,7 +95,7 @@ class _SettingsWindow(_Window):
         self.model.trace_add("write", self._update_price)
         self.test_button = _button(form, "연결 시험 · 유료 요청 1회", self._test_connection)
         self.test_button.grid(row=8, column=0, sticky="w", pady=(5, 3))
-        self._wrapped(form, "시험은 위에 입력한 키·모델로 짧은 API 요청을 보내요. 입력 중인 설정은 저장하지 않아요.", color=MUTED, size=9).grid(row=9, column=0, sticky="ew")
+        self._wrapped(form, "사용 가능 여부는 API 계정마다 달라요. 목록에 없는 모델 ID도 직접 입력할 수 있어요.\n모델 사용 권한과 크레딧 적용 여부는 별개예요. API 계정의 권한·청구 화면에서 확인해 주세요.\n시험은 위의 키·모델로 짧은 요청을 보내며, 입력 중인 설정은 저장하지 않아요.", color=MUTED, size=9).grid(row=9, column=0, sticky="ew")
 
         self.advanced_button = _button(content, "고급 설정 펼치기 ▾", self._toggle_advanced)
         self.advanced_button.pack(anchor="w", padx=12, pady=(12, 5))
@@ -257,11 +257,21 @@ class _SettingsWindow(_Window):
             self.key.set("")
 
     def _update_price(self, *_args):
-        prices = MODEL_PRICES.get(self.model.get().strip())
+        model = self.model.get().strip()
+        prices = MODEL_PRICES.get(model)
+        lines = [MODEL_DESCRIPTIONS.get(model, "직접 입력한 모델 · API 기본 설정으로 요청해요.")]
+        effort = MODEL_REASONING_EFFORT.get(model)
+        if effort is not None:
+            lines[0] += f" · 빠른 응답용 {effort} 추론"
         if prices is None:
-            self.price.set("이 모델은 앱에서 비용을 추정할 수 없어요.")
+            lines.append("이 모델은 앱에서 비용을 추정할 수 없어요. 요청·토큰 한도를 사용할 수 있어요.")
         else:
-            self.price.set(f"100만 토큰 · 입력 ${prices.input_per_million:g} · 캐시 입력 ${prices.cached_input_per_million:g} · 출력 ${prices.output_per_million:g}")
+            lines.append(f"100만 토큰 · 입력 ${prices.input_per_million:g} · 캐시 입력 ${prices.cached_input_per_million:g} · 출력 ${prices.output_per_million:g}")
+            if prices.cache_write_multiplier != 1:
+                lines.append(f"캐시 쓰기 ${prices.input_per_million * prices.cache_write_multiplier:g} / 100만 토큰 · 기본 30분 보관")
+            if prices.long_context_after is not None:
+                lines.append(f"입력 {prices.long_context_after:,}토큰 초과 시 입력·캐시 비용 2배, 출력 1.5배")
+        self.price.set("\n".join(lines))
 
     def reload(self):
         try:

@@ -24,16 +24,50 @@ class ModelPrice:
 
 DEFAULT_MODEL = "gpt-5.4-mini"
 DEFAULT_WEATHER_LOCATION = "세종시"
-MODELS = (DEFAULT_MODEL, "gpt-5.6-luna", "gpt-6.1-sol")
+MODELS = (
+    DEFAULT_MODEL, "gpt-6-luna", "gpt-5.6-luna", "gpt-6.1-terra",
+    "gpt-6.1-sol", "gpt-6-sol", "gpt-6-astra", "gpt-5.4", "gpt-5.5",
+)
 PROACTIVE_EVENTS = ("rest", "break_started", "away", "return", "leave", "periodic")
 KEY_PERSISTENCE_MODES = ("session", "windows")
-# Standard Responses text prices in USD from the official model pages.
+# Standard Responses text prices in USD, checked 2026-11-09:
+# https://developers.openai.com/api/docs/pricing
+# https://developers.openai.com/api/docs/models/<model-id>
+# GPT-5.6/6 use the default 30-minute cache TTL (1.25x input for writes).
 _MINI_PRICE = ModelPrice(0.75, 0.075, 4.50)
+_GPT54_PRICE = ModelPrice(2.50, 0.25, 15.00, long_context_after=272_000)
+_GPT55_PRICE = ModelPrice(5.00, 0.50, 30.00, long_context_after=272_000)
 MODEL_PRICES = {
     DEFAULT_MODEL: _MINI_PRICE,
     "gpt-5.4-mini-2026-03-17": _MINI_PRICE,
     "gpt-5.6-luna": ModelPrice(0.20, 0.02, 1.20, 1.25, 272_000),
     "gpt-6.1-sol": ModelPrice(2.00, 0.10, 10.00, 1.25, 272_000),
+    "gpt-6-luna": ModelPrice(0.10, 0.01, 0.50, 1.25, 272_000),
+    "gpt-6.1-terra": ModelPrice(1.00, 0.05, 5.00, 1.25, 272_000),
+    "gpt-6-sol": ModelPrice(2.00, 0.20, 10.00, 1.25, 272_000),
+    "gpt-6-astra": ModelPrice(10.00, 1.00, 50.00, 1.25, 272_000),
+    "gpt-5.4": _GPT54_PRICE,
+    "gpt-5.4-2026-03-05": _GPT54_PRICE,
+    "gpt-5.5": _GPT55_PRICE,
+    "gpt-5.5-2026-04-23": _GPT55_PRICE,
+}
+MODEL_DESCRIPTIONS = {
+    DEFAULT_MODEL: "기본 모델 · 가벼운 대화와 타이머 제어",
+    "gpt-6-luna": "저비용 · 짧은 대화와 자주 하는 작업",
+    "gpt-5.6-luna": "기존 Luna · 가벼운 대화",
+    "gpt-6.1-terra": "간결한 글쓰기와 도구 작업",
+    "gpt-6.1-sol": "균형형 · 복잡한 요청과 도구 작업 · API 기본 추론",
+    "gpt-6-sol": "GPT-6 Sol · 대화와 도구 작업",
+    "gpt-6-astra": "고성능 · 어려운 요청 · 높은 비용",
+    "gpt-5.4": "GPT-5.4 · 일반·복합 작업",
+    "gpt-5.5": "GPT-5.5 · 복잡한 요청",
+}
+# New choices use low to suit short interactive requests, including web search.
+# Preserve the original mini/Sol API defaults and the original Luna low setting.
+# Do not infer capabilities or pricing for arbitrary user-entered model IDs.
+MODEL_REASONING_EFFORT = {
+    "gpt-5.6-luna": "low", "gpt-6-luna": "low", "gpt-6.1-terra": "low",
+    "gpt-6-sol": "low", "gpt-6-astra": "low", "gpt-5.4": "low", "gpt-5.5": "low",
 }
 _MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}")
 _KEY_VALUE = re.compile(r"[!-~]{1,1024}")

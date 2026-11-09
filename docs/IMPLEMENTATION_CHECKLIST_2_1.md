@@ -44,6 +44,7 @@
 | AI-11 | 웹 검색 허용 토글·검색 상태·출처 | 구현 | `assistant_ai/service.py`, `api.py`, `desktop.py`, `weather.py`, `timer_tools.py`; 각 대응 테스트 및 `test_assistant_desktop_flow` |
 | AI-12 | 키 없이 오늘 상태 조회, 기존 타이머 계산 재사용 | 구현 | `assistant_ai/service.py`, `api.py`, `desktop.py`, `weather.py`, `timer_tools.py`; 각 대응 테스트 및 `test_assistant_desktop_flow` |
 | AI-13 | 현재 모델·확정 사용량·미확인 예약·잔여 한도·집계 설명 | 구현 | `assistant_ai/service.py`, `api.py`, `desktop.py`, `weather.py`, `timer_tools.py`; 각 대응 테스트 및 `test_assistant_desktop_flow` |
+| AI-14 | 후속 요청: 공개 API 모델 9종 선택·설명·단가, 기존 선택·직접 입력 유지 | 구현 | `assistant_ai/config.py`, `api.py`, `ui_settings.py`; `test_assistant_models`, `package_smoke.py`. 계정별 권한·크레딧·실제 API 응답은 별도 확인 |
 | KEY-01 | 이번 실행에만 키 보관 / Windows DPAPI 저장 선택 | 구현 | `assistant_ai/config.py`, `service.py`, `ui_settings.py`; `test_assistant_config_extended`, `test_assistant_service`, `test_assistant_api` |
 | KEY-02 | 기존 키 유지·삭제·저장 모드 변경 실패 시 보존 | 구현 | `assistant_ai/config.py`, `service.py`, `ui_settings.py`; `test_assistant_config_extended`, `test_assistant_service`, `test_assistant_api` |
 | KEY-03 | 사용자 실행 연결 시험, 오류·사용 준비 상태 | 구현 | `assistant_ai/config.py`, `service.py`, `ui_settings.py`; `test_assistant_config_extended`, `test_assistant_service`, `test_assistant_api` |

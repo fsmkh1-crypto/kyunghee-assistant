@@ -13,7 +13,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from .config import AISettings, MODEL_PRICES, ModelPrice, SettingsError, validate_api_key
+from .config import AISettings, MODEL_PRICES, MODEL_REASONING_EFFORT, ModelPrice, SettingsError, validate_api_key
 
 
 RESPONSES_URL = "https://api.openai.com/v1/responses"
@@ -510,8 +510,9 @@ class ResponsesClient:
         if web_search:
             payload["include"].append("web_search_call.action.sources")
             payload["max_tool_calls"] = _MAX_WEB_SEARCH_CALLS
-        if settings.model == "gpt-5.6-luna":
-            payload["reasoning"] = {"effort": "low"}
+        effort = MODEL_REASONING_EFFORT.get(settings.model)
+        if effort is not None:
+            payload["reasoning"] = {"effort": effort}
         try:
             body = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
         except (TypeError, ValueError, UnicodeError):
