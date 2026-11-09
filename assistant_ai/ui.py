@@ -17,7 +17,7 @@ from app_brand import APP_NAME
 
 from .api import AIError
 from .config import SettingsError
-from .ui_helpers import position_window
+from .ui_helpers import position_window, window_exists
 
 
 HISTORY_PAGE_SIZE = 40
@@ -376,15 +376,17 @@ class AssistantWindows:
     def open_reply(self, text):
         if self._closed:
             return
-        if self.reply_window is None:
+        if not window_exists(self.reply_window):
             self.reply_window = _ReadoutWindow(self, "승아의 답변")
             self.reply_window.add_action("대화 계속하기", self._resume_chat)
-        self.reply_window.set_text(text)
-        self.reply_window.show()
-        self.reply_window.text.focus_set()
+        window = self.reply_window
+        window.set_text(text)
+        if window.show():
+            window.text.focus_set()
 
     def _resume_chat(self):
-        self.reply_window.withdraw()
+        if window_exists(self.reply_window):
+            self.reply_window.withdraw()
         self.open_chat()
 
     def open_weather(self, place=None):
@@ -752,9 +754,13 @@ class _Window(tk.Toplevel):
         return "break"
 
     def show(self):
-        position_window(self, self.owner.root, self.owner.chat_work_area)
+        if self.owner._closed or not window_exists(self):
+            return False
+        if position_window(self, self.owner.root, self.owner.chat_work_area) is None:
+            return False
         self.deiconify()
         self.lift()
+        return True
 
     def apply_reading_size(self):
         size = getattr(self.service.load_settings(), "reading_text_size", 12)
@@ -806,6 +812,15 @@ class _ReadoutWindow(_Window):
         toolbar.pack(side="bottom", fill="x", padx=12, pady=3, before=self.actions)
         self.reading_controls(toolbar, self.text, self._sources)
         self.apply_reading_size()
+        self.bind("<Destroy>", self._forget_destroyed_window, add="+")
+
+    def _forget_destroyed_window(self, event):
+        if event.widget is not self:
+            return
+        if self.owner.reply_window is self:
+            self.owner.reply_window = None
+        if self in self.owner._extra_windows:
+            self.owner._extra_windows.remove(self)
 
     def add_action(self, caption, command):
         _button(self.actions, caption, command).pack(side="left", padx=(0, 6))

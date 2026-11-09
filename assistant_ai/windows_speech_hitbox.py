@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+from collections import deque
 from ctypes import wintypes
 import tkinter as tk
 
@@ -27,6 +28,8 @@ _WM_LBUTTONDOWN = 0x0201
 _WM_RBUTTONDOWN = 0x0204
 _MA_NOACTIVATE = 3
 _HTCLIENT = 1
+_CLICK_POLL_MS = 25
+_MAX_CLICKS_PER_POLL = 32
 
 
 class SpeechHitbox:
@@ -42,8 +45,12 @@ class SpeechHitbox:
         self._class_name = f"SeungaTimerSpeechHitbox_{id(self):x}"
         self._registered = False
         self._closed = False
+        self._clicks = deque()
+        self._poll_id = None
         self._user32 = ctypes.WinDLL("user32", use_last_error=True)
         self._configure_win32()
+        # Register from Python/Tk's normal call stack, never from our WndProc.
+        self._schedule_click_poll()
 
     def _configure_win32(self):
         api = self._user32
@@ -115,17 +122,42 @@ class SpeechHitbox:
         if message == _WM_MOUSEACTIVATE:
             return _MA_NOACTIVATE
         if message in (_WM_LBUTTONDOWN, _WM_RBUTTONDOWN):
-            if self._visible:
-                action = self._on_next if message == _WM_LBUTTONDOWN else self._on_dismiss
-                try:
-                    self._root.after_idle(self._dispatch_click, action, self._generation)
-                except tk.TclError:
-                    pass
+            if self._visible and not self._closed:
+                # Tcl can invoke this ctypes callback while dispatching Windows
+                # messages. Calling *any* Tk API here (even after/after_idle)
+                # re-enters _tkinter outside its expected thread-state boundary.
+                # Only enqueue plain Python data; Tk owns the polling callback.
+                self._clicks.append((message, self._generation))
             return 0
         return self._user32.DefWindowProcW(hwnd, message, wparam, lparam)
 
+    def _schedule_click_poll(self):
+        if self._closed or self._poll_id is not None:
+            return
+        try:
+            self._poll_id = self._root.after(_CLICK_POLL_MS, self._poll_clicks)
+        except tk.TclError:
+            self._poll_id = None
+
+    def _poll_clicks(self):
+        self._poll_id = None
+        if self._closed:
+            self._clicks.clear()
+            return
+        try:
+            # Bound each Tk turn while keeping the native click order intact.
+            for _ in range(_MAX_CLICKS_PER_POLL):
+                if not self._clicks:
+                    break
+                message, generation = self._clicks.popleft()
+                action = self._on_next if message == _WM_LBUTTONDOWN else self._on_dismiss
+                self._dispatch_click(action, generation)
+        finally:
+            if self._visible and not self._closed:
+                self._schedule_click_poll()
+
     def _dispatch_click(self, action, generation):
-        if self._visible and generation == self._generation:
+        if not self._closed and self._visible and generation == self._generation:
             action()
 
     def _create_window(self, owner):
@@ -184,14 +216,26 @@ class SpeechHitbox:
         if not api.SetWindowPos(self._hwnd, previous, left, top, width, height, flags):
             raise ctypes.WinError(ctypes.get_last_error())
         self._visible = True
+        self._schedule_click_poll()
 
     def hide(self):
-        if self._visible:
-            self._visible = False
+        was_visible = self._visible
+        self._visible = False
+        if was_visible:
             self._generation += 1
+        self._clicks.clear()
+        if self._poll_id is not None:
+            try:
+                self._root.after_cancel(self._poll_id)
+            except tk.TclError:
+                pass
+            self._poll_id = None
+        if was_visible:
             self._user32.ShowWindow(self._hwnd, _SW_HIDE)
 
     def close(self):
+        if self._closed:
+            return
         self._closed = True
         self.hide()
         if self._hwnd is not None:

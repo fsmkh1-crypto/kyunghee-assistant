@@ -3,6 +3,17 @@ from __future__ import annotations
 import ctypes
 from ctypes import wintypes
 import os
+import tkinter as tk
+
+
+def window_exists(window):
+    """A cached Python widget can outlive its native window or Tcl interpreter."""
+    if window is None:
+        return False
+    try:
+        return bool(window.winfo_exists())
+    except tk.TclError:
+        return False
 
 
 def clamp_geometry(x, y, width, height, area, margin=12):
@@ -20,8 +31,16 @@ def position_window(window, parent, work_area=None):
     work_area accepts (x, y, width, height), like CompactDesktopApp._best_work_area.
     Callers without a monitor provider use Tk's virtual desktop bounds.
     """
+    if not window_exists(parent) or not window_exists(window):
+        return None
     parent.update_idletasks()
+    # Geometry updates run idle callbacks too: shutdown can destroy a dialog
+    # while its original click handler is still on the stack.
+    if not window_exists(parent) or not window_exists(window):
+        return None
     window.update_idletasks()
+    if not window_exists(window):
+        return None
     width, height = window.winfo_width(), window.winfo_height()
     if width <= 1 or height <= 1:
         preferred = getattr(window, "_preferred_size", None)
@@ -30,6 +49,8 @@ def position_window(window, parent, work_area=None):
         else:
             window.deiconify()
             window.update_idletasks()
+            if not window_exists(window):
+                return None
             width, height = window.winfo_width(), window.winfo_height()
             if width <= 1 or height <= 1:
                 width, height = max(300, window.winfo_reqwidth()), max(200, window.winfo_reqheight())
@@ -50,6 +71,8 @@ def position_window(window, parent, work_area=None):
         window.geometry(f"{width}x{height}")
         window.deiconify()
         window.update_idletasks()
+        if not window_exists(window):
+            return None
         user32 = ctypes.WinDLL("user32", use_last_error=True)
         user32.GetAncestor.argtypes = (wintypes.HWND, wintypes.UINT)
         user32.GetAncestor.restype = wintypes.HWND

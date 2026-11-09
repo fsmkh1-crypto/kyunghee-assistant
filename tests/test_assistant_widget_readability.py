@@ -72,10 +72,12 @@ class WidgetReadabilityTests(unittest.TestCase):
             hitbox = desktop._chat_hitbox
             self.assertIsNotNone(hitbox)
             self.assertIsNotNone(hitbox._hwnd)
-            send_message = ctypes.WinDLL("user32").SendMessageW
-            send_message.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
-            send_message.restype = ctypes.c_ssize_t
-            send_message(hitbox._hwnd, 0x0201, 1, 4 | (4 << 16))  # WM_LBUTTONDOWN in a blank corner.
+            post_message = ctypes.WinDLL("user32").PostMessageW
+            post_message.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+            post_message.restype = wintypes.BOOL
+            self.assertTrue(post_message(hitbox._hwnd, 0x0201, 1, 4 | (4 << 16)))
+            desktop.root.after(100, desktop.root.quit)
+            desktop.root.mainloop()
         else:
             desktop._visible_speech().event_generate("<Button-1>", x=4, y=4)
         desktop.root.update()

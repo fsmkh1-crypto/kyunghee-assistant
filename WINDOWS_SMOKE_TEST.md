@@ -1,4 +1,4 @@
-# Windows smoke test — 승아 타이머 2.1
+# Windows smoke test — 승아 타이머 2.1.1
 
 Run this on a real Windows PC before calling the build ready for daily use.
 
@@ -13,6 +13,7 @@ Run this on a real Windows PC before calling the build ready for daily use.
 
 ### 0. Review implementation acceptance
 
+- Open a folded long answer by clicking the actual speech bubble. Close it with the button, Esc and titlebar X, then reopen it; also click repeatedly. The timer must stay alive, the whole answer and source links remain readable, and unsent drafts, saved chat and memories remain unchanged. CI now queues native Windows clicks with PostMessageW; synchronous SendMessageW alone did not exercise the fatal boundary in 2.1.0.
 - Open chat from the speech bubble; open settings with a short timer/character click; drag without opening settings. Verify tray/keyboard access with the bubble hidden.
 - Roll the screen dice, change to away/rest/return, and check situation images return. Explicitly pin and unpin. Restore the latest situation while pinned.
 - Open settings/records while away, return to the timer, change scale and save: the timer state and corresponding image must remain consistent.

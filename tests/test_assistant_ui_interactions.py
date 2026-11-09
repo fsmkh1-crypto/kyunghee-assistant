@@ -141,6 +141,78 @@ class AssistantInteractionTests(unittest.TestCase):
         self.assertTrue(listing.bind("<Return>"))
         self.assertEqual(listing.get(0), "https://example.com/weather")
 
+    def test_reply_can_reopen_after_native_window_was_destroyed(self):
+        self.owner.open_reply("첫 답변")
+        previous = self.owner.reply_window
+        previous.destroy()
+        self.owner.open_reply("다음 답변")
+        self.root.update()
+        self.assertIsNot(self.owner.reply_window, previous)
+        self.assertEqual(self.owner.reply_window.text.get("1.0", "end-1c"), "다음 답변")
+
+    def test_reply_open_tolerates_shutdown_during_idle_geometry_updates(self):
+        self.root.after_idle(self.owner.close)
+        self.owner.open_reply("창이 열리는 동안 앱 종료")
+        self.assertTrue(self.owner._closed)
+        self.assertTrue(self.root.winfo_exists())
+
+    def test_reply_close_reopen_and_repeated_click_preserve_text_at_common_dpi(self):
+        import tkinter as tk
+        original = float(self.root.tk.call("tk", "scaling"))
+        self.addCleanup(lambda: self.root.tk.call("tk", "scaling", original))
+        reply = "첫째 줄 🧑🏽‍💻\n둘째 줄\n셋째 줄\n넷째 줄\n다섯째 줄\nhttps://example.com/날씨?city=서울"
+        for dpi in (96, 120, 144, 192):
+            with self.subTest(dpi=dpi):
+                self.root.tk.call("tk", "scaling", dpi / 72)
+                self.owner.open_reply(reply)
+                reader = self.owner.reply_window
+                self.root.update()
+                reader.tk.call(reader.protocol("WM_DELETE_WINDOW"))
+                self.assertEqual(reader.state(), "withdrawn")
+                self.owner.open_reply(reply)
+                reader.focus_force()
+                reader.event_generate("<Escape>")
+                self.root.update()
+                self.assertEqual(reader.state(), "withdrawn")
+                for _ in range(3):
+                    self.owner.open_reply(reply)
+                self.root.update()
+                self.assertIs(self.owner.reply_window, reader)
+                self.assertEqual(reader.text.get("1.0", "end-1c"), reply)
+                self.assertTrue(reader._sources.targets)
+                close = next(widget for widget in reader.actions.winfo_children()
+                             if isinstance(widget, tk.Button) and widget.cget("text") == "닫기")
+                close.invoke()
+                self.assertEqual(reader.state(), "withdrawn")
+                self.owner.open_reply(reply)
+                self.assertEqual(reader.text.get("1.0", "end-1c"), reply)
+                self.assertLessEqual(reader.winfo_height(), self.root.winfo_vrootheight())
+                reader.destroy()
+
+    def test_reply_recreation_does_not_write_conversation_or_memory_data(self):
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        from assistant_ai.memory import MemoryStore
+        with TemporaryDirectory() as directory:
+            store = MemoryStore(Path(directory) / "memory.sqlite3")
+            store.set_enabled(True)
+            store.set_history_enabled(True)
+            turn_id = store.begin_turn("내가 남긴 질문")
+            self.assertIsNotNone(turn_id)
+            store.finish_turn(turn_id, "보존할 원본 답변")
+            store.add_memory("보존할 장기 기억")
+            original_turns, original_memories = store.recent_turns(), store.list_memories()
+            self.assertEqual(len(original_turns), 1)
+            self.assertEqual(original_turns[0].assistant, "보존할 원본 답변")
+            self.assertEqual(len(original_memories), 1)
+            self.assertEqual(original_memories[0].text, "보존할 장기 기억")
+            self.service.recent_turns = store.recent_turns
+            for _ in range(3):
+                self.owner.open_reply("보존할 원본 답변")
+                self.owner.reply_window.destroy()
+            self.assertEqual(store.recent_turns(), original_turns)
+            self.assertEqual(store.list_memories(), original_memories)
+
     def test_history_shows_turn_status_separately_from_message_body(self):
         turns = [SimpleNamespace(created_at="", user="질문 " + state, assistant=None, status=state)
                  for state in ("pending", "failed", "cancelled", "interrupted")]
