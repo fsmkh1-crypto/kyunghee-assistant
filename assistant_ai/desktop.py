@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import textwrap
 import threading
 import time
 import tkinter as tk
 from tkinter import messagebox
 
 import app as core
+from desktop_compact import OutlinedText, _outline_for
 
 from .service import AssistantService
 from .timer_tools import TimerTools, validate_arguments
@@ -17,6 +19,15 @@ _PROACTIVE_MIN_SPACING = 15
 _PERIODIC_MIN_SPACING = 5 * 60
 _PROACTIVE_MAX_AGE = 25
 _TOOL_TIMEOUT = 120
+_CHAT_REPLY_SECONDS = 22
+_CHAT_PAGE_SECONDS = 90
+_CHAT_ROLE = {"composing": "rest", "waiting": "rest", "reply": "default", "error": "worry"}
+_CHAT_LABEL = {"composing": "듣는 중", "waiting": "생각 중", "reply": "답변", "error": "응답 오류"}
+_CHAT_LINES = {
+    "composing": "오빠, 듣고 있어요.",
+    "waiting": "잠깐만요, 생각하고 있어요.",
+    "error": "답을 가져오지 못했어요. 대화창에서 확인해 주세요.",
+}
 
 
 @dataclass
@@ -34,10 +45,17 @@ def _failure(message):
     return {"ok": False, "error": message, "message": message}
 
 
+def _chat_pages(text):
+    pages = []
+    for paragraph in text.splitlines():
+        pages.extend(textwrap.wrap(paragraph, width=72, break_on_hyphens=False))
+    return pages or ["표시할 답변이 없어요."]
+
+
 class DesktopAssistantMixin:
     """Attach optional AI without changing the timer engine or its alert gate."""
 
-    TRAY_TITLE = "Kyunghee Timer AI 2.0"
+    TRAY_TITLE = "Kyunghee Timer AI 2.0.1"
 
     def __init__(self):
         self._assistant_service = None
@@ -48,6 +66,11 @@ class DesktopAssistantMixin:
         self._assistant_periodic_due = False
         self._assistant_last_attempt = float("-inf")
         self._assistant_last_periodic = float("-inf")
+        self._chat_phase = "idle"
+        self._chat_pages: list[str] = []
+        self._chat_page = 0
+        self._chat_expiry = None
+        self._timer_character_role = "default"
         super().__init__()
         self.root.title(self.TRAY_TITLE)
         self.root.bind("<Control-Shift-A>", self._open_assistant_shortcut, add="+")
@@ -57,6 +80,8 @@ class DesktopAssistantMixin:
             self._assistant_windows = AssistantWindows(
                 self.root, self._assistant_service,
                 context=self._assistant_tools.context, dispatch=self._dispatch_assistant_tool,
+                on_chat_state=self._show_chat_phase,
+                chat_work_area=self._best_work_area,
             )
         except Exception:
             self._assistant_service = None
@@ -71,6 +96,93 @@ class DesktopAssistantMixin:
             bd=0, relief="flat", cursor="hand2", padx=6,
         )
         button.place(relx=1.0, x=-43, y=13, anchor="ne")
+        self._chat_button = button
+        p = self.preferences
+        self._chat_speech = OutlinedText(
+            self.hero, "", family=self.FONT_FAMILY, size=p.message_text_size,
+            fg=p.message_text_color, outline=_outline_for(p.message_text_color),
+            bg=self.TRANSPARENT_KEY, wraplength=min(360, max(250, self._scale(self.BUBBLE_WRAP))),
+            justify="center", cursor="hand2",
+        )
+        self._chat_speech.bind("<Button-1>", self._advance_chat_page)
+        self._chat_speech.bind("<Button-3>", self._dismiss_chat_reply)
+
+    def _visible_speech(self):
+        if self._chat_phase != "idle":
+            return self._chat_speech
+        return super()._visible_speech()
+
+    def _set_character(self, role):
+        self._timer_character_role = role
+        return super()._set_character(_CHAT_ROLE.get(self._chat_phase, role))
+
+    def _cancel_chat_expiry(self):
+        if self._chat_expiry is not None:
+            self.root.after_cancel(self._chat_expiry)
+            self._chat_expiry = None
+
+    def _show_chat_phase(self, phase, text=""):
+        self._cancel_chat_expiry()
+        if phase == "idle" and self._chat_phase == "idle":
+            return
+        self._chat_phase = phase
+        self._chat_pages = []
+        self._chat_page = 0
+        if phase == "idle":
+            self._chat_button.configure(text="승아")
+            self._chat_speech.place_forget()
+            super()._set_character(self._timer_character_role)
+        else:
+            self._cancel_proactive()
+            self._chat_button.configure(text=f"승아 {_CHAT_LABEL[phase]}")
+            super()._set_character(_CHAT_ROLE[phase])
+            if phase == "reply":
+                self._chat_pages = _chat_pages(text)
+                self._render_chat_page()
+            else:
+                self._chat_speech.configure(text=_CHAT_LINES[phase])
+                if phase == "error":
+                    self._schedule_chat_expiry()
+        self._refresh_chat_layout()
+
+    def _refresh_chat_layout(self):
+        self._apply_widget_appearance()
+        if self.current_page == "timer":
+            self._resize_for_page("timer")
+
+    def _schedule_chat_expiry(self, seconds=_CHAT_REPLY_SECONDS):
+        self._cancel_chat_expiry()
+        self._chat_expiry = self.root.after(seconds * 1000, self._expire_chat_reply)
+
+    def _expire_chat_reply(self):
+        self._chat_expiry = None
+        self._show_chat_phase("idle")
+
+    def _render_chat_page(self):
+        count = len(self._chat_pages)
+        text = self._chat_pages[self._chat_page]
+        if count > 1:
+            action = "누르면 닫기" if self._chat_page + 1 == count else "누르면 계속"
+            text += f"\n{self._chat_page + 1}/{count}  {action}"
+        self._chat_speech.configure(text=text)
+        more_pages = self._chat_page + 1 < count and self._effective_display_flag("show_message")
+        self._schedule_chat_expiry(_CHAT_PAGE_SECONDS if more_pages else _CHAT_REPLY_SECONDS)
+
+    def _advance_chat_page(self, _event=None):
+        if self._chat_phase != "reply":
+            self._open_assistant_chat()
+        elif self._chat_page + 1 < len(self._chat_pages):
+            self._chat_page += 1
+            self._render_chat_page()
+            self._refresh_chat_layout()
+        else:
+            self._show_chat_phase("idle")
+        return "break"
+
+    def _dismiss_chat_reply(self, _event=None):
+        if self._chat_phase in {"reply", "error"}:
+            self._show_chat_phase("idle")
+        return "break"
 
     def _build_header(self, parent, title, back_command=None, settings_command=None):
         row = super()._build_header(parent, title, back_command, settings_command)
@@ -91,6 +203,10 @@ class DesktopAssistantMixin:
         if self._assistant_windows is None:
             self._assistant_unavailable()
             return
+        if self.current_page != "timer":
+            self._show_page("timer")
+        if not self.root.winfo_viewable():
+            self.show()
         self._assistant_windows.open_chat()
 
     def _open_assistant_shortcut(self, _event):
@@ -115,6 +231,7 @@ class DesktopAssistantMixin:
     def quit(self):
         self._assistant_shutdown.set()
         self._cancel_proactive()
+        self._cancel_chat_expiry()
         try:
             if self._assistant_windows is not None:
                 self._assistant_windows.close()
@@ -295,6 +412,8 @@ class DesktopAssistantMixin:
 
     def _request_proactive(self, event, toast=None):
         service = self._assistant_service
+        if self._chat_phase != "idle" and toast is None:
+            return
         if self._assistant_pending is not None:
             if event != "periodic":
                 self._cancel_proactive()

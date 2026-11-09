@@ -445,10 +445,13 @@ class CompactDesktopApp(DesktopApp):
             return 0
         return self._clock_render_width()
 
+    def _visible_speech(self):
+        return getattr(self, "speech", None)
+
     def _message_render_width(self) -> int:
         if not self._effective_display_flag("show_message"):
             return 0
-        speech = getattr(self, "speech", None)
+        speech = self._visible_speech()
         if speech is not None:
             try:
                 req = int(speech.winfo_reqwidth())
@@ -498,7 +501,7 @@ class CompactDesktopApp(DesktopApp):
     def _message_render_height(self) -> int:
         if not self._effective_display_flag("show_message"):
             return 0
-        speech = getattr(self, "speech", None)
+        speech = self._visible_speech()
         if speech is not None:
             try:
                 req = int(speech.winfo_reqheight())
@@ -1078,7 +1081,8 @@ class CompactDesktopApp(DesktopApp):
             size=p.status_text_size, fg=p.status_text_color,
             outline=_outline_for(p.status_text_color),
         )
-        self.speech.set_style(
+        speech = self._visible_speech()
+        speech.set_style(
             size=p.message_text_size, fg=p.message_text_color,
             outline=_outline_for(p.message_text_color),
         )
@@ -1093,13 +1097,15 @@ class CompactDesktopApp(DesktopApp):
                 self.main_status.pack(anchor="w", pady=(0, 1))
         else:
             self.main_status.pack_forget()
+        if speech is not self.speech:
+            self.speech.place_forget()
         if self._effective_display_flag("show_message"):
-            self.speech.place(
+            speech.place(
                 relx=0.5, x=self._message_x_offset(), rely=1.0,
                 y=-self._message_bottom_gap(), anchor="s",
             )
         else:
-            self.speech.place_forget()
+            speech.place_forget()
 
         clock_x, clock_y = self._clock_offset()
         self.clock.place(x=clock_x, y=clock_y)

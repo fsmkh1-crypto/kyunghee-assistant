@@ -69,11 +69,13 @@ def _local_time(value):
 class AssistantWindows:
     """The timer owns one Tk loop. Workers pass AI results to it through a queue."""
 
-    def __init__(self, root, service, *, context, dispatch):
+    def __init__(self, root, service, *, context, dispatch, on_chat_state=None, chat_work_area=None):
         self.root = root
         self.service = service
         self.context = context
         self.dispatch = dispatch
+        self.on_chat_state = on_chat_state
+        self.chat_work_area = chat_work_area
         families = {name.casefold() for name in tkfont.families(root)}
         self.font_family = next(
             (name for name in ("Pretendard", "Malgun Gothic", "Noto Sans CJK KR") if name.casefold() in families),
@@ -89,17 +91,80 @@ class AssistantWindows:
         self._sent_text = ""
         self._previous_turns = []
         self._history_limit = HISTORY_PAGE_SIZE
+        self._chat_state = ("idle", "")
+
+    def _set_chat_state(self, phase, text=""):
+        state = (phase, text)
+        if state == self._chat_state:
+            return
+        self._chat_state = state
+        if self.on_chat_state is not None:
+            self.on_chat_state(phase, text)
+
+    def _draft_changed(self):
+        if self._cancel is not None or self.chat_window.state() == "withdrawn":
+            return
+        if self.chat_window.input.get("1.0", "end-1c").strip():
+            self._set_chat_state("composing")
+        elif self._chat_state[0] == "composing":
+            self._set_chat_state("idle")
 
     def open_chat(self):
         if self._closed:
             return
         if self.chat_window is None:
             self.chat_window = _ChatWindow(self)
+            self._place_chat_window()
         self.chat_window.show()
         self.chat_window.input.focus_set()
         if self._cancel is None:
             self.chat_window.update_availability()
             self._render_history()
+            self._draft_changed()
+
+    def _place_chat_window(self):
+        root = self.root
+        root.update_idletasks()
+        x, y = root.winfo_rootx(), root.winfo_rooty()
+        widget_width, widget_height = root.winfo_width(), root.winfo_height()
+        if self.chat_work_area is None:
+            left, top = root.winfo_vrootx(), root.winfo_vrooty()
+            right, bottom = left + root.winfo_vrootwidth(), top + root.winfo_vrootheight()
+        else:
+            left, top, right, bottom = self.chat_work_area(x, y, widget_width, widget_height)
+
+        gap = 16
+        left, right = left + gap, right - gap
+        top, bottom = top + gap, bottom - 3 * gap
+        min_width, min_height = self.chat_window.MIN_SIZE
+        width, height = self.chat_window.DEFAULT_SIZE
+        width = max(min_width, min(width, right - left))
+        height = max(min_height, min(height, bottom - top))
+        left_room = x - gap - left
+        right_x = x + widget_width + gap
+        right_room = right - right_x
+        below_y = y + widget_height + gap
+        below_room = bottom - below_y
+        above_room = y - gap - top
+
+        if right_room >= min_width and (right_room >= width or right_room >= left_room):
+            width = min(width, right_room)
+            x = right_x
+        elif left_room >= min_width:
+            width = min(width, left_room)
+            x -= width + gap
+        elif below_room >= min_height and (below_room >= height or below_room >= above_room):
+            height = min(height, below_room)
+            y = below_y
+        elif above_room >= min_height:
+            height = min(height, above_room)
+            y -= height + gap
+        else:
+            x = right_x if right_room >= left_room else x - width - gap
+
+        x = max(left, min(x, right - width))
+        y = max(top, min(y, bottom - height))
+        self.chat_window.geometry(f"{width}x{height}+{x}+{y}")
 
     def open_memories(self):
         if self._closed:
@@ -129,6 +194,7 @@ class AssistantWindows:
         if self._poll_id is not None:
             self.root.after_cancel(self._poll_id)
             self._poll_id = None
+        self._set_chat_state("idle")
         for window in (self.chat_window, self.memory_window, self.settings_window):
             if window is not None:
                 window.destroy()
@@ -178,16 +244,19 @@ class AssistantWindows:
             context = self.context()
         except Exception:
             self.chat_window.status.set("타이머 상태를 확인하지 못했어요. 다시 시도해 주세요.")
+            self._set_chat_state("error")
             return
         self._previous_turns = self._render_history(pending=text)
         self._sent_text = text
         self._cancel = Event()
         self.chat_window.input.delete("1.0", "end")
+        self.chat_window.input.edit_modified(False)
         self.chat_window.set_busy(True)
         self.chat_window.status.set("승아가 답을 준비하고 있어요…")
         worker = Thread(target=self._request, args=(text, context, self._cancel), daemon=True)
         worker.start()
         self._poll_id = self.root.after(60, self._poll)
+        self._set_chat_state("waiting")
 
     def _request(self, text, context, cancel):
         try:
@@ -205,24 +274,33 @@ class AssistantWindows:
             reply, error = self._results.get_nowait()
         except Empty:
             self._poll_id = self.root.after(60, self._poll)
+            if self._cancel.is_set():
+                self._set_chat_state("idle")
             return
         cancelled = self._cancel.is_set()
         self._cancel = None
         self.chat_window.set_busy(False)
         self.chat_window.update_availability()
         turns = self._render_history()
-        if reply and turns is None:
+        if reply and not cancelled and turns is None:
             self.chat_window.render([], pending=self._sent_text, reply=reply)
         if error or cancelled:
             if turns is not None and turns == self._previous_turns:
                 if not self.chat_window.input.get("1.0", "end-1c").strip():
                     self.chat_window.input.insert("1.0", self._sent_text)
+                    self.chat_window.input.edit_modified(False)
             self.chat_window.status.set("대화 요청을 취소했어요." if cancelled else error)
         self._sent_text = ""
         self._previous_turns = []
+        if cancelled or self.chat_window.state() == "withdrawn":
+            self._set_chat_state("idle")
+        elif reply:
+            self._set_chat_state("reply", reply)
+        else:
+            self._set_chat_state("error")
         if self.settings_window is not None:
             self.settings_window.refresh_usage()
-        if reply and self.memory_window is not None and self.memory_window.winfo_viewable():
+        if reply and not cancelled and self.memory_window is not None and self.memory_window.winfo_viewable():
             self.memory_window.refresh()
 
     def cancel(self):
@@ -230,6 +308,7 @@ class AssistantWindows:
             self._cancel.set()
             self.chat_window.cancel_button.configure(state="disabled")
             self.chat_window.status.set("취소 요청 중…")
+        self._set_chat_state("idle")
 
     def clear_history(self):
         if self._cancel is not None:
@@ -247,6 +326,7 @@ class AssistantWindows:
         self._history_limit = HISTORY_PAGE_SIZE
         if self._render_history() is not None:
             self.chat_window.status.set("대화 기록을 지웠어요.")
+        self._set_chat_state("idle")
 
 
 class _Window(tk.Toplevel):
@@ -256,7 +336,7 @@ class _Window(tk.Toplevel):
         self.service = owner.service
         self.font_family = owner.font_family
         self.withdraw()
-        self.title(f"{title} | 경희 타이머 AI 2.0")
+        self.title(f"{title} | 경희 타이머 AI 2.0.1")
         self.geometry(f"{width}x{height}")
         self.protocol("WM_DELETE_WINDOW", self._hide)
         self.bind("<Escape>", self._hide)
@@ -273,9 +353,12 @@ class _Window(tk.Toplevel):
 
 
 class _ChatWindow(_Window):
+    DEFAULT_SIZE = (640, 590)
+    MIN_SIZE = (500, 420)
+
     def __init__(self, owner):
-        super().__init__(owner, "승아와 대화", 640, 590)
-        self.minsize(500, 420)
+        super().__init__(owner, "승아와 대화", *self.DEFAULT_SIZE)
+        self.minsize(*self.MIN_SIZE)
         header = tk.Frame(self.body, bg=PANEL)
         header.pack(fill="x", padx=12, pady=(10, 4))
         _label(header, "승아와 대화", size=15).pack(side="left")
@@ -303,6 +386,7 @@ class _ChatWindow(_Window):
         self.input = _text(input_frame, height=4, undo=True)
         _add_scrollbar(input_frame, self.input)
         self.input.bind("<Control-Return>", self._send_from_keyboard)
+        self.input.bind("<<Modified>>", self._input_modified)
         self.status = tk.StringVar(master=self)
         status = _label(composer, color=AMBER, textvariable=self.status, wraplength=580)
         status.pack(fill="x", padx=12, pady=(5, 0))
@@ -329,6 +413,11 @@ class _ChatWindow(_Window):
     def _send_from_keyboard(self, _event):
         self.owner.send()
         return "break"
+
+    def _input_modified(self, _event):
+        if self.input.edit_modified():
+            self.input.edit_modified(False)
+            self.owner._draft_changed()
 
     def update_availability(self):
         try:
