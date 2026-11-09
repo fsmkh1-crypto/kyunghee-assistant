@@ -94,6 +94,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           Copy-Item README.md dist\SeungaTimer\README.md
           Copy-Item LICENSE dist\SeungaTimer\LICENSE
+          Copy-Item WINDOWS_SMOKE_TEST.md dist\SeungaTimer\
           Copy-Item docs dist\SeungaTimer\docs -Recurse
           Copy-Item packaged-ui-report.json dist\SeungaTimer\
       - uses: actions/upload-artifact@v4

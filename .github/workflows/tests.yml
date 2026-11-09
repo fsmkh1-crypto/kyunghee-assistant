@@ -64,7 +64,7 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          Copy-Item README.md,LICENSE dist\SeungaTimer\
+          Copy-Item README.md,LICENSE,WINDOWS_SMOKE_TEST.md dist\SeungaTimer\
           Copy-Item docs dist\SeungaTimer\docs -Recurse
           Copy-Item packaged-ui-report.json dist\SeungaTimer\
       - name: Upload compact Windows artifact

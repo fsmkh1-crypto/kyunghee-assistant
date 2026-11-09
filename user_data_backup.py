@@ -486,11 +486,15 @@ def create_backup(data_dir: Path, output: Path, categories, *, app_version: str 
                     "app_version": _version(app_version), "categories": list(selected), "files": entries}
         archive = staging / "backup.zip"
         # Stored entries have predictable limits and cannot become compression bombs.
-        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as bundle:
-            bundle.writestr("manifest.json", _json_bytes(manifest))
-            for entry in entries:
-                bundle.write(staging / "data" / entry["name"], "data/" + entry["name"])
-        with archive.open("rb") as handle:
+        # Windows requires a writable descriptor for fsync. Keep ownership of
+        # the writer until ZIP.close() has written the central directory, then
+        # flush and sync all bytes before closing and atomically publishing it.
+        with archive.open("w+b") as handle:
+            with zipfile.ZipFile(handle, "w", compression=zipfile.ZIP_STORED) as bundle:
+                bundle.writestr("manifest.json", _json_bytes(manifest))
+                for entry in entries:
+                    bundle.write(staging / "data" / entry["name"], "data/" + entry["name"])
+            handle.flush()
             os.fsync(handle.fileno())
         os.replace(archive, output)
     return inspect_backup(output)

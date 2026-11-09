@@ -1,3 +1,4 @@
+from contextlib import closing, contextmanager
 from dataclasses import asdict
 import hashlib
 import json
@@ -50,19 +51,20 @@ class BackupTests(unittest.TestCase):
         path.parent.mkdir(parents=True)
         Image.new("RGB", (8, 8), "blue").save(path)
 
+    @contextmanager
     def memory(self, *, legacy=False):
-        db = sqlite3.connect(self.profile / "memory.sqlite3")
-        db.execute("PRAGMA journal_mode=WAL")
-        db.execute("PRAGMA wal_autocheckpoint=0")
-        for table, (columns, definition) in backup._DB_SCHEMAS["memory.sqlite3"].items():
-            if legacy and table in {"storage_state", "memories", "conversation_turns"}:
-                definition = definition.rsplit(",", 1)[0]
-            db.execute(f"CREATE TABLE {table} ({definition})")
-        db.execute("INSERT INTO storage_state VALUES (1, 1, 3" + (")" if legacy else ", 1)"))
-        db.execute("INSERT INTO conversation_turns (id,user_text,assistant_text,created_at,generation) VALUES (1,'hello','answer','2026-01-01',3)")
-        db.execute("INSERT INTO memories VALUES (1,'remember','remember','2026-01-01'" + (")" if legacy else ", 1)"))
-        db.commit()
-        return db
+        with closing(sqlite3.connect(self.profile / "memory.sqlite3")) as db:
+            db.execute("PRAGMA journal_mode=WAL")
+            db.execute("PRAGMA wal_autocheckpoint=0")
+            for table, (columns, definition) in backup._DB_SCHEMAS["memory.sqlite3"].items():
+                if legacy and table in {"storage_state", "memories", "conversation_turns"}:
+                    definition = definition.rsplit(",", 1)[0]
+                db.execute(f"CREATE TABLE {table} ({definition})")
+            db.execute("INSERT INTO storage_state VALUES (1, 1, 3" + (")" if legacy else ", 1)"))
+            db.execute("INSERT INTO conversation_turns (id,user_text,assistant_text,created_at,generation) VALUES (1,'hello','answer','2026-01-01',3)")
+            db.execute("INSERT INTO memories VALUES (1,'remember','remember','2026-01-01'" + (")" if legacy else ", 1)"))
+            db.commit()
+            yield db
 
     def rewrite_archive(self, mutate):
         with zipfile.ZipFile(self.archive) as source:
@@ -94,6 +96,53 @@ class BackupTests(unittest.TestCase):
             self.assertEqual(raw["image_profile"], "$DATA/images/face.png")
             self.assertNotIn("api_key", raw)
 
+    def test_archive_is_synced_through_writable_descriptor_before_publication(self):
+        self.seed()
+        real_fsync = os.fsync
+        synced = []
+        def require_writable_fsync(descriptor):
+            # A zero-byte write changes no data, but rejects a read-only fd on
+            # Linux too. This reproduces Windows fsync's writable-fd contract.
+            self.assertEqual(os.write(descriptor, b""), 0)
+            self.assertGreater(os.fstat(descriptor).st_size, 0)
+            self.assertFalse(self.archive.exists())
+            real_fsync(descriptor)
+            synced.append(descriptor)
+        with patch.object(backup.os, "fsync", side_effect=require_writable_fsync):
+            backup.create_backup(self.profile, self.archive, ("timer",))
+        self.assertEqual(len(synced), 1)
+        self.assertEqual(backup.inspect_backup(self.archive).categories, ("timer",))
+
+    def test_failed_archive_sync_preserves_existing_backup_and_cleans_staging(self):
+        self.seed()
+        backup.create_backup(self.profile, self.archive, ("timer",))
+        original = self.archive.read_bytes()
+        with patch.object(backup.os, "fsync", side_effect=OSError("injected sync failure")):
+            with self.assertRaisesRegex(OSError, "sync failure"):
+                backup.create_backup(self.profile, self.archive, ("settings",))
+        self.assertEqual(self.archive.read_bytes(), original)
+        self.assertFalse(list(self.base.glob(".seunga-backup-*")))
+
+    def test_database_rebuild_failure_closes_every_owned_connection(self):
+        connections = []
+        real_connect = sqlite3.connect
+        def tracked_connect(*args, **kwargs):
+            connection = real_connect(*args, **kwargs)
+            connections.append(connection)
+            return connection
+        with self.memory():
+            with patch.object(backup.sqlite3, "connect", side_effect=tracked_connect), patch.object(
+                backup, "_redact", side_effect=sqlite3.DatabaseError("injected rebuild failure")
+            ):
+                with self.assertRaises(backup.BackupError):
+                    backup.create_backup(self.profile, self.archive, ("chat",))
+            self.assertGreaterEqual(len(connections), 4)
+            for connection in connections:
+                with self.assertRaises(sqlite3.ProgrammingError):
+                    connection.execute("SELECT 1")
+        # Windows also refuses this deletion if the fixture retained its handle.
+        (self.profile / "memory.sqlite3").unlink()
+
     def test_live_sqlite_backup_captures_committed_wal_but_not_uncommitted_rows(self):
         with self.memory() as connection:
             connection.execute("INSERT INTO conversation_turns (id,user_text,assistant_text,created_at,generation) VALUES (2,'committed WAL',NULL,'2026-01-02',3)")
@@ -103,34 +152,32 @@ class BackupTests(unittest.TestCase):
             with zipfile.ZipFile(self.archive) as bundle:
                 target = self.base / "saved.sqlite3"
                 target.write_bytes(bundle.read("data/memory.sqlite3"))
-            with sqlite3.connect(target) as restored:
+            with closing(sqlite3.connect(target)) as restored:
                 self.assertEqual(restored.execute("SELECT user_text FROM conversation_turns ORDER BY id").fetchall(), [("hello",), ("committed WAL",)])
             connection.rollback()
-        connection.close()
 
     def test_database_rebuild_removes_deleted_pages_and_redacts_credentials(self):
-        connection = self.memory()
         secret = "sk-proj-" + "A" * 40
-        connection.execute("PRAGMA secure_delete=OFF")
-        connection.execute("INSERT INTO conversation_turns (id,user_text,assistant_text,created_at,generation) VALUES (2,?,NULL,'2026-01-02',3)", ("deleted secret " + secret,))
-        connection.execute("INSERT INTO conversation_turns (id,user_text,assistant_text,created_at,generation) VALUES (3,?,NULL,'2026-01-03',3)", ("key " + secret,))
-        connection.commit()
-        connection.execute("DELETE FROM conversation_turns WHERE id=2")
-        connection.commit()
-        backup.create_backup(self.profile, self.archive, ("chat",))
-        connection.close()
+        with self.memory() as connection:
+            connection.execute("PRAGMA secure_delete=OFF")
+            connection.execute("INSERT INTO conversation_turns (id,user_text,assistant_text,created_at,generation) VALUES (2,?,NULL,'2026-01-02',3)", ("deleted secret " + secret,))
+            connection.execute("INSERT INTO conversation_turns (id,user_text,assistant_text,created_at,generation) VALUES (3,?,NULL,'2026-01-03',3)", ("key " + secret,))
+            connection.commit()
+            connection.execute("DELETE FROM conversation_turns WHERE id=2")
+            connection.commit()
+            backup.create_backup(self.profile, self.archive, ("chat",))
         with zipfile.ZipFile(self.archive) as bundle:
             content = bundle.read("data/memory.sqlite3")
         self.assertNotIn(secret.encode(), content)
         self.assertNotIn(b"deleted secret", content)
 
     def test_legacy_database_upgrade_retains_history_consent(self):
-        connection = self.memory(legacy=True)
-        connection.close()
+        with self.memory(legacy=True):
+            pass
         backup.create_backup(self.profile, self.archive, ("chat",))
         destination = self.base / "new"
         backup.restore_backup(self.archive, destination, ("chat",), app_is_quiescent=True)
-        with sqlite3.connect(destination / "memory.sqlite3") as db:
+        with closing(sqlite3.connect(destination / "memory.sqlite3")) as db:
             self.assertEqual(db.execute("SELECT history_enabled FROM storage_state").fetchone(), (1,))
             self.assertEqual(db.execute("SELECT pinned FROM memories").fetchone(), (0,))
             self.assertEqual(db.execute("SELECT status FROM conversation_turns").fetchone(), ("completed",))
@@ -153,10 +200,10 @@ class BackupTests(unittest.TestCase):
         backup.create_backup(self.profile, self.archive, ("chat",))
         destination = self.base / "destination"
         backup.restore_backup(self.archive, destination, ("chat",), app_is_quiescent=True)
-        with sqlite3.connect(destination / "memory.sqlite3") as db:
+        with closing(sqlite3.connect(destination / "memory.sqlite3")) as db:
             self.assertEqual(db.execute("SELECT status FROM conversation_turns ORDER BY id").fetchall(), [("completed",), ("failed",)])
             self.assertEqual(db.execute("SELECT pinned FROM memories").fetchone(), (1,))
-        with sqlite3.connect(destination / "ai_usage.sqlite3") as db:
+        with closing(sqlite3.connect(destination / "ai_usage.sqlite3")) as db:
             self.assertEqual(db.execute("SELECT purpose,total_tokens FROM calls").fetchone(), ("chat", 15))
 
     def test_settings_restore_preserves_protected_key_across_two_service_starts(self):

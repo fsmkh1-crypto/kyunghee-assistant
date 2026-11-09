@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Barrier, Event
@@ -140,7 +141,7 @@ class MemoryStoreTests(unittest.TestCase):
 
     def test_legacy_database_migration_preserves_both_opt_ins_and_data(self):
         path = self.path.with_name("legacy.sqlite3")
-        with sqlite3.connect(path) as connection:
+        with closing(sqlite3.connect(path)) as connection, connection:
             connection.executescript("""
                 CREATE TABLE storage_state (id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL, generation INTEGER NOT NULL);
                 INSERT INTO storage_state VALUES (1, 1, 3);

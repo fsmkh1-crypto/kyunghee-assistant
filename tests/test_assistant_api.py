@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import replace
 from datetime import date
 import io
@@ -284,7 +285,7 @@ class AssistantAPITests(unittest.TestCase):
         self.assertEqual(summary.remaining_tokens, 774)
 
     def test_legacy_database_migration_preserves_existing_usage_and_ids(self):
-        with sqlite3.connect(self.ledger.path) as connection:
+        with closing(sqlite3.connect(self.ledger.path)) as connection, connection:
             connection.execute("""CREATE TABLE calls (
                 id INTEGER PRIMARY KEY, day TEXT NOT NULL, created_at TEXT NOT NULL,
                 model TEXT NOT NULL, status TEXT NOT NULL, input_tokens INTEGER NOT NULL,
@@ -297,7 +298,7 @@ class AssistantAPITests(unittest.TestCase):
         self.assertEqual((migrated.requests, migrated.reserved_tokens, migrated.requests_by_purpose),
                          (1, 120, {"legacy": 1}))
         self.respond(purpose="test")
-        with sqlite3.connect(self.ledger.path) as connection:
+        with closing(sqlite3.connect(self.ledger.path)) as connection, connection:
             rows = connection.execute("SELECT id, created_at, total_tokens, purpose FROM calls ORDER BY id").fetchall()
         self.assertEqual(rows[0], (44, "original timestamp", 120, "legacy"))
         self.assertEqual((rows[1][0], rows[1][2], rows[1][3]), (45, 110, "test"))
