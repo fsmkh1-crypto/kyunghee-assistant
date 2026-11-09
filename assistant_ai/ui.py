@@ -431,10 +431,10 @@ class AssistantWindows:
         content = _scrollable_content(window.body, window)
         title = _label(content, proposal.get("summary", "이미지 변경"), size=13, wraplength=480)
         title.pack(fill="x", padx=14, pady=(12, 6))
-        title.bind("<Configure>", lambda event: title.configure(wraplength=event.width))
+        content.wrap_label(title, outer_padding=28)
         scope = _label(content, proposal.get("scope", ""), color=MUTED, wraplength=480)
         scope.pack(fill="x", padx=14)
-        scope.bind("<Configure>", lambda event: scope.configure(wraplength=max(1, event.width)))
+        content.wrap_label(scope, outer_padding=28)
         previews = tk.Frame(content, bg=PANEL, height=300)
         previews.pack(fill="x", padx=12, pady=8)
         previews.grid_propagate(False)
@@ -445,7 +445,7 @@ class AssistantWindows:
             label = proposal.get(f"{prefix}_preview_label", default_label)
             heading = _label(previews, label, size=10, wraplength=280)
             heading.grid(row=0, column=column, sticky="ew", padx=5, pady=5)
-            heading.bind("<Configure>", lambda event, target=heading: target.configure(wraplength=max(80, event.width)))
+            content.wrap_label(heading, columns=2, outer_padding=24, cell_padding=10)
             preview = tk.Label(previews, bg=PANEL_2, fg=MUTED, width=1, height=1, text="미리보기 없음", wraplength=250)
             preview.grid(row=1, column=column, sticky="nsew", padx=5)
             ref = proposal.get(f"{prefix}_preview_ref") or (proposal.get("preview_ref") if prefix == "after" else None)
@@ -457,10 +457,14 @@ class AssistantWindows:
                         with Image.open(path) as source:
                             preview._source_image = source.convert("RGBA")
                         def render(event, target=preview):
+                            size = (max(1, event.width - 12), max(1, event.height - 12))
+                            if getattr(target, "_preview_size", None) == size:
+                                return
                             picture = target._source_image.copy()
-                            picture.thumbnail((max(1, event.width - 12), max(1, event.height - 12)), Image.Resampling.LANCZOS)
-                            target.image = ImageTk.PhotoImage(picture)
+                            picture.thumbnail(size, Image.Resampling.LANCZOS)
+                            target.image = ImageTk.PhotoImage(picture, master=target)
                             target.configure(image=target.image, text="")
+                            target._preview_size = size
                         preview.bind("<Configure>", render)
                 except Exception:
                     preview.configure(text="미리보기를 표시할 수 없어요.")
@@ -468,7 +472,7 @@ class AssistantWindows:
         status = tk.StringVar(master=window)
         result_label = _label(content, textvariable=status, color=AMBER, wraplength=480)
         result_label.pack(fill="x", padx=14, pady=6)
-        result_label.bind("<Configure>", lambda event: result_label.configure(wraplength=max(1, event.width)))
+        content.wrap_label(result_label, outer_padding=28)
         def cancel():
             if state["pending"] and self.image_cancel:
                 self.image_cancel(proposal["id"])
@@ -842,6 +846,49 @@ class _Window(tk.Toplevel):
             _button(parent, "출처 열기", sources.open_picker).pack(side="left", padx=2)
 
 
+class _ScrollableContent(tk.Frame):
+    """Content width comes only from the viewport, never a child's request."""
+
+    def __init__(self, canvas):
+        super().__init__(canvas, bg=PANEL)
+        self.canvas = canvas
+        self._item = canvas.create_window(0, 0, window=self, anchor="nw")
+        self._viewport_width = None
+        self._scroll_region = None
+        self._wrapped_labels = []
+        canvas.bind("<Configure>", self._fit_viewport)
+        self.bind("<Configure>", self._update_scroll_region)
+
+    def wrap_label(self, label, *, columns=1, outer_padding=0, cell_padding=0):
+        spec = (label, columns, outer_padding, cell_padding)
+        self._wrapped_labels.append(spec)
+        if self._viewport_width is not None:
+            self._fit_label(spec)
+
+    def _fit_label(self, spec):
+        label, columns, outer_padding, cell_padding = spec
+        inset = 2 * sum(label.winfo_pixels(label.cget(option))
+                        for option in ("padx", "borderwidth", "highlightthickness"))
+        width = max(1, (self._viewport_width - outer_padding) // columns - cell_padding - inset)
+        if label.winfo_pixels(label.cget("wraplength")) != width:
+            label.configure(wraplength=width)
+
+    def _fit_viewport(self, event):
+        width = max(1, event.width)
+        if width == self._viewport_width:
+            return
+        self._viewport_width = width
+        self.canvas.itemconfigure(self._item, width=width)
+        for spec in self._wrapped_labels:
+            self._fit_label(spec)
+
+    def _update_scroll_region(self, _event):
+        region = self.canvas.bbox("all")
+        if region != self._scroll_region:
+            self._scroll_region = region
+            self.canvas.configure(scrollregion=region)
+
+
 def _scrollable_content(parent, window):
     """Scrollable approval details, separate from the always-visible footer."""
     viewport = tk.Frame(parent, bg=PANEL)
@@ -852,10 +899,7 @@ def _scrollable_content(parent, window):
     scrollbar.pack(side="right", fill="y")
     canvas.pack(side="left", fill="both", expand=True)
     canvas.configure(yscrollcommand=scrollbar.set)
-    content = tk.Frame(canvas, bg=PANEL)
-    item = canvas.create_window(0, 0, window=content, anchor="nw")
-    canvas.bind("<Configure>", lambda event: canvas.itemconfigure(item, width=max(1, event.width)))
-    content.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+    content = _ScrollableContent(canvas)
     def scroll(event):
         direction = -1 if getattr(event, "num", 0) == 4 or getattr(event, "delta", 0) > 0 else 1
         canvas.yview_scroll(direction * 3, "units")

@@ -355,6 +355,38 @@ class AssistantInteractionTests(unittest.TestCase):
         self.assertEqual(self.owner.image_undo.call_count, 8)
         self.owner.image_cancel.assert_not_called()
 
+    def test_image_wrapping_uses_viewport_width_without_label_feedback(self):
+        import tkinter as tk
+        summary, scope = "이미지 변경 확인 " * 30, "변경 범위를 확인한 뒤 적용합니다. " * 30
+        self.owner.show_image_proposal({"id": "p1", "status": "pending", "summary": summary, "scope": scope})
+        window = self.owner._extra_windows[-1]
+        self.root.update()
+        canvas = window.content_canvas
+        def descendants(widget):
+            for child in widget.winfo_children():
+                yield child
+                yield from descendants(child)
+        label = next(widget for widget in descendants(window)
+                     if isinstance(widget, tk.Label) and widget.cget("text") == scope)
+        original = label.cget("wraplength")
+        # A child's height/size notification must not change the text width.
+        with patch.object(label, "configure", wraps=label.configure) as configure:
+            label.event_generate("<Configure>", width=73, height=89)
+            canvas.event_generate("<Configure>", width=canvas.winfo_width(), height=canvas.winfo_height() + 1)
+            self.root.update_idletasks()
+            configure.assert_not_called()
+        self.assertEqual(label.cget("wraplength"), original)
+        window.geometry("360x240")
+        self.root.update()
+        self.assertLess(label.winfo_pixels(label.cget("wraplength")), label.winfo_pixels(original))
+        self.assertLessEqual(label.winfo_pixels(label.cget("wraplength")), canvas.winfo_width() - 28)
+        stable = (window.winfo_geometry(), canvas.winfo_width(), label.cget("wraplength"), label.winfo_reqheight())
+        with patch.object(label, "configure", wraps=label.configure) as configure:
+            for _ in range(4):
+                self.root.update()
+            configure.assert_not_called()
+        self.assertEqual(stable, (window.winfo_geometry(), canvas.winfo_width(), label.cget("wraplength"), label.winfo_reqheight()))
+
     def test_chat_activity_covers_visible_pending_and_unsent_hidden_drafts(self):
         self.root.update()
         self.assertTrue(self.owner.is_chat_active())
