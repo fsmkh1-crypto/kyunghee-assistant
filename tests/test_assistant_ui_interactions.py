@@ -243,15 +243,73 @@ class AssistantInteractionTests(unittest.TestCase):
         actions["되돌리기"].invoke()
         self.owner.image_undo.assert_called_once()
 
+    @staticmethod
+    def approval_layout_snapshot(window):
+        def rect(widget):
+            return (widget.winfo_rootx() - window.winfo_rootx(),
+                    widget.winfo_rooty() - window.winfo_rooty(),
+                    widget.winfo_width(), widget.winfo_height())
+        buttons = [getattr(window, name) for name in ("apply_button", "cancel_button", "undo_button")
+                   if hasattr(window, name)]
+        return {
+            "window": (window.winfo_rootx(), window.winfo_rooty(), window.winfo_width(), window.winfo_height()),
+            "body": rect(window.body),
+            "actions": rect(buttons[0].master),
+            "buttons": [(button.cget("text"), rect(button),
+                         (button.winfo_reqwidth(), button.winfo_reqheight()), bool(button.winfo_viewable()))
+                        for button in buttons],
+        }
+
+    def wait_for_approval_layout(self, window):
+        """Pump native Configure events before checking the final strict bounds.
+
+        update()/update_idletasks() can return between a Win32 client resize
+        and its child-layout notifications. Sample the full footer geometry
+        across timer turns; a stable clipped layout must still fail below.
+        """
+        import tkinter as tk
+        import time
+        first = self.approval_layout_snapshot(window)
+        samples = [first]
+        done = tk.BooleanVar(master=self.root, value=False)
+        deadline = time.monotonic() + 2
+        consecutive = 0
+        errors = []
+
+        def sample():
+            nonlocal consecutive
+            try:
+                current = self.approval_layout_snapshot(window)
+                consecutive = consecutive + 1 if current == samples[-1] else 0
+                samples.append(current)
+                if consecutive >= 2 or time.monotonic() >= deadline:
+                    done.set(True)
+                else:
+                    self.root.after(20, sample)
+            except Exception as error:
+                errors.append(error)
+                done.set(True)
+
+        self.root.after(20, sample)
+        self.root.wait_variable(done)
+        window._test_approval_layout = {"first": first, "final": samples[-1], "samples": len(samples)}
+        if errors:
+            raise errors[0]
+        self.assertGreaterEqual(consecutive, 2, f"Approval geometry did not settle: {window._test_approval_layout!r}")
+        if os.name == "nt" and first != samples[-1]:
+            print(f"\nApproval geometry settled after native events: {window._test_approval_layout!r}", flush=True)
+
     def assert_action_visible(self, button, window):
-        self.assertTrue(button.winfo_viewable(), button.cget("text"))
+        details = repr({"current": self.approval_layout_snapshot(window),
+                        "settling": getattr(window, "_test_approval_layout", None)})
+        self.assertTrue(button.winfo_viewable(), details)
         left, top = button.winfo_rootx() - window.winfo_rootx(), button.winfo_rooty() - window.winfo_rooty()
-        self.assertGreaterEqual(left, 0)
-        self.assertGreaterEqual(top, 0)
-        self.assertGreaterEqual(button.winfo_width(), button.winfo_reqwidth())
-        self.assertGreaterEqual(button.winfo_height(), button.winfo_reqheight())
-        self.assertLessEqual(left + button.winfo_width(), window.winfo_width())
-        self.assertLessEqual(top + button.winfo_height(), window.winfo_height())
+        self.assertGreaterEqual(left, 0, details)
+        self.assertGreaterEqual(top, 0, details)
+        self.assertGreaterEqual(button.winfo_width(), button.winfo_reqwidth(), details)
+        self.assertGreaterEqual(button.winfo_height(), button.winfo_reqheight(), details)
+        self.assertLessEqual(left + button.winfo_width(), window.winfo_width(), details)
+        self.assertLessEqual(top + button.winfo_height(), window.winfo_height(), details)
 
     def test_timer_approval_actions_remain_visible_at_small_sizes_and_common_dpi(self):
         from assistant_ai.ui import _ConfirmWindow
@@ -339,12 +397,14 @@ class AssistantInteractionTests(unittest.TestCase):
                         "summary": "세트를 변경할까요? " * 25, "scope": "수동 지정은 유지돼요. " * 40})
                     window = self.owner._extra_windows[-1]
                     self.root.update()
+                    self.wait_for_approval_layout(window)
                     for button in (window.apply_button, window.cancel_button, window.undo_button):
                         self.assert_action_visible(button, window)
                     window.content_canvas.yview_moveto(1)
                     self.assertGreater(window.content_canvas.yview()[0], 0)
                     window.apply_button.invoke()
                     self.root.update()
+                    self.wait_for_approval_layout(window)
                     self.assertEqual(window.undo_button.cget("state"), "normal")
                     for button in (window.apply_button, window.cancel_button, window.undo_button):
                         self.assert_action_visible(button, window)
@@ -388,28 +448,33 @@ class AssistantInteractionTests(unittest.TestCase):
         self.assertEqual(stable, (window.winfo_geometry(), canvas.winfo_width(), label.cget("wraplength"), label.winfo_reqheight()))
 
     def test_chat_activity_covers_visible_pending_and_unsent_hidden_drafts(self):
-        self.root.update()
-        self.assertFalse(self.owner.is_chat_active())  # A merely open empty window is not activity.
-        with patch("assistant_ai.ui.time.monotonic", return_value=100):
+        # Keep one clock for the entire scenario. Returning to the host clock
+        # midway can move time backwards on a freshly booted Windows runner.
+        with patch("assistant_ai.ui.time.monotonic", return_value=100) as clock:
+            self.root.update()
+            self.assertFalse(self.owner.is_chat_active())  # An empty open window is not activity.
             self.owner.chat_window.history.event_generate("<MouseWheel>", delta=-120)
             self.root.update()
+            self.assertEqual(self.owner._last_chat_interaction, 100)
             self.assertTrue(self.owner.is_chat_active())
-        with patch("assistant_ai.ui.time.monotonic", return_value=399):
+            clock.return_value = 399
             self.assertTrue(self.owner.is_chat_active())
-        with patch("assistant_ai.ui.time.monotonic", return_value=400):
+            clock.return_value = 400
             self.assertFalse(self.owner.is_chat_active())
-        self.owner.chat_window._hide()
-        self.assertFalse(self.owner.is_chat_active())
-        self.owner.chat_window.input.insert("1.0", "아직 보내지 않은 초안")
-        self.assertTrue(self.owner.is_chat_active())
-        self.owner.chat_window.input.delete("1.0", "end")
-        self.send_without_network("응답 기다리는 중")
-        self.owner.chat_window.withdraw()
-        self.assertTrue(self.owner.is_chat_active())
-        self.owner.cancel()
-        self.assertTrue(self.owner.is_chat_active())  # Cancellation restores the unsent request.
-        self.owner.chat_window.input.delete("1.0", "end")
-        self.assertFalse(self.owner.is_chat_active())
+            self.owner.chat_window._hide()
+            self.assertFalse(self.owner.is_chat_active())
+            self.owner.chat_window.input.insert("1.0", "아직 보내지 않은 초안")
+            self.assertTrue(self.owner.is_chat_active())
+            clock.return_value = 1000
+            self.assertTrue(self.owner.is_chat_active())  # Hidden drafts remain protected beyond five minutes.
+            self.owner.chat_window.input.delete("1.0", "end")
+            self.send_without_network("응답 기다리는 중")
+            self.owner.chat_window.withdraw()
+            self.assertTrue(self.owner.is_chat_active())
+            self.owner.cancel()
+            self.assertTrue(self.owner.is_chat_active())  # Cancellation restores the unsent request.
+            self.owner.chat_window.input.delete("1.0", "end")
+            self.assertFalse(self.owner.is_chat_active())
 
     def test_explicit_history_clear_sends_separate_clear_state(self):
         self.service.history_counts = Mock(return_value={})
