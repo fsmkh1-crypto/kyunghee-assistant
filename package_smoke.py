@@ -48,11 +48,12 @@ def _assert_action_visible(button, window):
     assert button.winfo_height() >= button.winfo_reqheight(), "action height is clipped"
 
 
-def _exercise_approval_actions(desktop):
+def _exercise_approval_actions(desktop, progress=lambda _phase: None):
     root, windows = desktop.root, desktop._assistant_windows
     resize_samples = []
     with patch.object(windows, "chat_work_area", lambda *_args: (0, 0, 640, 360)):
         for action in ("취소", "적용"):
+            progress("timer approval: " + action)
             errors, clicked = [], []
             deadline = time.monotonic() + 5
 
@@ -118,12 +119,15 @@ def _exercise_approval_actions(desktop):
             assert approved == (action == "적용"), "approval result changed"
 
         proposal = desktop.propose_image_action({"kind": "base_set", "set_id": "01"})
+        progress("image approval: show")
         windows.show_image_proposal({**proposal, "summary": "이미지 변경 확인 " * 30,
                                      "scope": "변경 범위를 확인한 뒤 적용합니다. " * 30})
         dialog = next(item for item in root.winfo_children()
                       if item.winfo_class() == "Toplevel" and item.title().startswith("이미지 변경 확인"))
         dialog.geometry("360x240")
+        progress("image approval: resize event pump")
         root.update()
+        progress("image approval: inspect")
         buttons = {item.cget("text"): item for item in _descendants(dialog)
                    if item.winfo_class() == "Button"}
         for label in ("적용", "취소", "되돌리기"):
@@ -182,7 +186,7 @@ def _exercise_preview_navigation(desktop):
     desktop._show_page("timer")
 
 
-def _exercise_full_reply(desktop):
+def _exercise_full_reply(desktop, progress=lambda _phase: None):
     root, windows = desktop.root, desktop._assistant_windows
     reply = ("긴 답변 보존 검사 — 한글과 emoji 🙂, 줄바꿈도 그대로 읽을 수 있어야 해요.\n" * 120
              + "https://example.com/reference\n마지막 문장입니다.")
@@ -201,6 +205,7 @@ def _exercise_full_reply(desktop):
 
     reader = None
     for close_kind in ("button", "escape", "titlebar", "repeat"):
+        progress("full reply: " + close_kind)
         desktop._show_chat_phase("reply", reply)
         root.update()
         assert desktop._expandable_reply == reply, "long answer was not folded"
@@ -229,6 +234,7 @@ def _exercise_full_reply(desktop):
         assert root.winfo_exists(), "closing full answer destroyed the timer"
 
     windows.open_reply(reply)
+    progress("full reply: resume conversation")
     resume = next(widget for widget in reader.actions.winfo_children()
                   if widget.cget("text") == "대화 계속하기")
     resume.invoke()
@@ -238,6 +244,7 @@ def _exercise_full_reply(desktop):
     assert memory.recent_turns(None) == saved_turns, "full answer modified saved conversations"
     assert memory.counts() == saved_counts, "full answer modified saved data"
     windows._set_chat_state("reply", reply)
+    progress("chat hide/reopen")
     windows.chat_window._hide()
     root.update()
     assert desktop._chat_phase == "reply" and desktop._expandable_reply == reply, "closing chat erased the latest answer"
@@ -261,9 +268,11 @@ def run_packaged_smoke(app_factory, report_path):
     report_path.write_text('{"status":"running"}', encoding="utf-8")
     with report_path.with_suffix(".fault.log").open("w", encoding="utf-8") as fault_log:
         faulthandler.enable(file=fault_log, all_threads=True)
+        faulthandler.dump_traceback_later(90, file=fault_log, exit=True)
         try:
             return _run_packaged_smoke(app_factory, report_path)
         finally:
+            faulthandler.cancel_dump_traceback_later()
             faulthandler.disable()
 
 
@@ -276,10 +285,17 @@ def _run_packaged_smoke(app_factory, report_path):
     from app_brand import APP_VERSION
 
     report = {"version": APP_VERSION, "api_calls": 0, "isolated_profile": True, "checks": []}
+    def progress(phase):
+        report["phase"] = phase
+        report["status"] = "running"
+        Path(report_path).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
     compact.enable_per_monitor_dpi_awareness()
     create_tk = tk.Tk
     try:
         for dpi in (96, 120, 144, 192):
+            report["current_dpi"] = dpi
+            progress("create desktop")
             with tempfile.TemporaryDirectory(prefix="seunga-packaged-smoke-") as temporary:
                 directory = Path(temporary)
                 settings_file = directory / "settings.json"
@@ -325,10 +341,13 @@ def _run_packaged_smoke(app_factory, report_path):
                         assert desktop.character_role == "away", "page transition lost away pose"
                         windows = desktop._assistant_windows
                         assert windows is not None, "assistant failed to initialize"
+                        progress("preview navigation")
                         _exercise_preview_navigation(desktop)
+                        progress("away clock")
                         _exercise_away_clock(desktop)
-                        approval_resize = _exercise_approval_actions(desktop)
-                        _exercise_full_reply(desktop)
+                        approval_resize = _exercise_approval_actions(desktop, progress)
+                        _exercise_full_reply(desktop, progress)
+                        progress("settings and auxiliary windows")
                         windows.open_chat()
                         windows.open_settings()
                         from assistant_ai.config import MODELS
@@ -365,10 +384,12 @@ def _run_packaged_smoke(app_factory, report_path):
                         report["checks"].append({"dpi": dpi, "status": "passed", "approval_resize": approval_resize,
                                                  "flows": ["dice", "settings", "preview previous/next pixels and selection preservation", "away clock and records", "small approval actions", "small image proposal actions", "full reply native click", "reply close/reopen/repeat", "conversation and draft preservation", "chat hide/reopen and retained answer", "AI settings", "model choices and unsaved preview", "memories", "image picker", "gallery", "backup", "weather", "offline status", "image cancel"]})
                     finally:
+                        progress("close desktop")
                         for timer_id in root.tk.splitlist(root.tk.call("after", "info")):
                             root.tk.call("after", "cancel", timer_id)
                         desktop.quit()
         report["status"] = "passed"
+        report["phase"] = "complete"
     except Exception:
         report["status"] = "failed"
         report["error"] = traceback.format_exc()

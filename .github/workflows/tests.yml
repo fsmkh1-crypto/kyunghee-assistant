@@ -36,6 +36,7 @@ jobs:
           --add-data "assets;assets"
           desktop_gallery_final.py
       - name: Exercise packaged UI at 96, 120, 144 and 192 DPI
+        timeout-minutes: 4
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |

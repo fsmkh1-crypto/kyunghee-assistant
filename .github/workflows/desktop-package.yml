@@ -58,6 +58,7 @@ jobs:
           --add-data "assets;assets"
           desktop_gallery_final.py
       - name: Exercise packaged UI and DPI
+        timeout-minutes: 4
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
