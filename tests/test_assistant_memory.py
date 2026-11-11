@@ -39,6 +39,32 @@ class MemoryStoreTests(unittest.TestCase):
         self.assertIsNone(turns[1].assistant)
         self.assertEqual(reopened.list_memories(), [saved])
 
+    def test_assistant_only_notifications_keep_source_and_exact_text_in_both_stores(self):
+        text = "휴식 안내예요.\n근데 느림...ㅋ  "
+        self.assertIsNone(self.store.add_notification(text, event="rest"))
+        self.store.set_history_enabled(True)
+        for store in (self.store, SessionHistory()):
+            with self.subTest(store=type(store).__name__):
+                turn_id = store.add_notification(text, event="rest")
+                turn = store.recent_turns()[0]
+                self.assertEqual((turn.id, turn.user, turn.assistant, turn.status, turn.origin, turn.event),
+                                 (turn_id, "", text, "completed", "local_event", "rest"))
+                self.assertEqual(store.context("휴식").recent, (turn,))
+                self.assertFalse(store.finish_turn(turn_id, "늦은 응답"))
+                with self.assertRaises(ValueError):
+                    store.add_notification("안내", event="unknown")
+        reopened = MemoryStore(self.path)
+        self.assertEqual(reopened.recent_turns(), self.store.recent_turns())
+
+    def test_begin_turn_preserves_codepoints_and_whitespace(self):
+        self.store.set_history_enabled(True)
+        for store in (self.store, SessionHistory()):
+            with self.subTest(store=type(store).__name__):
+                text = " \t근데 느림...ㅋ\n가 👩🏽‍💻  "
+                self.assertIsNotNone(store.begin_turn(text))
+                self.assertEqual(store.recent_turns()[0].user, text)
+                self.assertIsNone(store.begin_turn(" \t\n"))
+
     def test_context_uses_korean_terms_and_excludes_duplicate_and_active_turns(self):
         self.store.set_enabled(True)
         self.store.set_history_enabled(True)
@@ -158,6 +184,7 @@ class MemoryStoreTests(unittest.TestCase):
         self.assertTrue(migrated.history_enabled)
         self.assertEqual(migrated.recent_turns()[0].id, 4)
         self.assertEqual([turn.status for turn in migrated.recent_turns()], ["completed", "interrupted"])
+        self.assertEqual([(turn.origin, turn.event) for turn in migrated.recent_turns()], [("chat", ""), ("chat", "")])
         self.assertEqual(migrated.recent_turns()[1].user, "이전 미완료 대화")
         self.assertIsNone(migrated.recent_turns()[1].assistant)
         self.assertEqual(migrated.list_memories()[0].id, 7)
@@ -165,6 +192,29 @@ class MemoryStoreTests(unittest.TestCase):
         migrated.set_history_enabled(False)
         self.assertFalse(MemoryStore(path).history_enabled)
         self.assertEqual(MemoryStore(path).counts(), {"conversation_turns": 2, "memories": 1})
+
+    def test_pre_attribution_upgrade_keeps_completed_and_cancelled_chat_without_enabling_storage(self):
+        path = self.path.with_name("before-attribution.sqlite3")
+        with closing(sqlite3.connect(path)) as connection, connection:
+            connection.executescript("""
+                CREATE TABLE storage_state (id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL,
+                    generation INTEGER NOT NULL, history_enabled INTEGER NOT NULL DEFAULT 0);
+                INSERT INTO storage_state VALUES (1, 0, 7, 0);
+                CREATE TABLE conversation_turns (id INTEGER PRIMARY KEY AUTOINCREMENT, user_text TEXT NOT NULL,
+                    assistant_text TEXT, created_at TEXT NOT NULL, generation INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending');
+                INSERT INTO conversation_turns VALUES (8, '원래 대화ㅋ', '원래 답변', '2026-11-10T00:00:00+00:00', 6, 'completed');
+                INSERT INTO conversation_turns VALUES (9, '취소한 대화', NULL, '2026-11-10T01:00:00+00:00', 6, 'cancelled');
+            """)
+        migrated = MemoryStore(path)
+        self.assertFalse(migrated.enabled)
+        self.assertFalse(migrated.history_enabled)
+        turns = migrated.recent_turns()
+        self.assertEqual([(turn.id, turn.status, turn.origin, turn.event) for turn in turns],
+                         [(8, "completed", "chat", ""), (9, "cancelled", "chat", "")])
+        self.assertEqual((turns[0].user, turns[0].assistant), ("원래 대화ㅋ", "원래 답변"))
+        self.assertIsNone(migrated.add_notification("저장하지 않을 안내", event="rest"))
+        self.assertEqual(MemoryStore(path).recent_turns(), turns)
 
     def test_edit_pin_deduplicate_and_length_validation_share_one_path(self):
         self.store.set_enabled(True)

@@ -323,13 +323,15 @@ def _clean_json(name: str, data: bytes, data_dir: Path | None = None) -> bytes:
 _DB_SCHEMAS = {
     "memory.sqlite3": {
         "storage_state": ("id, enabled, generation, history_enabled", "id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL, generation INTEGER NOT NULL, history_enabled INTEGER NOT NULL DEFAULT 0"),
-        "conversation_turns": ("id, user_text, assistant_text, created_at, generation, status", "id INTEGER PRIMARY KEY AUTOINCREMENT, user_text TEXT NOT NULL, assistant_text TEXT, created_at TEXT NOT NULL, generation INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending'"),
+        "conversation_turns": ("id, user_text, assistant_text, created_at, generation, status, origin, event", "id INTEGER PRIMARY KEY AUTOINCREMENT, user_text TEXT NOT NULL, assistant_text TEXT, created_at TEXT NOT NULL, generation INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending', origin TEXT NOT NULL DEFAULT 'chat', event TEXT NOT NULL DEFAULT ''"),
         "memories": ("id, text, normalized_text, created_at, pinned", "id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, normalized_text TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0"),
     },
     "ai_usage.sqlite3": {
         "calls": ("id, day, created_at, model, status, input_tokens, output_tokens, total_tokens, cost_nanos, purpose", "id INTEGER PRIMARY KEY, day TEXT NOT NULL, created_at TEXT NOT NULL, model TEXT NOT NULL, status TEXT NOT NULL, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, total_tokens INTEGER NOT NULL, cost_nanos INTEGER, purpose TEXT NOT NULL DEFAULT 'legacy'"),
     },
 }
+_CONVERSATION_ORIGINS = frozenset({"chat", "local_event", "proactive"})
+_CONVERSATION_EVENTS = frozenset({"rest", "break_started", "away", "return", "snooze", "leave", "periodic"})
 
 
 def _safe_database(source: Path, target: Path, name: str, *, live: bool) -> None:
@@ -371,9 +373,12 @@ def _safe_database(source: Path, target: Path, name: str, *, live: bool) -> None
                         expected = columns.split(", ")
                         actual = [v[1] for v in src.execute(f'PRAGMA table_info("{table}")')]
                         query_columns = columns
-                        legacy_defaults = {"storage_state": "enabled", "memories": "0", "calls": "'legacy'",
-                                           "conversation_turns": "CASE WHEN assistant_text IS NULL THEN 'interrupted' ELSE 'completed' END"}
-                        if table in legacy_defaults and actual == expected[:-1]:
+                        legacy_defaults = {"storage_state": "enabled", "memories": "0", "calls": "'legacy'"}
+                        if table == "conversation_turns" and actual == expected[:5]:
+                            query_columns = ", ".join(actual) + ", CASE WHEN assistant_text IS NULL THEN 'interrupted' ELSE 'completed' END, 'chat', ''"
+                        elif table == "conversation_turns" and actual == expected[:6]:
+                            query_columns = ", ".join(actual) + ", 'chat', ''"
+                        elif table in legacy_defaults and actual == expected[:-1]:
                             query_columns = ", ".join(actual) + ", " + legacy_defaults[table]
                         elif actual != expected:
                             raise BackupError("데이터베이스 버전 또는 열 구성이 맞지 않아요.")
@@ -389,6 +394,18 @@ def _safe_database(source: Path, target: Path, name: str, *, live: bool) -> None
                                     raise BackupError("데이터베이스 저장 상태가 올바르지 않아요.")
                                 if table == "conversation_turns" and column == "status" and value not in {"pending", "completed", "failed", "cancelled", "interrupted"}:
                                     raise BackupError("대화 상태가 올바르지 않아요.")
+                            if table == "conversation_turns":
+                                turn = dict(zip(expected, row))
+                                origin, event = turn["origin"], turn["event"]
+                                if origin not in _CONVERSATION_ORIGINS or (
+                                    origin == "chat" and event != ""
+                                ) or (
+                                    origin != "chat" and (
+                                        event not in _CONVERSATION_EVENTS or turn["user_text"] != ""
+                                        or not (turn["assistant_text"] or "").strip() or turn["status"] != "completed"
+                                    )
+                                ):
+                                    raise BackupError("대화 출처 또는 이벤트 정보가 올바르지 않아요.")
                             safe = tuple(_redact(v) if isinstance(v, str) else v for v in row)
                             # Two memories can become identical after key masking.
                             # Retain one sanitized value rather than fail or leak it.

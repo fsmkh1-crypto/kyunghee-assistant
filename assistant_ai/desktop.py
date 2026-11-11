@@ -34,6 +34,11 @@ _CHAT_LINES = {
     "waiting": "잠깐만요, 생각하고 있어요.",
     "error": "답을 가져오지 못했어요. 대화창에서 확인해 주세요.",
 }
+_LOCAL_DIALOGUE_EVENTS = {
+    "break": "rest", "away_start": "away", "return": "return",
+    "snooze1": "snooze", "snooze2": "snooze",
+    **{mode: "leave" for mode in ("wind_down", "leave", "strong_leave", "late_leave", "hard_stop")},
+}
 
 
 @dataclass
@@ -64,6 +69,8 @@ class DesktopAssistantMixin:
         self._assistant_last_periodic = time.monotonic()
         self._assistant_last_chat_at = float("-inf")
         self._assistant_important_event_at = float("-inf")
+        self._assistant_dialogue_mode = None
+        self._assistant_notification_event = None
         self._assistant_local_rotation = 0
         self._chat_phase = "idle"
         self._last_chat_reply = ""
@@ -192,7 +199,9 @@ class DesktopAssistantMixin:
         return pick(kind, personality=personality)
 
     def _say(self, kind, text=None, work_mode="normal"):
-        if text is not None or kind not in {"playful", "cheer"} or work_mode != "normal":
+        routine = (self._assistant_dialogue_mode is not None
+                   and self._assistant_dialogue_mode == self.last_work_mode)
+        if not routine and (text is not None or kind not in {"playful", "cheer"} or work_mode != "normal"):
             self._assistant_important_event_at = time.monotonic()
         if text is None:
             text = self._local_dialogue(kind, work_mode)
@@ -200,7 +209,30 @@ class DesktopAssistantMixin:
         speech = self.speech.cget("text")
         if speech and (not self._assistant_recent_dialogue or self._assistant_recent_dialogue[-1] != speech):
             self._assistant_recent_dialogue.append(speech)
+        event = self._assistant_notification_event or _LOCAL_DIALOGUE_EVENTS.get(kind)
+        if event is not None and not routine:
+            # An actual timer notification can replace the retained widget
+            # answer. Clearing the view does not count as reading/typing, and
+            # the answer remains available in the conversation history.
+            if self._chat_phase == "reply":
+                self._show_chat_phase("cleared")
+            self._record_assistant_notification(speech, event=event)
         return result
+
+    def _record_assistant_notification(self, text, *, event, origin="local_event"):
+        service = self._assistant_service
+        if service is None:
+            return
+        try:
+            turn_id = service.record_notification(text, event=event, origin=origin)
+        except Exception:
+            core.log.warning("Could not record assistant notification: %s", event)
+            return
+        if turn_id is not None and self._assistant_windows is not None:
+            try:
+                self._assistant_windows.refresh_chat_history()
+            except Exception:
+                core.log.warning("Could not refresh assistant notification history")
 
     def _cancel_chat_expiry(self):
         if self._chat_expiry is not None:
@@ -416,8 +448,22 @@ class DesktopAssistantMixin:
 
     def accept_break(self):
         previous_toast = self.toast
-        super().accept_break()
+        previous_event = self._assistant_notification_event
+        self._assistant_notification_event = "break_started"
+        try:
+            super().accept_break()
+        finally:
+            self._assistant_notification_event = previous_event
         self._request_proactive("break_started", self.toast if self.toast is not previous_toast else None)
+
+    def show_break_toast(self, text, allow_snooze=True):
+        previous_toast = self.toast
+        result = super().show_break_toast(text, allow_snooze=allow_snooze)
+        # The desktop layer can suppress a toast after the timer gate checked
+        # fullscreen state. Only a newly delivered alert enters the history.
+        if self.toast is not None and self.toast is not previous_toast and self.toast.winfo_exists():
+            self._say("break", text, work_mode=self._current_workday_state().mode)
+        return result
 
     def _tick_safe(self):
         was_away = self.state.session.is_away
@@ -462,7 +508,18 @@ class DesktopAssistantMixin:
                 # the pause instead of disguising a canned line as AI output.
                 # Mode transitions and real timer alerts still run normally.
                 return
-        super()._update_dialogue()
+        # The core rotates worry/nag every minute after a snooze. That is
+        # ordinary dialogue, not a fresh alert that should renew the quiet
+        # period forever. A real workday transition still follows _say's
+        # important-event path, even during reading or AI-only chatter.
+        # Compare the original mode with the core's updated last_work_mode
+        # so a transition between the two mode lookups is still an alert.
+        previous_dialogue_mode = self._assistant_dialogue_mode
+        self._assistant_dialogue_mode = self.last_work_mode
+        try:
+            super()._update_dialogue()
+        finally:
+            self._assistant_dialogue_mode = previous_dialogue_mode
 
     def _cycle_message(self, event=None):
         self._open_assistant_chat()
@@ -616,6 +673,7 @@ class DesktopAssistantMixin:
             toast = request.toast
             if text and self.toast is toast and toast.winfo_exists() and hasattr(toast, "body_label"):
                 toast.body_label.configure(text=text[:89].rstrip() + "…" if len(text) > 90 else text)
+                self._record_assistant_notification(text, event=request.event, origin="proactive")
             return
         if (
             self.last_dialogue_at != request.last_dialogue_at or not self.preferences.show_message
@@ -631,3 +689,4 @@ class DesktopAssistantMixin:
             self._assistant_recent_dialogue.append(text)
             self.last_dialogue_at = time.monotonic()
             self._apply_widget_appearance()
+            self._record_assistant_notification(text, event=request.event, origin="proactive")

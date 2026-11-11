@@ -1,4 +1,4 @@
-# Windows smoke test — 승아 타이머 2.1.3
+# Windows smoke test — 승아 타이머 2.1.4
 
 Run this on a real Windows PC before calling the build ready for daily use.
 
@@ -12,6 +12,12 @@ Run this on a real Windows PC before calling the build ready for daily use.
 ## Must-pass checks
 
 ### 0. Review implementation acceptance
+
+- **2.1.4 IME:** With Microsoft Korean IME, type (do not paste) `근데 느림...ㅋ` and send while the final `ㅋ` is still composing. Repeat via Send, Ctrl+Enter (including holding then releasing Ctrl), rapid repeated sends, Escape/close during commit, and mixed Korean/emoji. Sent bubble, saved history after restart, and the captured request text in an isolated fake-transport test must match; never log real API keys. Plain Enter remains newline. Automated delayed-commit tests are not proof of this physical IME scenario.
+- **2.1.4 reading:** Load more than 40 turns, scroll to an older paragraph, receive a break/return message, load older history, resize and hide/reopen. Preserve the paragraph being read; at the bottom, follow new messages. At narrow/high-DPI sizes, history and Send/Cancel remain accessible.
+- **2.1.4 unified history:** Start a break, return manually/automatically and snooze. Confirm each actual notification appears once with its timer source; routine worry/nag lines must not flood history. Successful displayed AI messages use their own source. Cancelled, stale or discarded AI results must not be recorded as displayed. Check history OFF/ON, restart, deletion, export and backup/restore with a test profile.
+- **2.1.4 cadence:** In normal mode with proactive ON, chatter OFF and a one-minute interval, snooze and wait beyond real conversation protection. Routine worry/nag must not repeatedly reset the important-alert clock. Separately cancel a delayed chat and wait for its old transport to finish: this must not restart the five-minute clock. Existing actual reading/typing, important alerts, away and API limits still apply.
+
 
 - In image settings, follow imported set 26 and select the normal role. Previous/next must browse different situation images with an accurate caption; browsing must not change the selected set or saved preferences. Repeat with a built-in set, a single custom image and a multi-image custom group.
 - For every image role, physically click the visible single/multiple/folder/follow/gallery/random controls. Browse to `settings_04.png` while targeting normal, then press Apply: the normal role must use that exact image. Verify the applied filename, Undo and restart. While away, changing the normal image must preserve away state and apply when normal returns. Repeat with imported set 26 at 100/125/150/200% scaling.

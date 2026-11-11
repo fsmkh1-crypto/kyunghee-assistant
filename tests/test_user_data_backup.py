@@ -52,12 +52,14 @@ class BackupTests(unittest.TestCase):
         Image.new("RGB", (8, 8), "blue").save(path)
 
     @contextmanager
-    def memory(self, *, legacy=False):
-        with closing(sqlite3.connect(self.profile / "memory.sqlite3")) as db:
+    def memory(self, *, legacy=False, status_only=False, profile=None):
+        with closing(sqlite3.connect((profile or self.profile) / "memory.sqlite3")) as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("PRAGMA wal_autocheckpoint=0")
             for table, (columns, definition) in backup._DB_SCHEMAS["memory.sqlite3"].items():
-                if legacy and table in {"storage_state", "memories", "conversation_turns"}:
+                if table == "conversation_turns" and (legacy or status_only):
+                    definition = definition.rsplit(", ", 3 if legacy else 2)[0]
+                elif legacy and table in {"storage_state", "memories"}:
                     definition = definition.rsplit(",", 1)[0]
                 db.execute(f"CREATE TABLE {table} ({definition})")
             db.execute("INSERT INTO storage_state VALUES (1, 1, 3" + (")" if legacy else ", 1)"))
@@ -181,6 +183,94 @@ class BackupTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT history_enabled FROM storage_state").fetchone(), (1,))
             self.assertEqual(db.execute("SELECT pinned FROM memories").fetchone(), (0,))
             self.assertEqual(db.execute("SELECT status FROM conversation_turns").fetchone(), ("completed",))
+            self.assertEqual(db.execute("SELECT origin,event FROM conversation_turns").fetchone(), ("chat", ""))
+
+    def test_pre_attribution_history_preserves_terminal_status_and_defaults_to_chat(self):
+        with self.memory(status_only=True) as db:
+            db.execute("UPDATE conversation_turns SET assistant_text=NULL,status='cancelled' WHERE id=1")
+            db.commit()
+        backup.create_backup(self.profile, self.archive, ("chat",))
+        destination = self.base / "destination"
+        backup.restore_backup(self.archive, destination, ("chat",), app_is_quiescent=True)
+        with closing(sqlite3.connect(destination / "memory.sqlite3")) as db:
+            self.assertEqual(
+                db.execute("SELECT user_text,assistant_text,status,origin,event FROM conversation_turns").fetchone(),
+                ("hello", None, "cancelled", "chat", ""),
+            )
+
+    def test_event_attribution_survives_restore_and_recovery_backup(self):
+        original_text = "잠깐 쉬었다 와요.\n돌아오면 이어서 해요.ㅋ"
+        with self.memory() as db:
+            db.executemany(
+                "INSERT INTO conversation_turns (user_text,assistant_text,created_at,generation,status,origin,event) "
+                "VALUES ('',?,'2026-11-11',3,'completed',?,?)",
+                [(original_text, "local_event", "break_started"), ("반가워요.", "proactive", "return")],
+            )
+            db.commit()
+        backup.create_backup(self.profile, self.archive, ("chat",))
+        destination = self.base / "destination"
+        destination.mkdir()
+        with self.memory(profile=destination) as db:
+            db.execute(
+                "INSERT INTO conversation_turns (user_text,assistant_text,created_at,generation,status,origin,event) "
+                "VALUES ('','5분 뒤에 알려드릴게요.','2026-11-10',3,'completed','local_event','snooze')"
+            )
+            db.commit()
+        result = backup.restore_backup(self.archive, destination, ("chat",), app_is_quiescent=True)
+        with closing(sqlite3.connect(destination / "memory.sqlite3")) as db:
+            self.assertEqual(
+                db.execute("SELECT user_text,assistant_text,status,origin,event FROM conversation_turns ORDER BY id").fetchall(),
+                [("hello", "answer", "pending", "chat", ""),
+                 ("", original_text, "completed", "local_event", "break_started"),
+                 ("", "반가워요.", "completed", "proactive", "return")],
+            )
+        recovered = self.base / "recovered"
+        backup.restore_backup(result.recovery_backup, recovered, ("chat",), app_is_quiescent=True)
+        with closing(sqlite3.connect(recovered / "memory.sqlite3")) as db:
+            self.assertEqual(
+                db.execute("SELECT user_text,assistant_text,status,origin,event FROM conversation_turns WHERE id=2").fetchone(),
+                ("", "5분 뒤에 알려드릴게요.", "completed", "local_event", "snooze"),
+            )
+
+    def test_invalid_event_metadata_is_rejected_without_overwriting_backup_or_profile(self):
+        with self.memory():
+            pass
+        backup.create_backup(self.profile, self.archive, ("chat",))
+        original_archive = self.archive.read_bytes()
+        destination = self.base / "destination"
+        destination.mkdir()
+        with self.memory(profile=destination):
+            pass
+        original_destination = (destination / "memory.sqlite3").read_bytes()
+        invalid_rows = (
+            ("", "안내", "completed", "unknown", "return"),
+            ("", "안내", "completed", "local_event", "unknown"),
+            ("", "안내", "completed", "local_event", ""),
+            ("가짜 사용자 발언", "안내", "completed", "local_event", "return"),
+            ("", None, "completed", "local_event", "return"),
+            ("", "  ", "completed", "local_event", "return"),
+            ("", "안내", "pending", "proactive", "periodic"),
+            ("hello", "answer", "completed", "chat", "return"),
+        )
+        for row in invalid_rows:
+            with self.subTest(row=row):
+                self.archive.write_bytes(original_archive)
+                with closing(sqlite3.connect(self.profile / "memory.sqlite3")) as db, db:
+                    db.execute(
+                        "UPDATE conversation_turns SET user_text=?,assistant_text=?,status=?,origin=?,event=? WHERE id=1", row,
+                    )
+                with self.assertRaises(backup.BackupError):
+                    backup.create_backup(self.profile, self.archive, ("chat",))
+                self.assertEqual(self.archive.read_bytes(), original_archive)
+                content = (self.profile / "memory.sqlite3").read_bytes()
+                def corrupt(files, manifest):
+                    files["data/memory.sqlite3"] = content
+                    entry = next(item for item in manifest["files"] if item["name"] == "memory.sqlite3")
+                    entry.update(size=len(content), sha256=hashlib.sha256(content).hexdigest())
+                self.rewrite_archive(corrupt)
+                with self.assertRaises(backup.BackupError):
+                    backup.restore_backup(self.archive, destination, ("chat",), app_is_quiescent=True)
+                self.assertEqual((destination / "memory.sqlite3").read_bytes(), original_destination)
 
     def test_current_memory_and_usage_schema_round_trip_preserves_status_pin_and_purpose(self):
         from assistant_ai.api import UsageLedger

@@ -20,7 +20,7 @@ from app_brand import APP_NAME
 
 from .api import AIError, ResponsesClient, UsageLedger, WEB_SEARCH_TOOL
 from .config import AISettings, ConfigStore, KeyVault, SettingsError, validate_api_key
-from .memory import MemoryContext, MemoryStore, SessionHistory
+from .memory import MemoryContext, MemoryStore, NOTIFICATION_EVENT_LABELS, SessionHistory
 from .timer_tools import TOOLS
 from .weather import WeatherError, WeatherService
 
@@ -449,6 +449,24 @@ class AssistantService:
         with self._lock:
             return {**self.memory.counts(), "session_turns": len(self._session.recent_turns(None))}
 
+    def record_notification(self, text: str, *, event: str, origin: str = "local_event") -> int | None:
+        """Record a delivered notification without inventing a user turn or chat activity.
+
+        Call once at delivery, using origin='proactive' for an accepted AI result.
+        Local timer notifications work even when AI is disabled. Persistent
+        history remains opt-in, just as it is for ordinary chat messages.
+        """
+        if not isinstance(text, str) or not text.strip():
+            return None
+        with self._lock:
+            if self._restoring:
+                return None
+            session_id = self._session.add_notification(text, event=event, origin=origin)
+            saved_id = self.memory.add_notification(text, event=event, origin=origin) if self._settings.conversation_storage_enabled else None
+            if saved_id is not None:
+                self._persistent_turns[session_id] = saved_id
+            return saved_id if saved_id is not None else -session_id
+
     def _history_context(self, query: str, *, exclude_id: int | None = None, recent_limit: int = 24,
                          relevant_limit: int = 4, memory_limit: int = 6) -> MemoryContext:
         self._prune_deleted_saved(self.memory.recent_turns(None))
@@ -508,6 +526,8 @@ class AssistantService:
         if self._active_proactive_cancel is not None:
             self._active_proactive_cancel.set()
         if self._active_chat_cancel is not None:
+            if not self._active_chat_cancel.is_set():
+                self._last_chat_activity = time.monotonic()
             self._active_chat_cancel.set()
             self._mark_request_status(self._active_chat_cancel, "cancelled")
             self._active_chat_cancel = None
@@ -530,6 +550,7 @@ class AssistantService:
         with self._lock:
             cancel.set()
             if self._active_chat_cancel is cancel:
+                self._last_chat_activity = time.monotonic()
                 self._active_chat_cancel = None
             self._mark_request_status(cancel, "cancelled")
 
@@ -638,7 +659,10 @@ class AssistantService:
             with self._lock:
                 if self._active_chat_cancel is cancel:
                     self._active_chat_cancel = None
-                self._last_chat_activity = time.monotonic()
+                    # Detached workers only clean up their own bookkeeping.
+                    # A late cancelled response is not fresh chat activity.
+                    if not cancel.is_set():
+                        self._last_chat_activity = time.monotonic()
                 self._running_chats.discard(id(cancel))
                 self._request_turns.pop(id(cancel), None)
 
@@ -841,14 +865,13 @@ class AssistantService:
                 if not self.can_proactively_speak(event):
                     self._record_proactive_outcome("cancelled")
                     return None
-                speech = " ".join(result.text.split())
+                speech = result.text.strip()
                 if result.status != "completed":
                     self._record_proactive_outcome("incomplete")
                     return None
                 if not speech or speech.strip(" .!\"'`").upper() == "SILENT":
                     self._record_proactive_outcome("silent")
                     return None
-                speech = speech[:177].rstrip() + "…" if len(speech) > 180 else speech
                 recent_lines = [*self._proactive_recent, *context.get("recent_dialogue", ()), *recent_chat]
                 if _repeats_dialogue(speech, recent_lines):
                     self._record_proactive_outcome("repeated")
@@ -894,10 +917,15 @@ class AssistantService:
             user = turn.user[:limit]
             limit -= len(user)
             if turn.assistant and limit > 0:
-                reply = turn.assistant[:limit]
+                answer = turn.assistant
+                if turn.origin != "chat":
+                    source = "앱 안내" if turn.origin == "local_event" else "승아의 먼저 온 말"
+                    answer = f"[{source} · {NOTIFICATION_EVENT_LABELS.get(turn.event, turn.event)}]\n{answer}"
+                reply = answer[:limit]
                 messages.append({"role": "assistant", "content": reply})
                 limit -= len(reply)
-            messages.append({"role": "user", "content": user})
+            if user:
+                messages.append({"role": "user", "content": user})
         return list(reversed(messages))
 
     @staticmethod
@@ -905,7 +933,8 @@ class AssistantService:
         reference = {
             "timer_snapshot": context,
             "relevant_past_conversations": [
-                {"user": turn.user[:3500], "assistant": (turn.assistant or "")[:3500]}
+                {"user": turn.user[:3500], "assistant": (turn.assistant or "")[:3500],
+                 "origin": turn.origin, "event": turn.event}
                 for turn in previous.relevant
             ],
             "saved_memory": [entry.text[:2000] for entry in previous.memories],

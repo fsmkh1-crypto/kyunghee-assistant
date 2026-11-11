@@ -18,7 +18,9 @@ from app_brand import APP_NAME
 
 from .api import AIError
 from .config import SettingsError
+from .memory import NOTIFICATION_EVENT_LABELS
 from .ui_helpers import position_window, window_exists
+from .windows_ime import prepare_input
 
 
 HISTORY_PAGE_SIZE = 40
@@ -323,38 +325,14 @@ class AssistantWindows:
         else:
             left, top, right, bottom = self.chat_work_area(x, y, widget_width, widget_height)
 
-        gap = 16
-        left, right = left + gap, right - gap
-        top, bottom = top + gap, bottom - 3 * gap
-        min_width, min_height = self.chat_window.MIN_SIZE
+        # Keep a useful reading area even when the widget is near a screen
+        # edge. Dialog placement will clamp the whole window to this monitor;
+        # shrinking it into the narrow gap beside the character hid history.
         width, height = self.chat_window._preferred_size
-        width = max(min_width, min(width, right - left))
-        height = max(min_height, min(height, bottom - top))
-        left_room = x - gap - left
-        right_x = x + widget_width + gap
-        right_room = right - right_x
-        below_y = y + widget_height + gap
-        below_room = bottom - below_y
-        above_room = y - gap - top
-
-        if right_room >= min_width and (right_room >= width or right_room >= left_room):
-            width = min(width, right_room)
-            x = right_x
-        elif left_room >= min_width:
-            width = min(width, left_room)
-            x -= width + gap
-        elif below_room >= min_height and (below_room >= height or below_room >= above_room):
-            height = min(height, below_room)
-            y = below_y
-        elif above_room >= min_height:
-            height = min(height, above_room)
-            y -= height + gap
-        else:
-            x = right_x if right_room >= left_room else x - width - gap
-
-        x = max(left, min(x, right - width))
-        y = max(top, min(y, bottom - height))
-        self.chat_window.geometry(f"{width}x{height}+{x}+{y}")
+        width = max(1, min(width, right - left - 24))
+        height = max(1, min(height, bottom - top - 48))
+        self.chat_window._preferred_size = width, height
+        self.chat_window.geometry(f"{width}x{height}")
 
     def open_memories(self):
         if self._closed:
@@ -633,24 +611,36 @@ class AssistantWindows:
 
     def show_older(self):
         self._history_limit += HISTORY_PAGE_SIZE
-        if self._render_history() is not None:
-            self.chat_window.history.yview_moveto(0)
+        self._render_history()
+
+    def refresh_chat_history(self):
+        """Refresh delivered app/AI messages without opening or focusing chat."""
+        if not self._closed and window_exists(self.chat_window):
+            pending = ""
+            if self._cancel is not None and self._sent_text:
+                # The worker may not have registered its pending turn yet.
+                # render() deduplicates this placeholder once storage has it.
+                pending = self._sent_text
+            self._render_history(pending=pending)
 
     def send(self, text=None, *, retry_of=None):
         if self._cancel is not None:
             return
-        text = self.chat_window.input.get("1.0", "end-1c").strip() if text is None else text.strip()
-        if not text:
+        if text is None:
+            self.chat_window.request_send()
+            return
+        if not text.strip():
             self.chat_window.status.set("보낼 메시지를 입력해 주세요.")
             return
-        if text in {"/오늘", "/상태"}:
+        command = text.strip()
+        if command in {"/오늘", "/상태"}:
             self.open_today()
             return
-        if text.startswith("/날씨"):
-            place = text[3:].strip()
+        if command.startswith("/날씨"):
+            place = command[3:].strip()
             self.open_weather(place=place or None)
             return
-        if text == "/이미지":
+        if command == "/이미지":
             self.open_image_picker()
             return
         if not self.chat_window.update_availability():
@@ -666,6 +656,7 @@ class AssistantWindows:
             self.chat_window.status.set("타이머 상태를 확인하지 못했어요. 다시 시도해 주세요.")
             self._set_chat_state("error")
             return
+        self.chat_window.follow_latest()
         self._previous_turns = self._render_history(pending=text)
         self._sent_text = text
         request_id = uuid4().hex
@@ -741,8 +732,8 @@ class AssistantWindows:
         request_id, text = self._failed_request
         if edit:
             self._editing_retry_id = request_id
-            current = self.chat_window.input.get("1.0", "end-1c").strip()
-            if current and current != text:
+            current = self.chat_window.input.get("1.0", "end-1c")
+            if current.strip() and current != text:
                 self.chat_window.status.set("작성 중인 초안을 보존했어요. 보내기를 누르면 새 메시지로 전송해요.")
             else:
                 self.chat_window.input.delete("1.0", "end")
@@ -750,8 +741,8 @@ class AssistantWindows:
                 self.chat_window.status.set("내용을 수정한 뒤 보내기를 눌러 주세요.")
             self.chat_window.input.focus_set()
         else:
-            draft = self.chat_window.input.get("1.0", "end-1c").strip()
-            if draft and draft != text:
+            draft = self.chat_window.input.get("1.0", "end-1c")
+            if draft.strip() and draft != text:
                 self.chat_window.status.set("새 초안이 있어요. 내용을 보존하려면 먼저 보내거나 복사해 주세요.")
                 return
             self.send(text, retry_of=request_id)
@@ -1174,14 +1165,24 @@ class _WeatherWindow(_ReadoutWindow):
 
 
 class _ChatWindow(_Window):
-    DEFAULT_SIZE = (720, 780)
-    MIN_SIZE = (500, 420)
+    DEFAULT_SIZE = (900, 900)
+    MIN_SIZE = (560, 540)
 
     def __init__(self, owner):
         dpi_scale = owner.root.winfo_fpixels("1i") / 96
-        width = round(self.DEFAULT_SIZE[0] * min(1.5, max(1, dpi_scale)))
-        super().__init__(owner, "승아와 대화", width, self.DEFAULT_SIZE[1])
+        scale = min(2, max(1, dpi_scale))
+        width, height = (round(size * scale) for size in self.DEFAULT_SIZE)
+        super().__init__(owner, "승아와 대화", width, height)
         self.minsize(*self.MIN_SIZE)
+        self.resizable(True, True)
+        self._send_after_id = None
+        self._submit_pending = False
+        self._ime_commit_requested = False
+        self._history_sections = []
+        self._rendered = False
+        self._hidden_view = None
+        self._restore_after_id = None
+        self._pending_history_view = None
         header = tk.Frame(self.body, bg=PANEL)
         header.pack(fill="x", padx=12, pady=(10, 4))
         _label(header, "승아와 대화", size=15).pack(side="left")
@@ -1246,7 +1247,7 @@ class _ChatWindow(_Window):
         self.clear_button.pack(side="left")
         self.older_button = _button(controls, "이전 대화", owner.show_older)
         self.older_button.pack(side="left", padx=(6, 0))
-        self.send_button = _button(controls, "보내기", owner.send, primary=True)
+        self.send_button = _button(controls, "보내기", self.request_send, primary=True)
         self.send_button.pack(side="right")
         self.cancel_button = _button(controls, "응답 취소", owner.cancel)
         self.cancel_button.pack(side="right", padx=(0, 6))
@@ -1270,6 +1271,8 @@ class _ChatWindow(_Window):
             reading_menu.add_command(label=label, command=callback)
         reading_button.configure(menu=reading_menu)
         reading_button.pack(side="left")
+        self.latest_button = _button(toolbar, "최근 대화 ↓", self.follow_latest)
+        self.latest_button.pack(side="left", padx=6)
         self.web_enabled = tk.BooleanVar(master=self, value=self.service.load_settings().web_search_enabled)
         self.web_check = tk.Checkbutton(toolbar, text="웹 검색", variable=self.web_enabled,
                                        command=self._toggle_web, font=_font(self, 9), bg=PANEL, fg=TEXT,
@@ -1282,9 +1285,26 @@ class _ChatWindow(_Window):
         self.refresh_summary()
 
     def _hide(self, _event=None):
+        self._hidden_view = self._capture_history_view()
+        self._cancel_pending_send()
         if self.owner._cancel is None:
             self.owner._set_chat_state("idle")
         return super()._hide()
+
+    def show(self, *, parent=None):
+        view = self._hidden_view
+        shown = super().show(parent=parent)
+        if shown and view is not None:
+            self._restore_history_view(view)
+        self._hidden_view = None
+        return shown
+
+    def destroy(self):
+        self._cancel_pending_send()
+        if self._restore_after_id is not None:
+            self.after_cancel(self._restore_after_id)
+            self._restore_after_id = None
+        super().destroy()
 
     def _toggle_web(self):
         try:
@@ -1312,8 +1332,49 @@ class _ChatWindow(_Window):
             button.configure(state="normal" if available else "disabled")
 
     def _send_from_keyboard(self, _event):
-        self.owner.send()
+        self.request_send()
         return "break"
+
+    def request_send(self):
+        """Button and Ctrl+Enter share one composition-aware submission path."""
+        if self.owner._closed or self.owner._cancel is not None or self._submit_pending:
+            return
+        self._submit_pending = True
+        self._ime_commit_requested = False
+        self._send_deadline = time.monotonic() + 5
+        self._send_after_id = self.after_idle(self._prepare_send)
+
+    def _cancel_pending_send(self):
+        if self._send_after_id is not None:
+            self.after_cancel(self._send_after_id)
+            self._send_after_id = None
+        self._submit_pending = False
+
+    def _prepare_send(self):
+        self._send_after_id = None
+        if self.owner._closed or self.owner._cancel is not None:
+            self._submit_pending = False
+            return
+        state = prepare_input(self.input.winfo_id(), request_commit=not self._ime_commit_requested)
+        if state == "failed" or time.monotonic() >= self._send_deadline:
+            self._submit_pending = False
+            self.status.set("입력 확정을 기다리고 있어요. Ctrl·Alt 키를 놓고 보내기를 다시 눌러 주세요. 초안은 유지했어요.")
+            return
+        if state == "ready":
+            self._send_committed_input()
+        elif state == "committed":
+            # Native IME completion queues characters at Tcl's event tail.
+            # Never read/clear the Text in that same native call stack.
+            self._ime_commit_requested = True
+            self._send_after_id = self.after_idle(self._prepare_send)
+        else:
+            self._send_after_id = self.after(15, self._prepare_send)
+
+    def _send_committed_input(self):
+        self._send_after_id = None
+        self._submit_pending = False
+        if not self.owner._closed and self.owner._cancel is None:
+            self.owner.send(self.input.get("1.0", "end-1c"))
 
     def _input_modified(self, _event):
         if self.input.edit_modified():
@@ -1358,16 +1419,88 @@ class _ChatWindow(_Window):
         can_page = self.has_older and self.owner._cancel is None
         self.older_button.configure(state="normal" if can_page else "disabled")
 
+    def follow_latest(self):
+        if self._restore_after_id is not None:
+            self.after_cancel(self._restore_after_id)
+            self._restore_after_id = None
+        self._pending_history_view = None
+        self._hidden_view = None
+        self.history.count("1.0", "end", "update", "ypixels")
+        self.history.yview_moveto(1)
+
+    def _capture_history_view(self):
+        if self._pending_history_view is not None:
+            return self._pending_history_view
+        if not self._rendered or not self._history_sections:
+            return ("end",)
+        self.history.count("1.0", "end", "update", "ypixels")
+        if self.history.yview()[1] >= .999:
+            return ("end",)
+        index = self.history.index("@0,0")
+        for key, mark in reversed(self._history_sections):
+            if self.history.compare(mark, "<=", index):
+                count = self.history.count(mark, index, "chars")
+                return ("anchor", key, count[0] if count else 0, self.history.yview()[0])
+        return ("fraction", self.history.yview()[0])
+
+    def _restore_history_view(self, view):
+        if self._restore_after_id is not None:
+            self.after_cancel(self._restore_after_id)
+        self._pending_history_view = view
+        def restore():
+            self._restore_after_id = None
+            # Tk 8.6 computes wrapped line heights incrementally. Complete
+            # that calculation before positioning; this is a Text operation,
+            # not update()/a nested event loop.
+            self.history.count("1.0", "end", "update", "ypixels")
+            self._pending_history_view = None
+            if view[0] == "end":
+                self.history.yview_moveto(1)
+            elif view[0] == "anchor":
+                mark = next((mark for key, mark in self._history_sections if key == view[1]), None)
+                if mark is None:
+                    self.history.yview_moveto(view[3])
+                else:
+                    self.history.yview(f"{mark}+{view[2]}c")
+            else:
+                self.history.yview_moveto(view[1])
+        # Reflow/wrapping settles at idle after font/geometry changes.
+        self._restore_after_id = self.after_idle(restore)
+
+    def apply_reading_size(self):
+        view = self._capture_history_view() if hasattr(self, "history") else None
+        super().apply_reading_size()
+        if view is not None:
+            self._restore_history_view(view)
+
+    def _mark_section(self, key):
+        mark = f"conversation_{len(self._history_sections)}"
+        self.history.mark_set(mark, "end-1c")
+        self.history.mark_gravity(mark, "left")
+        self._history_sections.append((key, mark))
+
     def render(self, turns, *, pending="", reply=""):
+        view = self._hidden_view if self._hidden_view is not None else self._capture_history_view()
         self.history.configure(state="normal")
+        for _key, mark in self._history_sections:
+            self.history.mark_unset(mark)
+        self._history_sections.clear()
         self.history.delete("1.0", "end")
         self._sources.clear()
         if not turns and not pending:
             self.history.insert("end", "승아에게 필요한 일을 물어보세요.\n\n처음이라면 ‘AI 연결 설정’에서 AI 사용과 API 키를 설정해 주세요.\n오늘 상태·날씨·이미지 선택은 AI 키 없이 사용할 수 있어요.\n\n예시: ‘오늘 얼마나 집중했어?’ · ‘휴식 간격을 50분으로 바꿔 줘’\n/오늘 · /날씨 세종시 · /이미지\n\nCtrl+Enter 보내기 · Tab 버튼 이동 · Ctrl+＋/－ 글자 크기\n", "note")
+        previous_ids = {getattr(turn, "id", id(turn)) for turn in self.owner._previous_turns or []}
+        pending_registered = False
         for turn in turns:
+            identity = getattr(turn, "id", id(turn))
+            self._mark_section(("turn", identity))
             timestamp = _local_time(turn.created_at)
-            sender = f"나 · {timestamp}" if timestamp else "나"
-            self._write(sender, turn.user, "user")
+            origin = getattr(turn, "origin", "chat")
+            if turn.user:
+                sender = f"나 · {timestamp}" if timestamp else "나"
+                self._write(sender, turn.user, "user")
+            if pending and self.owner._cancel is not None and turn.user == pending and identity not in previous_ids:
+                pending_registered = True
             state = getattr(turn, "status", "completed" if turn.assistant is not None else "interrupted")
             if state != "completed":
                 badge = {"pending": "응답 준비 중", "failed": "응답 실패", "cancelled": "취소됨", "interrupted": "중단됨"}.get(state, "응답 없음")
@@ -1375,15 +1508,24 @@ class _ChatWindow(_Window):
             if turn.assistant is None:
                 self.history.insert("end", "\n", "note")
             else:
-                self._write("승아", turn.assistant, "assistant")
-        if pending:
+                sender = "승아"
+                if origin != "chat":
+                    source = "타이머 안내" if origin == "local_event" else "승아 · 먼저 온 말"
+                    event = NOTIFICATION_EVENT_LABELS.get(getattr(turn, "event", ""), "")
+                    sender = " · ".join(part for part in (source, event, timestamp) if part)
+                self._write(sender, turn.assistant, "assistant")
+        if pending and not pending_registered:
+            self._mark_section(("pending", pending))
             self._write("나", pending, "user")
             if reply:
                 self._write("승아", reply, "assistant")
             else:
                 self.history.insert("end", "응답을 기다리는 중…\n", "note")
         self.history.configure(state="disabled")
-        self.history.see("end" if turns or pending else "1.0")
+        self._rendered = True
+        if self.state() == "withdrawn":
+            self._hidden_view = view
+        self._restore_history_view(view)
 
     def _write(self, sender, text, tag):
         self.history.insert("end", f"{sender}\n", tag)

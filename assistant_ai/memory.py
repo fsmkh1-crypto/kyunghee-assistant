@@ -21,6 +21,8 @@ class ConversationTurn:
     assistant: str | None
     created_at: str
     status: str = ""
+    origin: str = "chat"
+    event: str = ""
 
     def __post_init__(self):
         if not self.status:
@@ -56,12 +58,24 @@ _STOP_WORDS = frozenset(
     "때문에 말해줘 뭐야 뭐였지 무엇 무엇을 어떤 있어 있었지 오늘 우리가 이전 이제 "
     "저번 전에 최근 했어 했지 해줘 the about have what that with when your from".split()
 )
-_TURN_COLUMNS = "id, user_text, assistant_text, created_at, status"
+_TURN_COLUMNS = "id, user_text, assistant_text, created_at, status, origin, event"
 _MEMORY_COLUMNS = "id, text, created_at, pinned"
 _Entry = TypeVar("_Entry", ConversationTurn, MemoryEntry)
 MAX_MEMORY_CHARS = 2000
 TURN_STATUSES = frozenset({"pending", "completed", "failed", "cancelled", "interrupted"})
 _UNANSWERED_STATUSES = TURN_STATUSES - {"pending", "completed"}
+NOTIFICATION_EVENT_LABELS = {
+    "rest": "휴식 알림", "break_started": "휴식 시작", "away": "자리비움",
+    "return": "복귀", "snooze": "휴식 미루기", "leave": "퇴근 안내", "periodic": "먼저 말 걸기",
+}
+
+
+def _validate_notification(text: str, event: str, origin: str) -> None:
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("기록할 안내 내용을 확인해 주세요.")
+    if (not isinstance(event, str) or event not in NOTIFICATION_EVENT_LABELS
+            or not isinstance(origin, str) or origin not in {"local_event", "proactive"}):
+        raise ValueError("안내의 출처와 상황을 확인해 주세요.")
 
 
 def _validate_unanswered_status(status: str) -> None:
@@ -198,7 +212,9 @@ class MemoryStore:
                     assistant_text TEXT,
                     created_at TEXT NOT NULL,
                     generation INTEGER NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'pending'
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    origin TEXT NOT NULL DEFAULT 'chat',
+                    event TEXT NOT NULL DEFAULT ''
                 );
                 CREATE TABLE IF NOT EXISTS memories (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -221,6 +237,10 @@ class MemoryStore:
                 connection.execute("ALTER TABLE conversation_turns ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'")
                 connection.execute("UPDATE conversation_turns SET status = CASE "
                                    "WHEN assistant_text IS NULL THEN 'interrupted' ELSE 'completed' END")
+            if "origin" not in turn_columns:
+                connection.execute("ALTER TABLE conversation_turns ADD COLUMN origin TEXT NOT NULL DEFAULT 'chat'")
+            if "event" not in turn_columns:
+                connection.execute("ALTER TABLE conversation_turns ADD COLUMN event TEXT NOT NULL DEFAULT ''")
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -263,14 +283,25 @@ class MemoryStore:
             )
 
     def begin_turn(self, text: str) -> int | None:
-        text = text.strip()
-        if not text:
+        if not text.strip():
             return None
         with self._connection() as connection:
             cursor = connection.execute(
                 """INSERT INTO conversation_turns (user_text, created_at, generation)
                    SELECT ?, ?, generation FROM storage_state WHERE id = 1 AND history_enabled = 1""",
                 (text, _timestamp()),
+            )
+            return cursor.lastrowid if cursor.rowcount else None
+
+    def add_notification(self, text: str, *, event: str, origin: str = "local_event") -> int | None:
+        _validate_notification(text, event, origin)
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """INSERT INTO conversation_turns
+                   (user_text, assistant_text, created_at, generation, status, origin, event)
+                   SELECT '', ?, ?, generation, 'completed', ?, ?
+                   FROM storage_state WHERE id = 1 AND history_enabled = 1""",
+                (text, _timestamp(), origin, event),
             )
             return cursor.lastrowid if cursor.rowcount else None
 
@@ -461,13 +492,22 @@ class SessionHistory:
         self._next_id = 1
 
     def begin_turn(self, text: str) -> int | None:
-        text = text.strip()
-        if not text:
+        if not text.strip():
             return None
         with self._lock:
             turn_id = self._next_id
             self._next_id += 1
             self._turns[turn_id] = ConversationTurn(turn_id, text, None, _timestamp())
+            return turn_id
+
+    def add_notification(self, text: str, *, event: str, origin: str = "local_event") -> int:
+        _validate_notification(text, event, origin)
+        with self._lock:
+            turn_id = self._next_id
+            self._next_id += 1
+            self._turns[turn_id] = ConversationTurn(
+                turn_id, "", text, _timestamp(), "completed", origin, event,
+            )
             return turn_id
 
     def finish_turn(self, turn_id: int, text: str) -> bool:

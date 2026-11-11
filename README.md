@@ -4,13 +4,13 @@ Windows productivity timer and virtual secretary.
 
 ## Current development target
 
-`2.1.3` — makes situation-image selection and application accessible, displays long speech in a three-line scrollable bubble, and adds configurable one-minute proactive conversation and a separate chatter toggle. Preserves the native speech-click crash fix, away-clock and conversation fixes, and complete review implementation based on Seunga Timer 2.0.3 (`15accd3`).
+`2.1.4` — fixes repeated cooldown resets, gives chat history more space and a stable reading position, joins timer notifications to the same conversation, and waits for Korean IME composition before sending. Preserves situation-image controls, the three-line scrollable bubble and configurable AI-only chatter. Preserves the native speech-click crash fix, away-clock and conversation fixes, and complete review implementation based on Seunga Timer 2.0.3 (`15accd3`).
 
 The implementation and verification ledger is [docs/IMPLEMENTATION_CHECKLIST_2_1.md](docs/IMPLEMENTATION_CHECKLIST_2_1.md). Windows acceptance steps and remaining physical-device checks are documented separately; automated checks do not imply a live API quality test.
 
 ## Desktop app
 
-Development is focused on the Windows desktop app. `RUN.cmd` and Windows source autostart launch `desktop_gallery_final.py`. The Windows job in the **tests** workflow publishes `seunga-timer-2.1.3-windows-x64` for branch pushes. Sign in to GitHub, open the successful workflow run, then select the package under **Artifacts**. Keep `SeungaTimer.exe` beside its `_internal` folder. The package includes Python.
+Development is focused on the Windows desktop app. `RUN.cmd` and Windows source autostart launch `desktop_gallery_final.py`. The Windows job in the **tests** workflow publishes `seunga-timer-2.1.4-windows-x64` for branch pushes. Sign in to GitHub, open the successful workflow run, then select the package under **Artifacts**. Keep `SeungaTimer.exe` beside its `_internal` folder. The package includes Python.
 
 - Read long speech by scrolling inside the bubble (at most three visible lines). Use its explicit chat button, tray or keyboard shortcut to open chat. Click the timer/character for settings; drag them to move the widget.
 - Screen dice changes the current image until the next situation. Explicit pinning and restoration are available.

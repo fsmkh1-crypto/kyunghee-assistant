@@ -54,6 +54,7 @@ class AssistantInteractionTests(unittest.TestCase):
         self.owner.chat_window.input.insert("1.0", text)
         with patch("assistant_ai.ui.Thread"):
             self.owner.send()
+            self.root.update()
         return self.owner._request_id
 
     def test_cancel_allows_new_request_and_discards_old_result(self):
@@ -112,6 +113,7 @@ class AssistantInteractionTests(unittest.TestCase):
         self.owner._poll()
         with patch("assistant_ai.ui.Thread") as worker:
             self.owner.send()
+            self.root.update()
         self.assertEqual(worker.call_args.kwargs["args"][-1], request_id)
 
     def test_weather_one_time_region_does_not_change_default(self):

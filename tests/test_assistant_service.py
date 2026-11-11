@@ -66,6 +66,80 @@ class AssistantServiceTests(unittest.TestCase):
         self.assertEqual(self.service.memory.recent_turns(), [])
         self.assertEqual(AssistantService(self.path).recent_turns(), [])
 
+    def test_chat_preserves_submitted_unicode_and_whitespace_in_api_and_history(self):
+        self.service.save_settings(replace(self.settings, conversation_storage_enabled=True))
+        text = " \t근데 느림...ㅋ\n가 👩🏽‍💻  "
+        self.api.respond.return_value = reply("확인했어요.")
+        self.ask(text)
+        self.assertEqual(self.api.respond.call_args.args[1][-1]["content"], text)
+        self.assertEqual(self.service.recent_turns()[0].user, text)
+        self.assertEqual(AssistantService(self.path).recent_turns()[0].user, text)
+
+    def test_local_notifications_work_without_ai_and_join_context_with_correct_source(self):
+        self.service.save_settings(replace(self.settings, enabled=False), remove_key=True)
+        revision = self.service.revision
+        activity = self.service._last_chat_activity
+        message = "잠깐 쉬어요.\n돌아오면 알려 주세요.ㅋ"
+        turn_id = self.service.record_notification(message, event="break_started")
+        turn = self.service.recent_turns()[0]
+        self.assertEqual((turn.id, turn.user, turn.assistant, turn.status, turn.origin, turn.event),
+                         (turn_id, "", message, "completed", "local_event", "break_started"))
+        self.assertLess(turn_id, 0)
+        self.assertEqual(self.service.revision, revision)
+        self.assertEqual(self.service._last_chat_activity, activity)
+        self.assertEqual(self.service.memory.recent_turns(), [])
+        self.assertEqual(AssistantService(self.path).recent_turns(), [])
+        self.api.respond.assert_not_called()
+
+        self.service.save_settings(self.settings, new_key="test-replacement")
+        self.api.respond.return_value = reply("쉬는 시간을 존중할게요.")
+        self.ask("방금 한 말 기억해?")
+        messages = self.api.respond.call_args.args[1]
+        self.assertEqual([item["role"] for item in messages], ["assistant", "user"])
+        self.assertEqual(messages[0]["content"], "[앱 안내 · 휴식 시작]\n" + message)
+
+    def test_notification_storage_opt_in_source_restart_delete_and_no_backfill(self):
+        first = self.service.record_notification("임시 안내", event="away")
+        self.service.save_settings(replace(self.settings, conversation_storage_enabled=True))
+        saved_id = self.service.record_notification("돌아오셨네요.", event="return", origin="proactive")
+        self.assertGreater(saved_id, 0)
+        saved = AssistantService(self.path).recent_turns()
+        self.assertEqual(len(saved), 1)
+        self.assertEqual((saved[0].id, saved[0].origin, saved[0].event, saved[0].user),
+                         (saved_id, "proactive", "return", ""))
+        self.assertEqual([turn.id for turn in self.service.recent_turns()], [first, saved_id])
+        self.assertTrue(self.service.delete_turn(saved_id))
+        self.assertEqual([turn.id for turn in self.service.recent_turns()], [first])
+        self.service.clear_history()
+        self.assertEqual(self.service.recent_turns(), [])
+
+    def test_notification_does_not_cancel_active_chat_or_replace_its_request_state(self):
+        cancel = threading.Event()
+        def respond(*args, **kwargs):
+            revision, activity = self.service.revision, self.service._last_chat_activity
+            self.now += 10
+            self.service.record_notification("잠시 자리를 비웠어요.", event="away")
+            self.assertIs(self.service._active_chat_cancel, cancel)
+            self.assertFalse(cancel.is_set())
+            self.assertEqual(self.service.revision, revision)
+            self.assertEqual(self.service._last_chat_activity, activity)
+            self.assertFalse(self.service.is_quiescent())
+            return reply("답변이에요.")
+        self.api.respond.side_effect = respond
+        self.assertEqual(self.ask("대화 중인 질문", cancel), "답변이에요.")
+        self.assertEqual([turn.origin for turn in self.service.recent_turns()], ["chat", "local_event"])
+        self.assertTrue(self.service.is_quiescent())
+
+    def test_notification_rejects_invalid_metadata_and_does_not_write_during_restore(self):
+        for metadata in ({"event": "unknown"}, {"event": []},
+                         {"event": "rest", "origin": "chat"}, {"event": "rest", "origin": []}):
+            with self.subTest(metadata=metadata), self.assertRaises(ValueError):
+                self.service.record_notification("안내", **metadata)
+        self.assertIsNone(self.service.record_notification(" \n", event="rest"))
+        self.assertTrue(self.service.try_begin_restore())
+        self.assertIsNone(self.service.record_notification("안내", event="rest"))
+        self.assertEqual(self.service.recent_turns(), [])
+
     def test_opt_in_history_and_explicit_memory_survive_restart(self):
         self.service.save_settings(replace(self.settings, memory_enabled=True, conversation_storage_enabled=True))
         self.service.memory.add_memory("휴식할 때 물부터 마시기")
@@ -220,6 +294,22 @@ class AssistantServiceTests(unittest.TestCase):
         self.assertIn('"away": false', kwargs["instructions"])
         self.assertEqual(len(self.service.recent_turns()), 1)
 
+    def test_full_proactive_text_is_recorded_only_after_delivery(self):
+        self.service.save_settings(replace(self.settings, proactive_enabled=True, conversation_storage_enabled=True))
+        text = "창밖의 빛이 달라졌네요. " * 20 + "\n잠깐 바라봐도 좋겠어요.ㅋ"
+        self.api.respond.return_value = reply(text)
+        self.now += 60
+        speech = self.service.proactive("periodic", context={}, cancel=threading.Event())
+        self.assertEqual(speech, text)
+        self.assertEqual(self.api.respond.call_args.kwargs["max_output_tokens"], 1024)
+        self.assertEqual(self.service.recent_turns(), [])
+        self.assertEqual(self.service.memory.recent_turns(), [])
+        self.service.record_notification(speech, event="periodic", origin="proactive")
+        turn = self.service.recent_turns()[0]
+        self.assertEqual((turn.user, turn.assistant, turn.origin, turn.event), ("", text, "proactive", "periodic"))
+        self.assertEqual(self.service.memory.recent_turns()[0].assistant, text)
+        self.assertEqual(self.service._last_chat_activity, float("-inf"))
+
     def test_cancellation_detaches_chat_but_restore_waits_for_network_cleanup(self):
         entered, release = threading.Event(), threading.Event()
         errors = []
@@ -275,6 +365,8 @@ class AssistantServiceTests(unittest.TestCase):
         self.assertEqual(len(self.service.action_receipts("three")), 1)
 
     def test_old_cancelled_worker_cannot_unlock_a_new_active_chat(self):
+        self.service.save_settings(replace(self.settings, proactive_enabled=True))
+        started_at = self.now
         entered = [threading.Event(), threading.Event()]
         releases = [threading.Event(), threading.Event()]
         cancels = [threading.Event(), threading.Event()]
@@ -299,21 +391,77 @@ class AssistantServiceTests(unittest.TestCase):
         workers[0].start()
         try:
             self.assertTrue(entered[0].wait(2))
+            self.now = started_at + 10
             self.service.cancel_chat(cancels[0])
+            self.now = started_at + 20
             workers[1].start()
             self.assertTrue(entered[1].wait(2))
+            self.now = started_at + 180
             releases[0].set()
             workers[0].join(2)
+            self.assertFalse(workers[0].is_alive())
+            self.assertEqual(self.service.proactive_diagnostics()["retry_after_seconds"], 140)
+            self.now = started_at + 321
+            self.assertFalse(self.service.can_proactively_speak("periodic"))
+            self.assertIsNone(self.service.proactive("periodic", context={}, cancel=threading.Event()))
+            self.assertEqual(self.api.respond.call_count, 2)
             with self.assertRaises(AIError) as raised:
                 self.ask("세 번째 요청")
             self.assertEqual(raised.exception.code, "busy")
         finally:
+            self.now = started_at + 400
             for release in releases:
                 release.set()
             for worker in workers:
                 if worker.ident is not None:
                     worker.join(3)
         self.assertEqual(errors, ["cancelled"])
+        self.assertTrue(all(not worker.is_alive() for worker in workers))
+        self.assertEqual(self.service.proactive_diagnostics()["retry_after_seconds"], 300)
+        self.api.respond.side_effect = None
+        self.api.respond.return_value = reply("다음 응답")
+        self.assertEqual(self.ask("완료 후 새 요청"), "다음 응답")
+        self.assertEqual([turn.status for turn in self.service.recent_turns()], ["cancelled", "completed", "completed"])
+
+    def test_late_cancelled_chat_cleanup_does_not_restart_five_minute_quiet(self):
+        self.service.save_settings(replace(self.settings, proactive_enabled=True))
+        started_at = self.now
+        cancel = threading.Event()
+        def respond(*args, **kwargs):
+            self.now = started_at + 10
+            self.service.cancel_chat(cancel)
+            self.now = started_at + 180
+            return reply("취소된 늦은 응답")
+        self.api.respond.side_effect = respond
+        with self.assertRaises(AIError) as raised:
+            self.ask("취소할 질문", cancel)
+        self.assertEqual(raised.exception.code, "cancelled")
+        self.assertEqual(self.service.proactive_diagnostics()["retry_after_seconds"], 130)
+        self.assertEqual(self.service.recent_turns()[0].status, "cancelled")
+        self.assertIsNone(self.service.recent_turns()[0].assistant)
+        self.api.respond.side_effect = None
+        self.api.respond.return_value = reply("편안한 오후 보내고 계신가요?")
+        self.now = started_at + 309
+        self.assertIsNone(self.service.proactive("periodic", context={}, cancel=threading.Event()))
+        self.assertEqual(self.api.respond.call_count, 1)
+        self.now += 1
+        self.assertIsNotNone(self.service.proactive("periodic", context={}, cancel=threading.Event()))
+        self.assertEqual(self.api.respond.call_count, 2)
+
+    def test_settings_cancellation_uses_invalidation_time_not_late_network_cleanup(self):
+        self.service.save_settings(replace(self.settings, proactive_enabled=True))
+        started_at = self.now
+        def respond(*args, **kwargs):
+            self.now = started_at + 10
+            self.service.save_settings(replace(self.service.load_settings(), proactive_interval_minutes=2))
+            self.now = started_at + 180
+            return reply("설정 변경 전 요청의 응답")
+        self.api.respond.side_effect = respond
+        with self.assertRaises(AIError) as raised:
+            self.ask("설정 변경 전 질문")
+        self.assertEqual(raised.exception.code, "cancelled")
+        self.assertEqual(self.service.proactive_diagnostics()["retry_after_seconds"], 130)
+        self.assertEqual(self.service.recent_turns()[0].status, "cancelled")
 
     def test_storage_toggle_keeps_session_without_retroactive_disk_copy(self):
         self.api.respond.return_value = reply("답변")

@@ -302,6 +302,53 @@ def _exercise_inline_reply(desktop, progress=lambda _phase: None):
     assert heartbeat, "timer event loop stopped after inline input"
 
 
+def _exercise_conversation_timeline(desktop):
+    """Read past chat while delivered timer messages join the same history."""
+    from dataclasses import replace
+    from assistant_ai.service import AssistantService
+
+    root, windows, service = desktop.root, desktop._assistant_windows, desktop._assistant_service
+    original_settings = service.load_settings()
+    service.save_settings(replace(original_settings, conversation_storage_enabled=True))
+    windows.open_chat()
+    chat = windows.chat_window
+    original_draft = chat.input.get("1.0", "end-1c")
+    for index in range(48):
+        service.record_notification(f"이전 안내 {index:02d}\n읽던 문단을 유지합니다.\n" * 3, event="return")
+    windows.refresh_chat_history()
+    root.update()
+    assert chat.has_older, "history pagination is unavailable"
+    chat.history.yview_moveto(0.35)
+    root.update()
+    anchor = chat._capture_history_view()
+    assert anchor[0] == "anchor", "history did not retain a visible message anchor"
+    windows.show_older()
+    root.update()
+    assert chat._capture_history_view()[1:3] == anchor[1:3], "loading older history moved the reader"
+
+    before_count = len(service.recent_turns(None))
+    text = "돌아왔어요. 휴식과 복귀도 같은 대화에서 이어 읽어요."
+    desktop._say("return", text)
+    root.update()
+    assert len(service.recent_turns(None)) == before_count + 1, "timer notification missing or duplicated"
+    assert chat._capture_history_view()[1:3] == anchor[1:3], "timer notification stole the reading position"
+    assert text in chat.history.get("1.0", "end-1c"), "timer message is outside the conversation"
+    assert "타이머 안내" in chat.history.get("1.0", "end-1c"), "timer source is not labelled"
+    assert chat.input.get("1.0", "end-1c") == original_draft, "notification changed the draft"
+    chat._hide()
+    windows.open_chat()
+    root.update()
+    assert chat._capture_history_view()[1:3] == anchor[1:3], "reopening moved past history to the bottom"
+    chat.latest_button.invoke()
+    root.update()
+    assert chat.history.yview()[1] >= .999, f"latest-message control cannot reach the end: {chat.history.yview()}"
+    reopened = AssistantService(service.memory.path.parent)
+    assert any(turn.assistant == text and turn.origin == "local_event" and turn.event == "return"
+               for turn in reopened.recent_turns(None)), "saved notification did not survive reopening storage"
+    # Test changes stay inside the self-test's temporary profile.
+    service.save_settings(original_settings)
+
+
 def run_packaged_smoke(app_factory, report_path):
     report_path = Path(report_path)
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -392,6 +439,8 @@ def _run_packaged_smoke(app_factory, report_path):
                         _exercise_away_clock(desktop)
                         approval_resize = _exercise_approval_actions(desktop, progress)
                         _exercise_inline_reply(desktop, progress)
+                        progress("unified conversation and reading position")
+                        _exercise_conversation_timeline(desktop)
                         progress("settings and auxiliary windows")
                         windows.open_chat()
                         windows.open_settings()
@@ -427,7 +476,7 @@ def _run_packaged_smoke(app_factory, report_path):
                         assert network.call_count == 0, "unexpected network request"
                         assert not callback_errors, "Tk callback failed:\n" + "\n".join(callback_errors)
                         report["checks"].append({"dpi": dpi, "status": "passed", "approval_resize": approval_resize,
-                                                 "flows": ["dice", "settings", "preview previous/next pixels and selection preservation", "visible cross-role Apply and Undo", "away clock and records", "small approval actions", "small image proposal actions", "three-line inline reply", "native repeated clicks and wheel", "scrollbar and keyboard reading", "explicit chat button", "conversation and draft preservation", "chat hide/reopen and retained answer", "AI settings", "model choices and unsaved preview", "memories", "image picker", "gallery", "backup", "weather", "offline status", "image cancel"]})
+                                                 "flows": ["dice", "settings", "preview previous/next pixels and selection preservation", "visible cross-role Apply and Undo", "away clock and records", "small approval actions", "small image proposal actions", "three-line inline reply", "native repeated clicks and wheel", "scrollbar and keyboard reading", "explicit chat button", "conversation and draft preservation", "chat hide/reopen and retained answer", "unified timer history and storage reopen", "older history without scroll jump", "AI settings", "model choices and unsaved preview", "memories", "image picker", "gallery", "backup", "weather", "offline status", "image cancel"]})
                     finally:
                         progress("close desktop")
                         for timer_id in root.tk.splitlist(root.tk.call("after", "info")):
