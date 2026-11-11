@@ -130,6 +130,12 @@ class WidgetReadabilityTests(unittest.TestCase):
                     patch.multiple(app, DATA_DIR=directory, SETTINGS_FILE=settings_path, STATE_FILE=directory / "state.json"),
                     patch.object(app.App, "_start_tray"),
                     patch.object(CompactDesktopApp, "_start_global_hotkey"),
+                    # This test supplies clock/status/speech samples. A slow
+                    # runner's real one-second tick can replace them with an
+                    # away notification from host idle input. Keep layout and
+                    # native hitbox callbacks live; timer behavior is covered
+                    # by the engine and desktop-flow tests.
+                    patch.object(FinalGalleryDesktopApp, "_tick_safe"),
                     patch.object(FinalGalleryDesktopApp, "MANUAL_OVERRIDE_FILE", directory / "manual.json"),
                     patch.object(tk, "Tk", create_root),
                 ):
@@ -144,9 +150,12 @@ class WidgetReadabilityTests(unittest.TestCase):
         scale = float(root.tk.call("tk", "scaling")) * 72 / 96
         desktop.cont.configure(text="08:59:59")
         desktop.main_status.configure(text="집중 중")
-        desktop.speech.configure(text="첫째 줄\n둘째 줄")
+        sample_text = "첫째 줄\n둘째 줄"
+        desktop.speech.configure(text=sample_text)
         desktop._apply_widget_appearance()
         root.update()
+        self.assertEqual(desktop.speech.cget("text"), sample_text,
+                         "The layout sample must remain unchanged while measuring its lines")
         self._assert_visible_inside(desktop.clock, desktop.hero)
         self._assert_visible_inside(desktop.cont, desktop.clock)
         self._assert_visible_inside(desktop.main_status, desktop.clock)

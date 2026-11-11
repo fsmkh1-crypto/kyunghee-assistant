@@ -439,19 +439,26 @@ class AssistantInteractionTests(unittest.TestCase):
                                          height=62 - button.winfo_reqheight() + 1)
             return button
 
-        self.owner.chat_work_area = lambda *_: (0, 0, 320, 240)
+        self.owner.chat_work_area = lambda *_: (0, 0, 640, 360)
         self.owner.image_apply = Mock(return_value={"summary": "적용했어요", "changed": True})
         self.owner.image_undo = Mock(return_value={"summary": "되돌렸어요", "changed": True})
         with patch("assistant_ai.ui._button", side_effect=fixed_pixel_button):
             self.owner.show_image_proposal({"id": "p-sized", "status": "pending",
                 "summary": "세트를 변경할까요? " * 25, "scope": "수동 지정은 유지돼요. " * 40})
         window = self.owner._extra_windows[-1]
+        # This reproduces the measured button-layout regression in CLIENT
+        # pixels. A 320x240 outer work area has a smaller client on Windows.
+        # Actual tiny-screen fitting remains covered by the DPI matrix above.
+        window.minsize(296, 216)
+        window.geometry("296x216")
         self.root.update()
         self.wait_for_approval_layout(window)
         buttons = (window.undo_button, window.cancel_button, window.apply_button)
         self.assertEqual([(button.winfo_reqwidth(), button.winfo_reqheight()) for button in buttons],
                          [(131, 62), (83, 62), (83, 62)])
         self.assertEqual(window.apply_button.master.winfo_width(), 252)
+        self.assertEqual([(int(button.grid_info()["row"]), int(button.grid_info()["column"]))
+                          for button in buttons], [(0, 0), (0, 1), (1, 0)])
         for button in buttons:
             self.assert_action_visible(button, window)
         self.assertTrue(window.content_canvas.winfo_viewable())

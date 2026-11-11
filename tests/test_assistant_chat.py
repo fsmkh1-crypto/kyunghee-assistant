@@ -90,6 +90,7 @@ class ChatWindowTests(unittest.TestCase):
         self.owner.open_chat()
         self.chat = self.owner.chat_window
         self.root.update()
+        self.fitted_client_size = self.chat.winfo_width(), self.chat.winfo_height()
         self.addCleanup(self.owner.close)
 
     @staticmethod
@@ -112,6 +113,18 @@ class ChatWindowTests(unittest.TestCase):
         self.assertEqual(self.anchor()[0], "anchor")
         return self.anchor()
 
+    def resize_within_display(self, width, height):
+        # The real host may be 1366x768 even when a test invents a larger
+        # work area. Start with a client size already fitted on this display,
+        # then resize within that budget. Large-screen exact sizes are tested
+        # separately by the native window model.
+        target = min(width, self.fitted_client_size[0]), min(height, self.fitted_client_size[1])
+        self.chat.geometry(f"{target[0]}x{target[1]}")
+        self.root.update()
+        actual = self.chat.winfo_width(), self.chat.winfo_height()
+        self.assertEqual(actual, target)  # Do not silently accept a resize cap.
+        return actual
+
     def test_new_messages_paging_font_change_and_reopen_keep_reading_anchor(self):
         self.populate()
         anchor = self.read_old()
@@ -128,8 +141,7 @@ class ChatWindowTests(unittest.TestCase):
         # must keep the same conversation rather than jumping to the bottom.
         self.assertEqual(self.anchor()[:2], anchor[:2])
         anchor = self.anchor()
-        self.chat.geometry("780x720")
-        self.root.update()
+        resized_client = self.resize_within_display(780, 620)
         resized = self.anchor()
         self.assertEqual(resized[:2], anchor[:2])
         self.chat._hide()
@@ -140,7 +152,7 @@ class ChatWindowTests(unittest.TestCase):
         self.owner.open_chat()
         self.root.update()
         self.assertEqual(self.anchor(), resized)
-        self.assertEqual((self.chat.winfo_width(), self.chat.winfo_height()), (780, 720))
+        self.assertEqual((self.chat.winfo_width(), self.chat.winfo_height()), resized_client)
         self.chat.latest_button.invoke()
         self.root.update()
         self.assertGreaterEqual(self.chat.history.yview()[1], .999)
@@ -329,16 +341,14 @@ class ChatWindowTests(unittest.TestCase):
                 self.owner.chat_window = old_chat
 
     def test_user_resized_client_dimensions_survive_repeated_hide_and_reopen(self):
-        self.owner.chat_work_area = lambda *_: (0, 0, 1920, 1080)
-        for width, height in ((780, 720), (940, 780)):
-            self.chat.geometry(f"{width}x{height}")
-            self.root.update()
+        for width, height in ((780, 620), (940, 660)):
+            expected_client = self.resize_within_display(width, height)
             for repeat in range(4):
-                with self.subTest(size=(width, height), repeat=repeat):
+                with self.subTest(size=expected_client, repeat=repeat):
                     self.chat._hide()
                     self.owner.open_chat()
                     self.root.update()
-                    self.assertEqual((self.chat.winfo_width(), self.chat.winfo_height()), (width, height))
+                    self.assertEqual((self.chat.winfo_width(), self.chat.winfo_height()), expected_client)
 
 
 if __name__ == "__main__":
