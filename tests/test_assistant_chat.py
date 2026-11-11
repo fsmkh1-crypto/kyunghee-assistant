@@ -328,6 +328,18 @@ class ChatWindowTests(unittest.TestCase):
                 window.destroy()
                 self.owner.chat_window = old_chat
 
+    def test_user_resized_client_dimensions_survive_repeated_hide_and_reopen(self):
+        self.owner.chat_work_area = lambda *_: (0, 0, 1920, 1080)
+        for width, height in ((780, 720), (940, 780)):
+            self.chat.geometry(f"{width}x{height}")
+            self.root.update()
+            for repeat in range(4):
+                with self.subTest(size=(width, height), repeat=repeat):
+                    self.chat._hide()
+                    self.owner.open_chat()
+                    self.root.update()
+                    self.assertEqual((self.chat.winfo_width(), self.chat.winfo_height()), (width, height))
+
 
 if __name__ == "__main__":
     unittest.main()

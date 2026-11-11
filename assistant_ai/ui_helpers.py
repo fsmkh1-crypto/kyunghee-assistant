@@ -76,12 +76,54 @@ def position_window(window, parent, work_area=None):
         user32 = ctypes.WinDLL("user32", use_last_error=True)
         user32.GetAncestor.argtypes = (wintypes.HWND, wintypes.UINT)
         user32.GetAncestor.restype = wintypes.HWND
+        for name in ("GetWindowRect", "GetClientRect"):
+            function = getattr(user32, name)
+            function.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.RECT))
+            function.restype = wintypes.BOOL
         user32.SetWindowPos.argtypes = (wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
                                        ctypes.c_int, ctypes.c_int, wintypes.UINT)
         user32.SetWindowPos.restype = wintypes.BOOL
         hwnd = user32.GetAncestor(window.winfo_id(), 2) or window.winfo_id()
-        if not user32.SetWindowPos(hwnd, None, x, y, width, height, 0x0014):
-            window.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y)}")
+
+        def frame_size():
+            outer, client = wintypes.RECT(), wintypes.RECT()
+            if not (user32.GetWindowRect(hwnd, ctypes.byref(outer))
+                    and user32.GetClientRect(hwnd, ctypes.byref(client))):
+                return 0, 0
+            return (max(0, outer.right - outer.left - client.right + client.left),
+                    max(0, outer.bottom - outer.top - client.bottom + client.top))
+
+        # Tk geometry/winfo sizes describe the client. SetWindowPos sizes
+        # describe the decorated wrapper. Passing one as the other shrank
+        # the chat by its borders/caption every time it reopened.
+        desired_width, desired_height = width, height
+        frame_width, frame_height = frame_size()
+        for _ in range(2):
+            x, y, outer_width, outer_height = clamp_geometry(
+                x, y, desired_width + frame_width, desired_height + frame_height, area,
+            )
+            width = max(1, outer_width - frame_width)
+            height = max(1, outer_height - frame_height)
+            min_width, min_height = window.minsize()
+            window.minsize(min(min_width, width), min(min_height, height))
+            window.geometry(f"{width}x{height}")
+            window.update_idletasks()
+            if not window_exists(window):
+                return None
+            # Only Tk owns sizing. Native movement supplies signed absolute
+            # coordinates without interpreting a left monitor as an offset.
+            if not user32.SetWindowPos(hwnd, None, x, y, 0, 0, 0x0015):
+                window.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y)}")
+                break
+            window.update_idletasks()
+            if not window_exists(window):
+                return None
+            updated_frame = frame_size()
+            if updated_frame == (frame_width, frame_height):
+                break
+            # A move between monitors can change native DPI/frame metrics.
+            # One correction fits the new frame without repeatedly resizing.
+            frame_width, frame_height = updated_frame
     else:
         window.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y)}")
     window._seunga_positioned = True
