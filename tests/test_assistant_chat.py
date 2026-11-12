@@ -157,7 +157,7 @@ class ChatWindowTests(unittest.TestCase):
         self.assertEqual(actual, target)  # Do not silently accept a resize cap.
         return actual
 
-    def finish_submission(self):
+    def finish_submission(self, *, diagnostics=None):
         check_id = None
         def check():
             nonlocal check_id
@@ -170,7 +170,22 @@ class ChatWindowTests(unittest.TestCase):
         self.root.mainloop()
         self.root.after_cancel(timeout)
         self.root.after_cancel(check_id)
-        self.assertFalse(self.chat._submit_pending, "Submission did not complete in the normal event loop")
+        if self.chat._submit_pending:
+            state = {
+                "generation": self.chat._submit_generation,
+                "commit_requested": self.chat._ime_commit_requested,
+                "revision": self.chat._input_revision,
+                "commit_revision": self.chat._ime_commit_revision,
+                "modified": self.chat.input.edit_modified(),
+                "focus": str(self.chat.focus_get()),
+                "input": str(self.chat.input),
+                "scheduled_check": self.chat._send_after_id,
+                "after": [(token, self.root.tk.call("after", "info", token))
+                          for token in self.root.tk.splitlist(self.root.tk.call("after", "info"))],
+            }
+            if diagnostics is not None:
+                state["fixture"] = diagnostics
+            self.fail(f"Submission did not complete in the normal event loop: {state!r}")
 
     def test_new_messages_paging_font_change_and_reopen_keep_reading_anchor(self):
         self.populate()
@@ -519,18 +534,30 @@ class ChatWindowTests(unittest.TestCase):
             values = ("근데 느림...ㅋ", "  분해 자모 카 · 이모지 👩🏽‍💻 · 결합 e\u0301\n끝ㅋ \t")
             for path in ("button", "keyboard"):
                 for text in values:
-                    self.chat.input.insert("1.0", text[:-1])
-                    def commit(_hwnd, *, toplevel_hwnd, request_commit):
-                        if request_commit:
-                            self.chat.after_idle(lambda: self.chat.input.insert("end-1c", text[-1:]))
-                            return "committed"
-                        return "ready"
-                    with patch("assistant_ai.ui.prepare_input", side_effect=commit), patch("assistant_ai.ui.Thread", side_effect=lambda **kw: SimpleNamespace(start=lambda: kw["target"](*kw["args"]))):
-                        self._activate_send(path)
-                        self.finish_submission()
-                        self.owner._poll()
-                    self.assertEqual(payloads[-1]["input"][-1], {"role": "user", "content": text})
-                    self.assertEqual(service.recent_turns()[-1].user, text)
+                    with self.subTest(path=path, text=text):
+                        self.chat.input.insert("1.0", text[:-1])
+                        trace = {"native_calls": [], "result_delivered": False}
+                        def deliver():
+                            self.chat.input.insert("end-1c", text[-1:])
+                            trace["result_delivered"] = True
+                            trace["delivery_revision"] = self.chat._input_revision
+                            trace["delivery_modified"] = self.chat.input.edit_modified()
+                        def commit(_hwnd, *, toplevel_hwnd, request_commit):
+                            trace["native_calls"].append((request_commit, self.chat._input_revision))
+                            if request_commit:
+                                trace["result_after"] = self.chat.after_idle(deliver)
+                                return "committed"
+                            return "ready"
+                        with patch("assistant_ai.ui.prepare_input", side_effect=commit), patch("assistant_ai.ui.Thread", side_effect=lambda **kw: SimpleNamespace(start=lambda: kw["target"](*kw["args"]))):
+                            self._activate_send(path)
+                            self.finish_submission(diagnostics=trace)
+                            self.owner._poll()
+                        self.assertEqual(payloads[-1]["input"][-1], {"role": "user", "content": text})
+                        self.assertEqual(service.recent_turns()[-1].user, text)
+                    if self.chat._submit_pending:
+                        # Keep a failed fixture from contaminating later cases;
+                        # subTest has already recorded its original assertion.
+                        return
             self.owner.close()
             restarted = AssistantService(Path(directory))
             self.assertEqual([turn.user for turn in restarted.recent_turns()], list(values) * 2)
