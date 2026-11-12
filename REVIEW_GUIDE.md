@@ -2,9 +2,9 @@
 
 This branch is the current Windows desktop product target.
 
-- Branch: `ui/dark-kyunghee-redesign`
-- Pull request: #3
-- Product entrypoint: `desktop_compact.py`
+- Implementation branch: `feat/seunga-complete-review`, based on deployed `15accd3`
+- Comparison baseline: PR #4 target `66fb497` (`ui/dark-kyunghee-redesign`)
+- Product entrypoint: `desktop_gallery_final.py`
 - Base desktop/detail UI: `desktop_app.py`
 - Timer/state core: `app.py`
 - User settings: `settings.py`
@@ -34,4 +34,4 @@ For current reviews, inspect this branch and focus on:
 6. Packaging/startup behaviour
 7. DPI and image-edge quality (Phase 2 work)
 
-The packaged executable is built from `desktop_compact.py` by `.github/workflows/desktop-package.yml`.
+The packaged executable is built from `desktop_gallery_final.py`. The `tests` workflow performs unit tests, Windows build, packaged UI/DPI self-test and startup smoke checks. See `docs/IMPLEMENTATION_CHECKLIST_2_1.md` for the approved scope and verification ledger. This work does not authorize merging the branch.

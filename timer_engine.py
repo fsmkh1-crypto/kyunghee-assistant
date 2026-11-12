@@ -89,6 +89,16 @@ class TimerEngine:
             return max(0.0, now_wall - s.away_started_wall)
         return 0.0
 
+    def current_away_duration(self) -> float:
+        """Read the ongoing away interval without recording another timer tick.
+
+        Automatic idle classification backdates the start to the last input;
+        the display must include that interval, not start counting at detection.
+        """
+        if not self.state.session.is_away:
+            return 0.0
+        return self._away_duration(self.clock(), self.wall())
+
     def start_manual_away(self):
         _, tick = self.idle_provider()
         s, d = self.state.session, self.state.daily
@@ -145,6 +155,7 @@ class TimerEngine:
         now_wall: float,
         input_changed: bool,
         result: TickResult,
+        prior_away_duration: float,
     ) -> TickResult:
         """Treat an unobservable scheduler/sleep gap as away, never active."""
         s, d = self.state.session, self.state.daily
@@ -155,7 +166,11 @@ class TimerEngine:
             self._finalize_longest()
             d.away_count += 1
             s.away_started_wall = now_wall - gap
-            s.away_started_mono = now_mono - min(gap, now_mono)
+
+        # Some clocks pause during suspend. Keep the display/return duration in
+        # step with the same gap already attributed to away statistics, without
+        # recording it again. A virtual monotonic anchor may precede clock zero.
+        s.away_started_mono = now_mono - (prior_away_duration + gap)
 
         self._record_away(gap, manual=was_manual)
         self._reset_active_session()
@@ -175,8 +190,6 @@ class TimerEngine:
             s.manual_away = was_manual
             if s.away_started_wall is None:
                 s.away_started_wall = now_wall - gap
-            if s.away_started_mono is None:
-                s.away_started_mono = now_mono - min(gap, now_mono)
 
         return result
 
@@ -185,8 +198,9 @@ class TimerEngine:
         now_mono = self.clock()
         now_wall = self.wall()
 
-        mono_gap = max(0.0, now_mono - self.last_mono)
-        wall_gap = max(0.0, now_wall - self.last_wall)
+        previous_mono, previous_wall = self.last_mono, self.last_wall
+        mono_gap = max(0.0, now_mono - previous_mono)
+        wall_gap = max(0.0, now_wall - previous_wall)
         self.last_mono = now_mono
         self.last_wall = now_wall
         elapsed = mono_gap
@@ -208,6 +222,7 @@ class TimerEngine:
                 now_wall,
                 input_changed,
                 result,
+                self._away_duration(previous_mono, previous_wall) if s.is_away else 0.0,
             )
 
         # Manual away: the starting click and immediate pointer cleanup are

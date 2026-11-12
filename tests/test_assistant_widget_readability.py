@@ -33,6 +33,19 @@ class ReadabilitySettingsTests(unittest.TestCase):
     "Requires a Windows desktop or an explicit Tk test display",
 )
 class WidgetReadabilityTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        directory = cls.enterClassContext(tempfile.TemporaryDirectory())
+        cls.enterClassContext(patch.dict(os.environ, {"APPDATA": directory, "PYSTRAY_BACKEND": "dummy"}))
+        import app
+        def close_owned_logs():
+            for handler in list(app.log.handlers):
+                filename = getattr(handler, "baseFilename", "")
+                if filename and Path(filename).is_relative_to(Path(directory)):
+                    app.log.removeHandler(handler)
+                    handler.close()
+        cls.addClassCleanup(close_owned_logs)
+
     def _assert_visible_inside(self, widget, parent):
         self.assertTrue(widget.winfo_viewable())
         left = widget.winfo_rootx() - parent.winfo_rootx()
@@ -46,19 +59,19 @@ class WidgetReadabilityTests(unittest.TestCase):
         self._assert_visible_inside(bubble, desktop.hero)
         self.assertGreaterEqual(bubble.winfo_reqwidth() / scale, 318)
         self.assertLessEqual(bubble.winfo_reqwidth() / scale, 422)
-        text_items = [item for item in bubble.find_all() if bubble.type(item) == "text"]
-        self.assertTrue(text_items)
         self.assertEqual(bubble.cget("fg"), "#FFFFFF")
         self.assertTrue(any(
             bubble.type(item) == "polygon" and bubble.itemcget(item, "fill") == "#171C25"
             for item in bubble.find_all()
         ))
-        for item in text_items:
-            left, top, right, bottom = bubble.bbox(item)
-            self.assertGreaterEqual(left, 0)
-            self.assertGreaterEqual(top, 0)
-            self.assertLessEqual(right, bubble.winfo_width())
-            self.assertLessEqual(bottom, bubble.winfo_height())
+        self._assert_visible_inside(bubble.text_widget, bubble)
+        self._assert_visible_inside(bubble.chat_button, bubble)
+        self.assertEqual(bubble.text_widget.cget("state"), "disabled")
+        self.assertEqual(bubble.text_widget.get("1.0", "end-1c"), bubble.cget("text"))
+        self.assertLessEqual(int(bubble.text_widget.cget("height")), 3)
+        self.assertLessEqual(bubble.text_widget.winfo_height(), 3 * bubble._line_height)
+        if bubble._has_overflow:
+            self._assert_visible_inside(bubble.scrollbar, bubble)
         self.assertLessEqual(
             desktop.character.winfo_rooty() + desktop._character_visible_bounds()[3],
             bubble.winfo_rooty(),
@@ -72,10 +85,12 @@ class WidgetReadabilityTests(unittest.TestCase):
             hitbox = desktop._chat_hitbox
             self.assertIsNotNone(hitbox)
             self.assertIsNotNone(hitbox._hwnd)
-            send_message = ctypes.WinDLL("user32").SendMessageW
-            send_message.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
-            send_message.restype = ctypes.c_ssize_t
-            send_message(hitbox._hwnd, 0x0201, 1, 4 | (4 << 16))  # WM_LBUTTONDOWN in a blank corner.
+            post_message = ctypes.WinDLL("user32").PostMessageW
+            post_message.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+            post_message.restype = wintypes.BOOL
+            self.assertTrue(post_message(hitbox._hwnd, 0x0201, 1, 4 | (4 << 16)))
+            desktop.root.after(100, desktop.root.quit)
+            desktop.root.mainloop()
         else:
             desktop._visible_speech().event_generate("<Button-1>", x=4, y=4)
         desktop.root.update()
@@ -96,7 +111,7 @@ class WidgetReadabilityTests(unittest.TestCase):
             with self.subTest(dpi=dpi), tempfile.TemporaryDirectory() as temp:
                 directory = Path(temp)
                 settings_path = directory / "settings.json"
-                save_user_settings(settings_path, UserSettings(builtin_image_set="01", widget_scale=100))
+                save_user_settings(settings_path, UserSettings(builtin_image_set="01", widget_scale=100, welcome_seen=True))
 
                 def create_root():
                     root = create_tk()
@@ -115,6 +130,12 @@ class WidgetReadabilityTests(unittest.TestCase):
                     patch.multiple(app, DATA_DIR=directory, SETTINGS_FILE=settings_path, STATE_FILE=directory / "state.json"),
                     patch.object(app.App, "_start_tray"),
                     patch.object(CompactDesktopApp, "_start_global_hotkey"),
+                    # This test supplies clock/status/speech samples. A slow
+                    # runner's real one-second tick can replace them with an
+                    # away notification from host idle input. Keep layout and
+                    # native hitbox callbacks live; timer behavior is covered
+                    # by the engine and desktop-flow tests.
+                    patch.object(FinalGalleryDesktopApp, "_tick_safe"),
                     patch.object(FinalGalleryDesktopApp, "MANUAL_OVERRIDE_FILE", directory / "manual.json"),
                     patch.object(tk, "Tk", create_root),
                 ):
@@ -129,9 +150,12 @@ class WidgetReadabilityTests(unittest.TestCase):
         scale = float(root.tk.call("tk", "scaling")) * 72 / 96
         desktop.cont.configure(text="08:59:59")
         desktop.main_status.configure(text="집중 중")
-        desktop.speech.configure(text="오빠, 차근차근 진행해 봐요.\n다음 단계도 같이 볼게요.")
+        sample_text = "첫째 줄\n둘째 줄"
+        desktop.speech.configure(text=sample_text)
         desktop._apply_widget_appearance()
         root.update()
+        self.assertEqual(desktop.speech.cget("text"), sample_text,
+                         "The layout sample must remain unchanged while measuring its lines")
         self._assert_visible_inside(desktop.clock, desktop.hero)
         self._assert_visible_inside(desktop.cont, desktop.clock)
         self._assert_visible_inside(desktop.main_status, desktop.clock)
@@ -144,37 +168,72 @@ class WidgetReadabilityTests(unittest.TestCase):
             desktop.cont.winfo_rooty() + desktop.cont.winfo_height(), desktop.main_status.winfo_rooty(),
         )
         self._assert_speech_layout(desktop, desktop.speech, scale)
-        first, second = desktop.speech.find_withtag("line")
-        line_spacing = desktop.speech.coords(second)[1] - desktop.speech.coords(first)[1]
-        self.assertGreaterEqual(line_spacing, round(root.winfo_fpixels("15p") * 1.4))
+        first = desktop.speech.text_widget.dlineinfo("1.0")
+        second = desktop.speech.text_widget.dlineinfo("2.0")
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(second)
+        self.assertGreaterEqual(second[1] - first[1], round(root.winfo_fpixels("15p") * 1.4))
 
-        short_reply = "첫째 줄\n둘째 줄\n셋째 줄\n넷째 줄"
-        desktop._show_chat_phase("reply", short_reply)
+        normal = "일반 대사도 긴 글을 유지합니다.\n" * 12
+        desktop.speech.configure(text=normal)
         root.update()
-        self._assert_speech_layout(desktop, desktop._visible_speech(), scale)
-        self.assertEqual(desktop._visible_speech().cget("text"), short_reply)
-        self._click_reply(desktop)
-        self.assertIsNone(desktop._assistant_windows.reply_window)
+        self._assert_speech_layout(desktop, desktop.speech, scale)
+        desktop.speech.scroll_to(1)
+        root.update()
+        self.assertGreater(desktop.speech.text_widget.yview()[0], 0)
+        self.assertEqual(desktop.speech.text_widget.yview()[1], 1)
 
-        long_reply = short_reply + "\n마지막 줄"
+        long_reply = ("첫째 줄\n둘째 줄\n셋째 줄\n넷째 줄\n"
+                      + "한글띄어쓰기없이도읽을수있어요" * 15
+                      + "\nhttps://example.com/" + "long-url-path/" * 20
+                      + "\n\n웹 조회 시각 2026-11-09\n마지막 문장")
         desktop._show_chat_phase("reply", long_reply)
         root.update()
-        self._assert_speech_layout(desktop, desktop._visible_speech(), scale)
-        self.assertIn("전체 답변 보기", desktop._visible_speech().cget("text"))
+        bubble = desktop._visible_speech()
+        self._assert_speech_layout(desktop, bubble, scale)
+        self.assertEqual(bubble.cget("text"), long_reply)
+        self.assertNotIn("전체 답변 보기", bubble.cget("text"))
         self._click_reply(desktop)
-        reader = desktop._assistant_windows.reply_window
-        self.assertTrue(reader.winfo_viewable())
-        self.assertEqual(reader.text.get("1.0", "end-1c"), long_reply)
-        reader.withdraw()
-
-        source_reply = "관측 자료를 확인했어요.\nhttps://example.com/weather"
-        desktop._show_chat_phase("reply", source_reply)
+        self.assertIsNone(desktop._assistant_windows.reply_window)
+        self.assertIsNone(desktop._assistant_windows.chat_window)
+        before = bubble.text_widget.yview()
+        bubble.text_widget.event_generate("<MouseWheel>", delta=-120)
         root.update()
-        self.assertIn("전체 답변 보기", desktop._visible_speech().cget("text"))
-        self._click_reply(desktop)
-        self.assertEqual(reader.text.get("1.0", "end-1c"), source_reply)
-        self.assertTrue(reader.text.tag_ranges("source"))
-        reader.withdraw()
+        self.assertGreater(bubble.text_widget.yview()[0], before[0])
+        self.assertEqual(desktop._chat_phase, "reply")
+        self.assertGreater(desktop._assistant_last_chat_at, float("-inf"))
+        # Exercise the real scrollbar command, not just its appearance.
+        before_scrollbar = bubble.text_widget.index("@0,0")
+        bubble.scrollbar.tk.call(bubble.scrollbar.cget("command"), "moveto", 0.5)
+        root.update()
+        self.assertTrue(bubble.text_widget.compare("@0,0", ">", before_scrollbar))
+        bubble.text_widget.focus_force()
+        bubble.text_widget.event_generate("<End>")
+        root.update()
+        self.assertEqual(bubble.text_widget.yview()[1], 1)
+        self.assertIsNotNone(bubble.text_widget.dlineinfo("end-2c"))
+        desktop._apply_widget_appearance()
+        desktop._render_chat_reply(long_reply)
+        root.update()
+        # Tk refines total pixel estimates lazily for long wrapped paragraphs;
+        # the first fraction can change while the visible last line stays put.
+        self.assertEqual(bubble.text_widget.yview()[1], 1)
+        self.assertIsNotNone(bubble.text_widget.dlineinfo("end-2c"))
+        bubble.text_widget.event_generate("<Home>")
+        root.update()
+        self.assertEqual(bubble.text_widget.yview()[0], 0)
+        self.assertEqual(bubble.text_widget.get("1.0", "end-1c"), long_reply)
+        bubble.text_widget.event_generate("<Tab>")
+        root.update()
+        self.assertIs(root.focus_get(), bubble.chat_button)
+        bubble.chat_button.event_generate("<Return>")
+        root.update()
+        chat = desktop._assistant_windows.chat_window
+        self.assertIsNotNone(chat)
+        self.assertTrue(chat.winfo_viewable())
+        self.assertIsNone(desktop._assistant_windows.reply_window)
+        desktop._assistant_windows.hide()
+        root.update()
 
         flags = desktop.display_bool_vars
         for show_time, show_status in ((False, True), (True, False), (False, False)):

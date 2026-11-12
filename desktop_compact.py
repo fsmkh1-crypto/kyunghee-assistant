@@ -9,13 +9,13 @@ from pathlib import Path
 import shutil
 import threading
 import tkinter as tk
-from tkinter import colorchooser, filedialog
+from tkinter import colorchooser, filedialog, messagebox, ttk
 import tkinter.font as tkfont
 from PIL import Image, ImageTk
 
 import app as core
 from app import SingleInstance
-from asset_manager import available_complete_sets, resolve_configured_asset
+from asset_manager import available_complete_sets, resolve_configured_asset, role_for_work_mode
 from desktop_app import DesktopApp
 from image_render import resize_rgba_alpha_safe, threshold_alpha
 from image_sets import ImageSetStore, normalize_alignment
@@ -219,18 +219,127 @@ class _RoundedPanel(tk.Canvas):
 
 
 class SpeechBubble(_RoundedPanel):
-    """A readable message surface over the transparent character window."""
+    """A three-line reading viewport; full text stays inside the same bubble."""
+
+    MAX_VISIBLE_LINES = 3
 
     def __init__(self, parent, text, *, family, size, fg, bg, wraplength):
-        super().__init__(parent, bg=bg, cursor="hand2")
+        super().__init__(parent, bg=bg, cursor="arrow")
         self._font = tkfont.Font(family=family, size=size)
-        self._text = text
+        self._button_font = tkfont.Font(family=family, size=max(9, min(11, size - 2)), weight="bold")
+        self._text = str(text)
         self._fg = fg
         self._wraplength = wraplength
+        self._activity_callback = None
+        self._chat_command = None
+        self._has_overflow = False
+        self._text_width = max(1, wraplength - 2 * self._dpi_pixels(18))
+        self.text_widget = tk.Text(
+            self, font=self._font, fg=fg, bg=PANEL_BG, wrap="word", state="disabled",
+            bd=0, highlightthickness=0, padx=0, pady=0, width=1, height=1,
+            cursor="xterm", takefocus=True, exportselection=False,
+            selectbackground=core.PURPLE_2, selectforeground=core.TEXT,
+        )
+        self.scrollbar = tk.Scrollbar(
+            self, orient="vertical", command=self._scroll_command, width=self._dpi_pixels(12),
+            bg=PANEL_BORDER, activebackground=core.PURPLE, troughcolor=PANEL_BG,
+            bd=0, highlightthickness=0, relief="flat", takefocus=True,
+        )
+        self.text_widget.configure(yscrollcommand=self._set_scrollbar)
+        self.chat_button = tk.Button(
+            self, text="대화", command=self._open_chat, font=self._button_font,
+            fg=core.TEXT, bg=core.PANEL_2, activeforeground=core.TEXT,
+            activebackground=core.PURPLE_2, bd=0, relief="flat", takefocus=True,
+            padx=self._dpi_pixels(5), pady=self._dpi_pixels(2), cursor="hand2",
+        )
+        self.chat_button.bind("<Return>", lambda _event: self.chat_button.invoke())
+        self._text_window = self.create_window(0, 0, anchor="nw", window=self.text_widget)
+        self._scroll_window = self.create_window(0, 0, anchor="nw", window=self.scrollbar)
+        self._chat_window = self.create_window(0, 0, anchor="nw", window=self.chat_button, state="hidden")
+        self.bind("<Button-1>", self.focus_reading)
+        self.text_widget.bind("<Button-1>", self._reading_click)
+        for widget in (self, self.text_widget, self.scrollbar, self.chat_button):
+            widget.bind("<MouseWheel>", self._mousewheel)
+            widget.bind("<Button-4>", lambda _event: self.scroll(-3))
+            widget.bind("<Button-5>", lambda _event: self.scroll(3))
+        self.text_widget.bind("<FocusIn>", lambda _event: self._note_activity())
+        self.text_widget.bind("<KeyPress>", lambda _event: self._note_activity(), add="+")
+        for sequence, amount, unit in (
+            ("<Up>", -1, "units"), ("<Down>", 1, "units"),
+            ("<Prior>", -1, "pages"), ("<Next>", 1, "pages"),
+        ):
+            self.text_widget.bind(sequence, lambda _event, n=amount, u=unit: self._scroll_command("scroll", n, u))
+        for sequence, position in (("<Home>", 0), ("<Control-Home>", 0), ("<End>", 1), ("<Control-End>", 1)):
+            self.text_widget.bind(sequence, lambda _event, p=position: self.scroll_to(p))
+        self.text_widget.bind("<Tab>", lambda _event: self._focus_next())
+        self._render(update_text=True)
+
+    def set_activity_callback(self, callback):
+        self._activity_callback = callback
+
+    def set_chat_command(self, command):
+        self._chat_command = command
         self._render()
 
+    def _note_activity(self):
+        if self._activity_callback is not None:
+            self._activity_callback()
+
+    def _open_chat(self):
+        self._note_activity()
+        if self._chat_command is not None:
+            self._chat_command()
+
+    def _focus_next(self):
+        (self.chat_button if self._chat_command else self.text_widget.tk_focusNext()).focus_set()
+        return "break"
+
+    def _reading_click(self, _event=None):
+        self.focus_reading()
+        # Let Text's class binding retain selection/copy behavior.
+
+    def focus_reading(self, _event=None):
+        self._note_activity()
+        self.text_widget.focus_set()
+        return "break"
+
+    def _scroll_command(self, *args):
+        self.focus_reading()
+        self.text_widget.yview(*args)
+        return "break"
+
+    def _set_scrollbar(self, first, last):
+        self.scrollbar.set(first, last)
+        overflow = float(last) - float(first) < 0.999999
+        if overflow != self._has_overflow:
+            self._has_overflow = overflow
+            if hasattr(self, "_scroll_window"):
+                self.itemconfigure(self._scroll_window, state="normal" if overflow else "hidden")
+                self.event_generate("<<SpeechLayoutChanged>>", when="tail")
+
+    def scroll(self, units):
+        return self._scroll_command("scroll", int(units), "units")
+
+    def scroll_to(self, fraction):
+        return self._scroll_command("moveto", min(1.0, max(0.0, float(fraction))))
+
+    def _mousewheel(self, event):
+        delta = getattr(event, "delta", 0)
+        if delta:
+            self.scroll(-max(1, abs(int(delta / 120))) * 3 if delta > 0 else max(1, abs(int(delta / 120))) * 3)
+        return "break"
+
+    def native_interaction_widgets(self):
+        """Opaque child controls must receive Windows input past the hitbox."""
+        result = [self.text_widget]
+        if self._has_overflow:
+            result.append(self.scrollbar)
+        if self._chat_command is not None:
+            result.append(self.chat_button)
+        return tuple(result)
+
     def wrapped_lines(self, text, *, limit=None):
-        available = max(1, self._wraplength - 2 * self._dpi_pixels(18))
+        available = max(1, self._text_width)
         lines = []
         for paragraph in text.expandtabs(4).split("\n"):
             remaining = paragraph.rstrip()
@@ -254,24 +363,45 @@ class SpeechBubble(_RoundedPanel):
                 return lines
         return lines
 
-    def _render(self):
-        pad_x, pad_y = self._dpi_pixels(18), self._dpi_pixels(12)
-        lines = self.wrapped_lines(self._text)
+    def _render(self, *, update_text=False):
+        first = self.text_widget.yview()[0]
+        pad_x, pad_y, gap = self._dpi_pixels(18), self._dpi_pixels(12), self._dpi_pixels(4)
+        scroll_width = self._dpi_pixels(12)
+        button_width = self._button_font.measure("대화") + 2 * self._dpi_pixels(5) if self._chat_command else 0
+        self._text_width = max(1, self._wraplength - 2 * pad_x - scroll_width - gap - (button_width + gap if button_width else 0))
+        lines = self.wrapped_lines(self._text, limit=self.MAX_VISIBLE_LINES + 1)
+        self._visible_line_count = max(1, min(self.MAX_VISIBLE_LINES, len(lines)))
+        self._has_overflow = len(lines) > self.MAX_VISIBLE_LINES
         font_height = self._font.metrics("linespace")
         font_pixels = self.winfo_fpixels(f"{self._font.actual('size')}p")
-        line_height = max(font_height, round(font_pixels * 1.4))
-        height = 2 * pad_y + font_height + (len(lines) - 1) * line_height
-        self.delete("line")
-        for index, line in enumerate(lines):
-            if line:
-                self.create_text(pad_x, pad_y + index * line_height, text=line, font=self._font,
-                                 fill=self._fg, anchor="nw", tags="line")
-        self._fit_panel(self._wraplength, height, 14)
+        self._line_height = max(font_height, round(font_pixels * 1.4))
+        self._viewport_height = self._visible_line_count * self._line_height
+        self.text_widget.configure(font=self._font, fg=self._fg, height=self._visible_line_count, spacing1=0,
+                                   spacing2=self._line_height - font_height, spacing3=self._line_height - font_height)
+        if update_text:
+            self.text_widget.configure(state="normal")
+            self.text_widget.delete("1.0", "end")
+            self.text_widget.insert("1.0", self._text)
+            self.text_widget.configure(state="disabled")
+        self.coords(self._text_window, pad_x, pad_y)
+        self.itemconfigure(self._text_window, width=self._text_width, height=self._viewport_height)
+        self.coords(self._scroll_window, pad_x + self._text_width + gap, pad_y)
+        self.itemconfigure(self._scroll_window, width=scroll_width, height=self._viewport_height,
+                           state="normal" if self._has_overflow else "hidden")
+        self.coords(self._chat_window, self._wraplength - pad_x - button_width, pad_y)
+        self.itemconfigure(self._chat_window, width=button_width or 1,
+                           state="normal" if self._chat_command else "hidden")
+        self._fit_panel(self._wraplength, 2 * pad_y + self._viewport_height, 14)
+        self.text_widget.yview_moveto(0 if update_text else first)
+        # Native exclusion regions must follow child geometry even when the
+        # bubble's outer three-line size did not change. Never pump Tk here.
+        self.event_generate("<<SpeechLayoutChanged>>", when="tail")
 
     def set_style(self, *, size=None, fg=None, outline=None):
         changed = False
         if size is not None and int(size) != int(self._font.cget("size")):
             self._font.configure(size=int(size))
+            self._button_font.configure(size=max(9, min(11, int(size) - 2)))
             changed = True
         if fg is not None and fg != self._fg:
             self._fg = fg
@@ -290,15 +420,15 @@ class SpeechBubble(_RoundedPanel):
         text = kwargs.pop("text", None)
         color = kwargs.pop("fg", kwargs.pop("foreground", None))
         kwargs.pop("outline", None)
-        changed = False
+        changed = update_text = False
         if text is not None and str(text) != self._text:
             self._text = str(text)
-            changed = True
+            changed = update_text = True
         if color is not None and color != self._fg:
             self._fg = color
             changed = True
         if changed:
-            self._render()
+            self._render(update_text=update_text)
         if kwargs:
             super().configure(**kwargs)
 
@@ -427,6 +557,8 @@ class CompactDesktopApp(DesktopApp):
         self._restore_window_position()
         self._start_global_hotkey()
         self.root.after(1500, self._sync_presentation_state)
+        if not self.preferences.welcome_seen:
+            self.root.after(800, self._show_welcome)
 
     def _build_ui(self):
         families = {name.casefold(): name for name in tkfont.families(self.root)}
@@ -791,7 +923,9 @@ class CompactDesktopApp(DesktopApp):
 
     def _button(self, parent, text, command, primary=False, width=None):
         button = super()._button(parent, text, command, primary=primary, width=width)
-        button.configure(font=(self.FONT_FAMILY, 9, "normal"))
+        button.configure(font=(self.FONT_FAMILY, 9, "normal"), takefocus=True,
+                         highlightthickness=1, highlightbackground=core.BORDER, highlightcolor=core.PURPLE)
+        button.bind("<Return>", lambda _event: button.invoke())
         return button
 
     @staticmethod
@@ -844,10 +978,7 @@ class CompactDesktopApp(DesktopApp):
         self._stop_drag(event)
         self._character_dragged = False
         if not dragged:
-            if hasattr(self, "speech"):
-                self.speech.configure(text=self._pick_dialogue("click"))
-                self.last_dialogue_at = __import__("time").monotonic()
-            self.show_stats()
+            self._show_page("settings")
 
     def _emergency_hide(self, _event=None):
         self.root.attributes("-topmost", False)
@@ -1032,8 +1163,7 @@ class CompactDesktopApp(DesktopApp):
         self._image_set_choices.clear()
         super().apply_preferences(preferences)
         self._apply_widget_appearance()
-        self.character_role = None
-        self._set_character("default")
+        self._restore_situation_character()
         self._resize_for_page(self.current_page)
 
     def _break_notifications_suppressed(self) -> bool:
@@ -1143,7 +1273,9 @@ class CompactDesktopApp(DesktopApp):
         )
         self.main_status.pack(anchor="w")
         for widget in (clock, clock.content, self.cont, self.main_status):
-            self._bind_drag_surface(widget)
+            widget.bind("<ButtonPress-1>", self._start_character_drag)
+            widget.bind("<B1-Motion>", self._drag_character)
+            widget.bind("<ButtonRelease-1>", self._stop_character_drag)
 
         self.escape_control = tk.Label(
             hero, text="×", font=(self.FONT_FAMILY, 12, "normal"),
@@ -1162,7 +1294,13 @@ class CompactDesktopApp(DesktopApp):
         self.character.bind("<ButtonPress-1>", self._start_character_drag)
         self.character.bind("<B1-Motion>", self._drag_character)
         self.character.bind("<ButtonRelease-1>", self._stop_character_drag)
-        self.speech.bind("<Button-1>", self._cycle_message)
+        self.character.configure(takefocus=True, highlightthickness=1,
+                                 highlightbackground=self.TRANSPARENT_KEY, highlightcolor=core.PURPLE)
+        self.character.bind("<Return>", lambda _event: self._show_page("settings"))
+        self.cont.configure(takefocus=True, highlightthickness=1,
+                            highlightbackground=PANEL_BG, highlightcolor=core.PURPLE)
+        self.cont.bind("<Return>", lambda _event: self._show_page("settings"))
+        self.speech.bind("<Button-1>", self.speech.focus_reading)
         self._apply_widget_appearance()
 
     def _new_speech_bubble(self, text):
@@ -1231,14 +1369,25 @@ class CompactDesktopApp(DesktopApp):
             return
         self._image_cache.clear()
         self._apply_widget_appearance()
-        self.character_role = None
-        self._set_character("default")
+        self._restore_situation_character()
         # Re-run placement after the PhotoImage has its new exact dimensions.
         self._apply_widget_appearance()
         # Keep the settings panel usable while previewing. The timer window size
         # is recalculated when the user returns to the timer page.
         if self.current_page == "timer":
             self._resize_for_page("timer")
+
+    def _restore_situation_character(self):
+        """A layout/scale refresh must never change the timer's meaning."""
+        if self.state.session.is_away:
+            role = "away"
+        else:
+            role = role_for_work_mode(self._current_workday_state().mode)
+            # Keep a current break/alert pose until the timer changes it.
+            if role == "default" and self.character_role in {"rest", "alert"}:
+                role = self.character_role
+        self.character_role = None
+        self._set_character(role)
 
     def _apply_widget_appearance(self):
         if not hasattr(self, "cont"):
@@ -1544,34 +1693,221 @@ class CompactDesktopApp(DesktopApp):
             return path.name
         return f"⚠ 파일 없음: {Path(value).name}"
 
+    def _new_settings_section(self, title):
+        tab = tk.Frame(self._settings_notebook, bg=core.PANEL)
+        self._settings_notebook.add(tab, text=title)
+        canvas = tk.Canvas(tab, bg=core.PANEL, highlightthickness=0, bd=0)
+        scroll = ttk.Scrollbar(tab, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        body = tk.Frame(canvas, bg=core.PANEL)
+        window = canvas.create_window((0, 0), window=body, anchor="nw")
+        body.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=e.width))
+        self._settings_canvases[str(tab)] = canvas
+        return body
+
+    def _settings_mousewheel(self, event):
+        if self.current_page != "settings" or event.widget.winfo_toplevel() != self.root:
+            return
+        canvas = self._settings_canvases.get(self._settings_notebook.select())
+        if canvas is None or not str(event.widget).startswith(str(canvas)):
+            return
+        delta = int(getattr(event, "delta", 0))
+        if delta:
+            canvas.yview_scroll((-1 if delta > 0 else 1) * 3, "units")
+            return "break"
+
+    def _settings_focus_visible(self, event):
+        if self.current_page != "settings" or event.widget.winfo_toplevel() != self.root:
+            return
+        # FocusIn is also delivered to ancestor Frames. Scrolling a tall body
+        # Frame into view after its button hides the very control being focused.
+        if event.widget is not self.root.focus_get():
+            return
+        canvas = self._settings_canvases.get(self._settings_notebook.select())
+        if canvas is None or not str(event.widget).startswith(str(canvas)):
+            return
+        try:
+            top = event.widget.winfo_rooty() - canvas.winfo_rooty()
+            bottom = top + event.widget.winfo_height()
+            total = max(1, canvas.bbox("all")[3])
+            first = canvas.yview()[0]
+            if top < 0:
+                canvas.yview_moveto(first + top / total)
+            elif bottom > canvas.winfo_height():
+                canvas.yview_moveto(first + (bottom - canvas.winfo_height()) / total)
+        except (tk.TclError, TypeError):
+            pass
+
+    def _settings_variables(self):
+        result = [self.break_interval_var, self.snooze_minutes_var, self.personality_var,
+                  self.widget_scale_var, self.builtin_image_set_var]
+        for name in ("settings_bool_vars", "settings_time_vars", "display_bool_vars", "style_size_vars",
+                     "style_color_vars", "image_path_vars", "image_mode_vars", "image_alignment_vars", "image_builtin_vars"):
+            result.extend(getattr(self, name, {}).values())
+        return result
+
+    def _settings_snapshot(self):
+        return tuple(var.get() for var in self._settings_variables()) + (
+            self.custom_dialogue_text.get("1.0", "end-1c"),)
+
+    def _settings_changed(self, *_args):
+        if not hasattr(self, "_settings_saved_snapshot"):
+            return
+        dirty = self._settings_snapshot() != self._settings_saved_snapshot
+        self.settings_dirty_label.configure(text="저장 안 됨" if dirty else "저장됨",
+                                            fg=core.AMBER if dirty else core.MUTED)
+
+    def _settings_text_changed(self, _event=None):
+        if self.custom_dialogue_text.edit_modified():
+            self.custom_dialogue_text.edit_modified(False)
+            self._settings_changed()
+
+    def _discard_settings(self):
+        p = self.preferences
+        for key, var in self.settings_bool_vars.items():
+            var.set(getattr(p, key))
+        for key, var in self.settings_time_vars.items():
+            var.set(getattr(p, key))
+        for key, var in self.display_bool_vars.items():
+            var.set(getattr(p, key))
+        self.break_interval_var.set(str(p.break_interval_minutes))
+        self.snooze_minutes_var.set(str(p.snooze_minutes))
+        self.personality_var.set(next(label for label, key in self._personality_values.items() if key == p.personality))
+        self.widget_scale_var.set(p.widget_scale)
+        self.builtin_image_set_var.set(self._builtin_base_label(p.builtin_image_set))
+        for key, var in self.style_size_vars.items():
+            var.set(str(getattr(p, f"{key}_text_size")))
+        for key, var in self.style_color_vars.items():
+            var.set(getattr(p, f"{key}_text_color"))
+        for key, _caption in self.IMAGE_ROWS:
+            self.image_path_vars[key].set(getattr(p, f"image_{key}"))
+            self.image_builtin_vars[key].set(self._builtin_override_label(getattr(p, f"builtin_image_{key}")))
+            config = self._image_set_store.get(key)
+            self.image_mode_vars[key].set("가운데 크롭" if config.fit_mode == "crop" else "자동 맞춤")
+            labels = {"center": "가운데", "top": "위", "bottom": "아래", "left": "왼쪽", "right": "오른쪽",
+                      "top_left": "왼쪽 위", "top_right": "오른쪽 위", "bottom_left": "왼쪽 아래", "bottom_right": "오른쪽 아래"}
+            self.image_alignment_vars[key].set(labels.get(config.alignment, "가운데"))
+        self.custom_dialogue_text.delete("1.0", "end")
+        self.custom_dialogue_text.insert("1.0", p.custom_dialogue)
+        self._settings_saved_snapshot = self._settings_snapshot()
+        self._settings_changed()
+        self._preview_widget_controls()
+        self.settings_status.configure(text="일반 설정의 미저장 변경을 버렸어요. 가져온 이미지는 보존됩니다.", fg=core.MUTED)
+
+    def _open_assistant_panel(self, method):
+        windows = getattr(self, "_assistant_windows", None)
+        if windows is not None:
+            getattr(windows, method)()
+        else:
+            messagebox.showinfo("AI 연결", "AI 기능을 초기화하지 못했어요. 타이머는 계속 사용할 수 있어요.", parent=self.root)
+
+    def _show_welcome(self):
+        from assistant_ai.ui_helpers import position_window
+        window = tk.Toplevel(self.root)
+        window.title("승아 타이머 사용 안내")
+        window.configure(bg=core.PANEL)
+        self._label(window, "타이머는 AI 없이도 바로 사용할 수 있어요", size=13, bg=core.PANEL).pack(anchor="w", padx=20, pady=(20, 12))
+        self._label(window,
+                    "말풍선: 대화 버튼 / 긴 글은 휠·방향키로 읽기\n시계·캐릭터 클릭 → 설정 / 누른 채 움직이기 → 이동\n주사위 → 현재 그림 변경\n트레이 메뉴 → 오늘 기록·자리비움·복귀\nCtrl+Shift+H → 숨기기·다시 열기\nCtrl+Shift+A → 대화 열기\n\n창을 숨겨도 기록은 계속됩니다. 트레이에서 다시 열 수 있어요.\n이미지 팩은 설정 → 이미지, 데이터 백업은 AI·기억·데이터에서 관리해요.",
+                    size=10, bg=core.PANEL, justify="left", wraplength=470).pack(anchor="w", padx=20, pady=8)
+        row = tk.Frame(window, bg=core.PANEL)
+        row.pack(fill="x", padx=20, pady=20)
+        def done(connect=False):
+            try:
+                self.preferences = replace(self.preferences, welcome_seen=True)
+                save_user_settings(core.SETTINGS_FILE, self.preferences)
+            except OSError:
+                core.log.warning("welcome preference save failed")
+            window.destroy()
+            if connect:
+                self._open_assistant_panel("open_settings")
+        self._button(row, "AI 없이 시작", done, primary=True).pack(side="left", padx=(0, 8))
+        self._button(row, "AI 연결 설정", lambda: done(True)).pack(side="left")
+        window.protocol("WM_DELETE_WINDOW", done)
+        window.bind("<Escape>", lambda _e: done())
+        window.geometry("540x390")
+        position_window(window, self.root, work_area=self._best_work_area)
+
+    def _open_data_panel(self):
+        from app_brand import APP_VERSION
+        from backup_ui import open_backup_panel
+        from assistant_ai.ui_helpers import position_window
+        window = open_backup_panel(self.root, data_dir=core.DATA_DIR, app_version=APP_VERSION,
+                                   before_restore=self._before_data_restore,
+                                   on_restore_complete=self._after_data_restore,
+                                   after_restore_failure=self._data_restore_failed)
+        position_window(window, self.root, work_area=self._best_work_area)
+        return window
+
+    def _before_data_restore(self):
+        service = getattr(self, "_assistant_service", None)
+        if service is not None and not service.try_begin_restore():
+            return False
+        try:
+            core.save_state(core.STATE_FILE, self.state)
+            return True
+        except Exception:
+            if service is not None:
+                service.end_restore_failure()
+            raise
+
+    def _data_restore_failed(self):
+        service = getattr(self, "_assistant_service", None)
+        if service is not None:
+            service.end_restore_failure()
+
+    def _after_data_restore(self, result=None):
+        # Do not run quit(): it would overwrite restored data with old memory.
+        self._hotkey_stop.set()
+        shutdown = getattr(self, "_assistant_shutdown", None)
+        if shutdown is not None:
+            shutdown.set()
+        if self.tray_icon:
+            try:
+                self.tray_icon.stop()
+            except Exception:
+                core.log.warning("tray shutdown after restore failed")
+        hitbox = getattr(self, "_chat_hitbox", None)
+        if hitbox is not None:
+            hitbox.close()
+        self.root.destroy()
+        if os.name == "nt":
+            recovery = getattr(result, "recovery_required", False)
+            text = ("복원 중 오류가 발생해 자동 복구를 마치지 못했어요. 앱을 종료했어요.\n"
+                    "사용자 데이터 폴더의 .restore-journal-* 폴더와 backups의 복구 백업을 보존하고 복구를 확인해 주세요."
+                    if recovery else "사용자 데이터를 복원했어요. 승아 타이머를 다시 실행해 주세요.")
+            ctypes.windll.user32.MessageBoxW(None, text, "승아 타이머 데이터 복원", 0x40)
+
     def _build_settings_page(self):
         page = self.settings_page
         self._build_header(page, "설정", back_command=lambda: self._show_page("timer"))
 
-        outer = tk.Frame(page, bg=core.BG)
-        outer.pack(fill="both", expand=True, padx=7, pady=(2, 7))
-        canvas = tk.Canvas(outer, bg=core.PANEL, highlightthickness=0, bd=0)
-        scroll = tk.Scrollbar(outer, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=scroll.set)
-        scroll.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
-
-        def _settings_mousewheel(event):
-            if self.current_page != "settings":
-                return
-            delta = int(getattr(event, "delta", 0))
-            if not delta:
-                return
-            units = -1 if delta > 0 else 1
-            canvas.yview_scroll(units * 3, "units")
-            return "break"
-
-        canvas.bind("<MouseWheel>", _settings_mousewheel)
-        self.root.bind_all("<MouseWheel>", _settings_mousewheel, add="+")
-        content = tk.Frame(canvas, bg=core.PANEL)
-        window_id = canvas.create_window((0, 0), window=content, anchor="nw")
-        content.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window_id, width=e.width))
+        save_row = tk.Frame(page, bg=core.PANEL)
+        save_row.pack(side="bottom", fill="x", padx=7, pady=7)
+        self.settings_status = self._label(save_row, "", size=9, fg=core.GREEN, bg=core.PANEL,
+                                           wraplength=650, justify="left")
+        self.settings_status.pack(fill="x", padx=7, anchor="w")
+        save_row.bind("<Configure>", lambda event: self.settings_status.configure(wraplength=max(200, event.width - 20)))
+        save_controls = tk.Frame(save_row, bg=core.PANEL)
+        save_controls.pack(fill="x")
+        self.settings_dirty_label = self._label(save_controls, "저장됨", size=9, fg=core.MUTED, bg=core.PANEL)
+        self.settings_dirty_label.pack(side="left")
+        self._button(save_controls, "설정 저장", self._save_settings, primary=True).pack(side="right", padx=5, pady=5)
+        self._button(save_controls, "미저장 변경 버리기", self._discard_settings).pack(side="right", padx=3)
+        self._settings_notebook = ttk.Notebook(page)
+        self._settings_notebook.pack(fill="both", expand=True, padx=7, pady=2)
+        self._settings_canvases = {}
+        self._settings_sections = {
+            key: self._new_settings_section(label)
+            for key, label in (("timer", "타이머·알림"), ("appearance", "모양·글자"),
+                               ("images", "이미지"), ("ai", "AI·기억·데이터"))
+        }
+        self.root.bind_all("<MouseWheel>", self._settings_mousewheel, add="+")
+        self.root.bind_all("<FocusIn>", self._settings_focus_visible, add="+")
+        content = self._settings_sections["timer"]
 
         p = self.preferences
         pad = {"padx": 14}
@@ -1661,9 +1997,18 @@ class CompactDesktopApp(DesktopApp):
             insertbackground=core.TEXT, relief="flat", bd=0, padx=7, pady=6,
         )
         self.custom_dialogue_text.pack(fill="x", pady=(0, 4), **pad)
+        def move_focus(event, previous=False):
+            target = event.widget.tk_focusPrev() if previous else event.widget.tk_focusNext()
+            if target is not None:
+                target.focus_set()
+            return "break"
+        self.custom_dialogue_text.bind("<Tab>", move_focus)
+        self.custom_dialogue_text.bind("<Shift-Tab>", lambda event: move_focus(event, True))
+        self.custom_dialogue_text.bind("<ISO_Left_Tab>", lambda event: move_focus(event, True))
         if p.custom_dialogue:
             self.custom_dialogue_text.insert("1.0", p.custom_dialogue)
 
+        content = self._settings_sections["appearance"]
         self._label(content, "위젯 표시", size=11, bg=core.PANEL).pack(anchor="w", pady=(14, 4), **pad)
         scale_row = tk.Frame(content, bg=core.PANEL)
         scale_row.pack(fill="x", pady=(0, 5), **pad)
@@ -1708,7 +2053,7 @@ class CompactDesktopApp(DesktopApp):
         self._label(content, "위젯 글자", size=11, bg=core.PANEL).pack(anchor="w", pady=(14, 4), **pad)
         self._label(
             content,
-            "Pretendard Regular 고정 · 외곽선 색은 선택한 글자색에 맞춰 자동 조정됩니다.",
+            f"사용 글꼴: {self.FONT_FAMILY} · 외곽선 색은 글자색에 맞춰 자동 조정됩니다.",
             size=8, fg=core.MUTED, bg=core.PANEL,
         ).pack(anchor="w", pady=(0, 5), **pad)
 
@@ -1745,7 +2090,10 @@ class CompactDesktopApp(DesktopApp):
             ).pack(side="left", ipady=2)
             self._button(row, "색상 선택", lambda k=key: self._choose_color(k)).pack(side="left", padx=(6, 0))
 
+        content = self._settings_sections["images"]
         self._label(content, "상황별 승아 이미지", size=11, bg=core.PANEL).pack(anchor="w", pady=(16, 4), **pad)
+        self._label(content, "파일 가져오기는 바로 저장되고, 갤러리는 선택 후 적용을 누릅니다. 일반 설정과 표시 옵션은 아래에서 저장해 주세요.",
+                    size=9, fg=core.MUTED, bg=core.PANEL, wraplength=650, justify="left").pack(anchor="w", pady=4, **pad)
         self._label(
             content,
             "권장: 투명 PNG, 세로형 900×1200 이상(최소 600×800). 인물 주변 여백 5~10%. 프로필은 512×512 이상 권장.",
@@ -1807,6 +2155,12 @@ class CompactDesktopApp(DesktopApp):
             "top_left": "왼쪽 위", "top_right": "오른쪽 위",
             "bottom_left": "왼쪽 아래", "bottom_right": "오른쪽 아래",
         }
+        # Role controls must be real children of this container. Repacking
+        # sibling widgets into a later Frame can leave the Frame covering them.
+        self._image_role_detail_frame = tk.Frame(content, bg=core.PANEL)
+        self._image_role_detail_frame.pack(fill="x", padx=4, pady=4)
+        self._image_role_rows = {}
+        self._image_role_action_rows = {}
         for key, caption in self.IMAGE_ROWS:
             path_value = getattr(p, f"image_{key}")
             config = self._image_set_store.get(key)
@@ -1819,41 +2173,55 @@ class CompactDesktopApp(DesktopApp):
                 value=self._builtin_override_label(getattr(p, f"builtin_image_{key}", ""))
             )
 
-            row = tk.Frame(content, bg=core.PANEL)
+            row = tk.Frame(self._image_role_detail_frame, bg=core.PANEL)
             row.pack(fill="x", pady=(3, 0), **pad)
-            self._label(row, caption, size=9, bg=core.PANEL).pack(side="left")
+            heading = tk.Frame(row, bg=core.PANEL)
+            heading.pack(fill="x")
+            self._label(heading, caption, size=9, bg=core.PANEL).pack(side="left")
             name_label = tk.Label(
-                row, textvariable=self.image_name_vars[key], width=18, anchor="w",
+                heading, textvariable=self.image_name_vars[key], width=24, anchor="w",
                 font=(self.FONT_FAMILY, 8, "normal"), fg=core.MUTED, bg=core.PANEL,
             )
             name_label.pack(side="left", padx=(10, 5))
-            self._button(row, "한 장", lambda k=key: self._choose_image(k)).pack(side="left", padx=2)
-            self._button(row, "여러 장", lambda k=key: self._choose_image_set(k)).pack(side="left", padx=2)
-            self._button(row, "폴더", lambda k=key: self._choose_image_folder(k)).pack(side="left", padx=2)
-            self._button(row, "기본값", lambda k=key: self._reset_image(k)).pack(side="left", padx=(2, 0))
-            options = tk.Frame(content, bg=core.PANEL)
+            actions = tk.Frame(row, bg=core.PANEL)
+            actions.pack(fill="x", pady=4)
+            self._image_role_action_rows[key] = actions
+            for index, (text, command) in enumerate((
+                ("한 장", lambda k=key: self._choose_image(k)),
+                ("여러 장", lambda k=key: self._choose_image_set(k)),
+                ("폴더", lambda k=key: self._choose_image_folder(k)),
+                ("기본값", lambda k=key: self._reset_image(k)),
+            )):
+                self._button(actions, text, command).grid(row=index // 3, column=index % 3, sticky="ew", padx=2, pady=2)
+            for column in range(3):
+                actions.grid_columnconfigure(column, weight=1, uniform="image-actions")
+            options = tk.Frame(self._image_role_detail_frame, bg=core.PANEL)
             options.pack(fill="x", pady=(0, 3), **pad)
-            self._label(options, "내장", size=8, fg=core.MUTED, bg=core.PANEL).pack(side="left", padx=(70, 3))
+            self._image_role_rows[key] = (row, options)
+            builtin_field = tk.Frame(options, bg=core.PANEL)
+            builtin_field.pack(fill="x", pady=2)
+            self._label(builtin_field, "내장", size=8, fg=core.MUTED, bg=core.PANEL).pack(side="left", padx=(5, 3))
             tk.OptionMenu(
-                options, self.image_builtin_vars[key], "세트 기본값", "기본 모델", *self._builtin_set_labels,
-                command=lambda _value, k=key: self._select_settings_preview(k),
+                builtin_field, self.image_builtin_vars[key], "세트 기본값", "기본 모델", *self._builtin_set_labels,
+                command=lambda _value, k=key: self._select_settings_preview(k), width=14,
             ).pack(side="left", padx=(0, 5))
-            self._label(options, "표시", size=8, fg=core.MUTED, bg=core.PANEL).pack(side="left", padx=(5, 3))
-            tk.OptionMenu(
-                options, self.image_mode_vars[key], "자동 맞춤", "가운데 크롭",
-                command=lambda _value, k=key: self._select_settings_preview(k),
-            ).pack(side="left", padx=(0, 5))
-            self._label(options, "정렬", size=8, fg=core.MUTED, bg=core.PANEL).pack(side="left", padx=(5, 3))
-            tk.OptionMenu(
-                options, self.image_alignment_vars[key],
-                "가운데", "위", "아래", "왼쪽", "오른쪽",
-                "왼쪽 위", "오른쪽 위", "왼쪽 아래", "오른쪽 아래",
-                command=lambda _value, k=key: self._select_settings_preview(k),
-            ).pack(side="left")
-            self._button(options, "미리보기", lambda k=key: self._select_settings_preview(k)).pack(side="left", padx=(7, 0))
+            fields_row = tk.Frame(options, bg=core.PANEL)
+            fields_row.pack(fill="x", pady=2)
+            for label, variable, choices, width in (
+                ("표시", self.image_mode_vars[key], ("자동 맞춤", "가운데 크롭"), 14),
+                ("정렬", self.image_alignment_vars[key],
+                 ("가운데", "위", "아래", "왼쪽", "오른쪽", "왼쪽 위", "오른쪽 위", "왼쪽 아래", "오른쪽 아래"), 14),
+            ):
+                field = tk.Frame(fields_row, bg=core.PANEL)
+                field.pack(side="left", padx=(0, 5))
+                self._label(field, label, size=8, fg=core.MUTED, bg=core.PANEL).pack(side="left", padx=(5, 3))
+                tk.OptionMenu(field, variable, *choices, width=width,
+                              command=lambda _value, k=key: self._select_settings_preview(k)).pack(side="left")
+            self._button(fields_row, "미리보기", lambda k=key: self._select_settings_preview(k)).pack(side="left", padx=5)
 
         self._render_settings_preview("default")
 
+        content = self._settings_sections["timer"]
         self._label(content, "퇴근 시간", size=11, bg=core.PANEL).pack(anchor="w", pady=(16, 4), **pad)
         self.settings_time_vars = {
             "wind_down": tk.StringVar(value=p.wind_down),
@@ -1876,11 +2244,23 @@ class CompactDesktopApp(DesktopApp):
                 insertbackground=core.TEXT, relief="flat", bd=0,
             ).pack(side="right", ipady=2)
 
-        save_row = tk.Frame(content, bg=core.PANEL)
-        save_row.pack(fill="x", padx=14, pady=(16, 16))
-        self.settings_status = self._label(save_row, "", size=9, fg=core.GREEN, bg=core.PANEL)
-        self.settings_status.pack(side="left")
-        self._button(save_row, "설정 저장", self._save_settings, primary=True).pack(side="right")
+        content = self._settings_sections["ai"]
+        self._label(content, "승아와 함께 사용하기", size=12, bg=core.PANEL).pack(anchor="w", padx=14, pady=(16, 8))
+        self._label(content, "AI 없이도 타이머·기록·이미지·백업을 사용할 수 있어요.\nAI 대화는 연결 설정에서 켜고, 키 보관 방법과 연결 시험을 확인해 주세요.",
+                    size=10, bg=core.PANEL, justify="left", wraplength=650).pack(anchor="w", padx=14, pady=6)
+        for label, action in (("승아와 대화", lambda: self._open_assistant_panel("open_chat")),
+                              ("AI 연결·사용량·저장 설정", lambda: self._open_assistant_panel("open_settings")),
+                              ("기억 관리", lambda: self._open_assistant_panel("open_memories")),
+                              ("사용자 데이터 백업·복원 / 진단 내보내기", self._open_data_panel),
+                              ("처음 사용 안내와 조작 방법", self._show_welcome)):
+            self._button(content, label, action).pack(anchor="w", padx=14, pady=5)
+        self._label(content, "이미지 ZIP은 이미지 탭에서 가져옵니다. 사용자 데이터 백업에는 API 키가 포함되지 않아요.",
+                    size=9, fg=core.MUTED, bg=core.PANEL, wraplength=650, justify="left").pack(anchor="w", padx=14, pady=12)
+        self._settings_saved_snapshot = self._settings_snapshot()
+        for var in self._settings_variables():
+            var.trace_add("write", self._settings_changed)
+        self.custom_dialogue_text.bind("<<Modified>>", self._settings_text_changed)
+        self.custom_dialogue_text.edit_modified(False)
 
     def _show_page(self, name: str):
         super()._show_page(name)
@@ -1889,8 +2269,10 @@ class CompactDesktopApp(DesktopApp):
             self._resize_for_page("timer")
 
     def _save_settings(self):
+        previous_manifest = self._image_set_store._load_manifest()
+        manifest_changed = False
         try:
-            candidate = UserSettings(
+            candidate = replace(self.preferences,
                 start_with_windows=self.settings_bool_vars["start_with_windows"].get(),
                 always_on_top=self.settings_bool_vars["always_on_top"].get(),
                 break_reminders=self.settings_bool_vars["break_reminders"].get(),
@@ -1934,6 +2316,7 @@ class CompactDesktopApp(DesktopApp):
                 "왼쪽 위": "top_left", "오른쪽 위": "top_right",
                 "왼쪽 아래": "bottom_left", "오른쪽 아래": "bottom_right",
             }
+            manifest_changed = True
             for key, _caption in self.IMAGE_ROWS:
                 self._image_set_store.set_options(
                     key,
@@ -1952,15 +2335,21 @@ class CompactDesktopApp(DesktopApp):
                     set_windows_startup(previous.start_with_windows)
                 raise
         except Exception as exc:
+            if manifest_changed:
+                try:
+                    self._image_set_store._save_manifest(previous_manifest)
+                    self._image_set_store.invalidate()
+                except OSError:
+                    core.log.exception("image option rollback failed")
             core.log.exception("settings save failed")
             self.settings_status.configure(text=str(exc), fg=core.AMBER)
-            return
+            return False
 
         self.last_work_mode = self._current_workday_state().mode
-        if hasattr(self, "speech"):
-            self.speech.configure(text=self._pick_dialogue("playful", time_sensitive=True))
-            self._apply_widget_appearance()
+        self._settings_saved_snapshot = self._settings_snapshot()
+        self._settings_changed()
         self.settings_status.configure(text="저장됨 · 메인 화면에 즉시 반영", fg=core.GREEN)
+        return True
 
     def _update_ui(self):
         super()._update_ui()

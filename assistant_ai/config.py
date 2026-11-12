@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 from ctypes import wintypes
 from dataclasses import asdict, dataclass, fields
+from datetime import date
 import json
 import math
 import os
@@ -23,14 +24,50 @@ class ModelPrice:
 
 DEFAULT_MODEL = "gpt-5.4-mini"
 DEFAULT_WEATHER_LOCATION = "세종시"
-MODELS = (DEFAULT_MODEL, "gpt-5.6-luna", "gpt-6.1-sol")
-# Standard Responses text prices in USD from the official model pages.
+MODELS = (
+    DEFAULT_MODEL, "gpt-6-luna", "gpt-5.6-luna", "gpt-6.1-terra",
+    "gpt-6.1-sol", "gpt-6-sol", "gpt-6-astra", "gpt-5.4", "gpt-5.5",
+)
+PROACTIVE_EVENTS = ("rest", "break_started", "away", "return", "leave", "periodic")
+KEY_PERSISTENCE_MODES = ("session", "windows")
+# Standard Responses text prices in USD, checked 2026-11-09:
+# https://developers.openai.com/api/docs/pricing
+# https://developers.openai.com/api/docs/models/<model-id>
+# GPT-5.6/6 use the default 30-minute cache TTL (1.25x input for writes).
 _MINI_PRICE = ModelPrice(0.75, 0.075, 4.50)
+_GPT54_PRICE = ModelPrice(2.50, 0.25, 15.00, long_context_after=272_000)
+_GPT55_PRICE = ModelPrice(5.00, 0.50, 30.00, long_context_after=272_000)
 MODEL_PRICES = {
     DEFAULT_MODEL: _MINI_PRICE,
     "gpt-5.4-mini-2026-03-17": _MINI_PRICE,
     "gpt-5.6-luna": ModelPrice(0.20, 0.02, 1.20, 1.25, 272_000),
     "gpt-6.1-sol": ModelPrice(2.00, 0.10, 10.00, 1.25, 272_000),
+    "gpt-6-luna": ModelPrice(0.10, 0.01, 0.50, 1.25, 272_000),
+    "gpt-6.1-terra": ModelPrice(1.00, 0.05, 5.00, 1.25, 272_000),
+    "gpt-6-sol": ModelPrice(2.00, 0.20, 10.00, 1.25, 272_000),
+    "gpt-6-astra": ModelPrice(10.00, 1.00, 50.00, 1.25, 272_000),
+    "gpt-5.4": _GPT54_PRICE,
+    "gpt-5.4-2026-03-05": _GPT54_PRICE,
+    "gpt-5.5": _GPT55_PRICE,
+    "gpt-5.5-2026-04-23": _GPT55_PRICE,
+}
+MODEL_DESCRIPTIONS = {
+    DEFAULT_MODEL: "기본 모델 · 가벼운 대화와 타이머 제어",
+    "gpt-6-luna": "저비용 · 짧은 대화와 자주 하는 작업",
+    "gpt-5.6-luna": "기존 Luna · 가벼운 대화",
+    "gpt-6.1-terra": "간결한 글쓰기와 도구 작업",
+    "gpt-6.1-sol": "균형형 · 복잡한 요청과 도구 작업 · API 기본 추론",
+    "gpt-6-sol": "GPT-6 Sol · 대화와 도구 작업",
+    "gpt-6-astra": "고성능 · 어려운 요청 · 높은 비용",
+    "gpt-5.4": "GPT-5.4 · 일반·복합 작업",
+    "gpt-5.5": "GPT-5.5 · 복잡한 요청",
+}
+# New choices use low to suit short interactive requests, including web search.
+# Preserve the original mini/Sol API defaults and the original Luna low setting.
+# Do not infer capabilities or pricing for arbitrary user-entered model IDs.
+MODEL_REASONING_EFFORT = {
+    "gpt-5.6-luna": "low", "gpt-6-luna": "low", "gpt-6.1-terra": "low",
+    "gpt-6-sol": "low", "gpt-6-astra": "low", "gpt-5.4": "low", "gpt-5.5": "low",
 }
 _MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}")
 _KEY_VALUE = re.compile(r"[!-~]{1,1024}")
@@ -50,12 +87,42 @@ class AISettings:
     memory_enabled: bool = False
     daily_budget_usd: float | None = None
     weather_location: str = DEFAULT_WEATHER_LOCATION
+    conversation_storage_enabled: bool = False
+    web_search_enabled: bool = True
+    proactive_events: tuple[str, ...] = PROACTIVE_EVENTS
+    proactive_quiet_until: str = ""
+    key_persistence: str = "session"
+    reading_text_size: int = 12
+    proactive_interval_minutes: int = 1
+    chatter_enabled: bool = False
 
     def validate(self) -> None:
         if not isinstance(self.model, str) or not _MODEL_ID.fullmatch(self.model) or self.model.startswith("sk-"):
             raise SettingsError("OpenAI 모델 ID를 확인해 주세요.")
-        if not all(type(value) is bool for value in (self.enabled, self.proactive_enabled, self.memory_enabled)):
+        if not all(type(value) is bool for value in (
+            self.enabled, self.proactive_enabled, self.memory_enabled,
+            self.conversation_storage_enabled, self.web_search_enabled,
+            self.chatter_enabled,
+        )):
             raise SettingsError("AI 기능의 사용 여부를 다시 설정해 주세요.")
+        if self.key_persistence not in KEY_PERSISTENCE_MODES:
+            raise SettingsError("API 키 보관 방식을 다시 선택해 주세요.")
+        if (not isinstance(self.proactive_events, tuple)
+                or any(not isinstance(event, str) or event not in PROACTIVE_EVENTS for event in self.proactive_events)
+                or len(set(self.proactive_events)) != len(self.proactive_events)):
+            raise SettingsError("자동 응원의 상황을 다시 선택해 주세요.")
+        if not isinstance(self.proactive_quiet_until, str):
+            raise SettingsError("자동 응원을 쉬는 날짜를 확인해 주세요.")
+        if self.proactive_quiet_until:
+            try:
+                if date.fromisoformat(self.proactive_quiet_until).isoformat() != self.proactive_quiet_until:
+                    raise ValueError
+            except ValueError:
+                raise SettingsError("자동 응원을 쉬는 날짜를 확인해 주세요.") from None
+        if type(self.reading_text_size) is not int or not 10 <= self.reading_text_size <= 20:
+            raise SettingsError("대화 글자 크기는 10~20으로 설정해 주세요.")
+        if type(self.proactive_interval_minutes) is not int or not 1 <= self.proactive_interval_minutes <= 120:
+            raise SettingsError("먼저 말 거는 간격은 1~120분으로 설정해 주세요.")
         location = self.weather_location
         if not isinstance(location, str) or not 2 <= len(location.strip()) <= 80 or not location.isprintable():
             raise SettingsError("기본 날씨 지역은 2~80자의 한 줄로 입력해 주세요.")
@@ -98,12 +165,20 @@ class ConfigStore:
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
         except FileNotFoundError:
-            return AISettings()
-        except (OSError, UnicodeError, ValueError):
+            raw = {}
+        except (OSError, UnicodeError, ValueError, RecursionError):
             raise SettingsError("AI 설정 파일을 읽을 수 없어요.") from None
         if not isinstance(raw, dict):
             raise SettingsError("AI 설정 파일의 형식이 올바르지 않아요.")
-        settings = AISettings(**{field.name: raw[field.name] for field in fields(AISettings) if field.name in raw})
+        values = {field.name: raw[field.name] for field in fields(AISettings) if field.name in raw}
+        # v2.0 used one opt-in for history and memories. Keep that choice when upgrading.
+        values.setdefault("conversation_storage_enabled", raw.get("memory_enabled", False))
+        # Existing Windows keys retain their protected storage; fresh installs start in RAM.
+        values.setdefault("key_persistence", "windows" if os.name == "nt"
+                          and (self.path.parent / "openai_key.dpapi").is_file() else "session")
+        if isinstance(values.get("proactive_events"), list):
+            values["proactive_events"] = tuple(values["proactive_events"])
+        settings = AISettings(**values)
         settings.validate()
         return settings
 
@@ -154,13 +229,23 @@ def validate_api_key(value: str) -> str:
 
 
 class KeyVault:
-    """Persist only a DPAPI blob on Windows. Other platforms retain the key in this instance."""
+    """Session-only by default, with explicitly selected Windows DPAPI storage."""
 
-    def __init__(self, data_dir: Path):
+    def __init__(self, data_dir: Path, *, persistent: bool | None = None):
         self.path = Path(data_dir) / "openai_key.dpapi"
-        self.persistent = os.name == "nt"
+        self.supports_persistence = os.name == "nt"
+        self.persistent = (self.supports_persistence and self.path.is_file()) if persistent is None else persistent
+        if type(self.persistent) is not bool:
+            raise SettingsError("API 키 보관 방식을 다시 선택해 주세요.")
+        self._check_persistence(self.persistent)
         self._session_key: str | None = None
         self._lock = RLock()
+
+    def _check_persistence(self, persist: bool) -> None:
+        if type(persist) is not bool:
+            raise SettingsError("API 키 보관 방식을 다시 선택해 주세요.")
+        if persist and not self.supports_persistence:
+            raise SettingsError("이 PC에서는 API 키를 이번 실행 중에만 보관할 수 있어요.")
 
     def get(self) -> str | None:
         with self._lock:
@@ -177,23 +262,47 @@ class KeyVault:
             except (OSError, UnicodeError, SettingsError):
                 raise SettingsError("이 Windows 계정에서 저장된 API 키를 열 수 없어요. 키를 다시 입력해 주세요.") from None
 
-    def set(self, value: str) -> None:
+    def set(self, value: str, *, persist: bool | None = None) -> None:
         key = validate_api_key(value)
         with self._lock:
-            if not self.persistent:
-                self._session_key = key
+            selected = self.persistent if persist is None else persist
+            self._check_persistence(selected)
+            if selected:
+                try:
+                    encrypted = _dpapi(key.encode("ascii"), protect=True)
+                    _atomic_write(self.path, encrypted)
+                except OSError:
+                    raise SettingsError("Windows에서 OpenAI API 키를 보호해 저장할 수 없어요.") from None
+            else:
+                self._delete_blob()
+            # Do not change the active key or selected mode until the disk operation succeeds.
+            self._session_key = key
+            self.persistent = selected
+
+    def set_persistence(self, persist: bool) -> None:
+        with self._lock:
+            self._check_persistence(persist)
+            if persist == self.persistent:
+                if not persist:
+                    # A restored/externally copied blob must not survive an explicit
+                    # choice to keep the current key in this session only.
+                    self._delete_blob()
                 return
-            try:
-                encrypted = _dpapi(key.encode("ascii"), protect=True)
-                _atomic_write(self.path, encrypted)
-            except OSError:
-                raise SettingsError("Windows에서 OpenAI API 키를 보호해 저장할 수 없어요.") from None
+            key = self.get()
+            if key is not None:
+                self.set(key, persist=persist)
+            else:
+                if not persist:
+                    self._delete_blob()
+                self.persistent = persist
+
+    def _delete_blob(self) -> None:
+        try:
+            self.path.unlink(missing_ok=True)
+        except OSError:
+            raise SettingsError("저장된 OpenAI API 키를 삭제할 수 없어요.") from None
 
     def delete(self) -> None:
         with self._lock:
-            if self.persistent:
-                try:
-                    self.path.unlink(missing_ok=True)
-                except OSError:
-                    raise SettingsError("저장된 OpenAI API 키를 삭제할 수 없어요.") from None
+            self._delete_blob()
             self._session_key = None

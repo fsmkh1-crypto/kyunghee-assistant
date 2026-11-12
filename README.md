@@ -4,15 +4,28 @@ Windows productivity timer and virtual secretary.
 
 ## Current development target
 
-`0.4.0-alpha`
+`2.1.5` — follows up on the missing final Korean character: use the native focused IME context, preserve already committed Unicode input carrying Ctrl/Alt, and wait for composition results before taking a send snapshot. The chat title shows the running version. Preserves 2.1.4's cooldown fixes, larger chat and reading position, unified timer history, situation-image controls, the three-line bubble and configurable AI-only chatter. Active Microsoft Korean IME checks are reported separately from simulated input tests; an unavailable CI IME is not a passing IME test.
 
-The 0.4 line is focused on correctness before real-world testing.
+The implementation and verification ledger is [docs/IMPLEMENTATION_CHECKLIST_2_1.md](docs/IMPLEMENTATION_CHECKLIST_2_1.md). Windows acceptance steps and remaining physical-device checks are documented separately; automated checks do not imply a live API quality test.
 
 ## Desktop app
 
-Development is focused on the Windows desktop app. `RUN.cmd` launches the integrated desktop UI during development. The Windows job in the **tests** workflow publishes the `seunga-timer-windows` package for branch pushes. Keep `SeungaTimer.exe` beside its `_internal` folder. The package includes Python.
+Development is focused on the Windows desktop app. `RUN.cmd` and Windows source autostart launch `desktop_gallery_final.py`. The Windows job in the **tests** workflow publishes `seunga-timer-2.1.5-windows-x64` for branch pushes. Sign in to GitHub, open the successful workflow run, then select the package under **Artifacts**. Exit the old running app, extract the new ZIP into its own folder, and keep `SeungaTimer.exe` beside its `_internal` folder. Check the chat title for `2.1.5`; `BUILD_INFO.txt` identifies the exact package commit. The package includes Python.
+
+- Read long speech by scrolling inside the bubble (at most three visible lines). Use its explicit chat button, tray or keyboard shortcut to open chat. Click the timer/character for settings; drag them to move the widget.
+- Screen dice changes the current image until the next situation. Explicit pinning and restoration are available.
+- Import complete image ZIP sets from the image settings tab. Conflicting numbered sets receive the next available higher number, consistently across all ten roles; the preview shows the mapping. Imports live in the user profile and preserve existing artwork. Byte-identical complete sets are reused.
+- Timer notices continue in the main speech bubble and conversation history without a second automatic notification window. Break, snooze and quiet-today actions remain available from the tray menu.
+- Image changes from chat use a validated proposal, explicit Apply/Cancel, and Undo. Local image controls do not require an API key.
+- Settings have tabs, a fixed save area, draft indicators and discard. Gallery selections are previews until Apply is pressed; that action saves separately from general settings and has its own Undo.
+- Optional AI supports cancellation, retry/edit, local timer status, separate history/memory preferences, searchable/editable pinned memories, event controls and web search preferences.
+- Proactive conversation has a visible on/off control, 1–120 minute interval and current waiting/result status. New settings default to one minute; existing saved choices are preserved. Chatter is a separate optional AI-only mode using the same interval and bounded scheduler; enabling both modes does not duplicate requests.
+- Choose a session-only API key or Windows DPAPI storage. Connection testing is an explicit API request and may incur usage.
+- Selective user-data backup, validated restore with a recovery snapshot, and privacy-preserving diagnostics are available in the data panel. Keys are excluded.
 
 For the Seunga Timer Windows package, see the [Korean installation and usage guide](docs/AI_ASSISTANT_2_GUIDE.md).
+
+The package's `IME_INPUT_TEST.cmd` runs an isolated offline IME check through `SeungaTimer.exe --ime-self-test <report.json>`. It uses fixed input and a fake service, blocks networking, and leaves personal profiles untouched. User mode does not install/load an input locale or toggle the IME automatically. It reports unavailable separately from passed. This is actual IME automation where available, not proof of physical keyboard behavior on every PC.
 
 The earlier `android-prototype/` is retained only as inactive design history and is not a current development target.
 
@@ -71,13 +84,8 @@ When you enable the optional AI assistant, messages you send and relevant contex
 ## External review
 
 See [`REVIEW_FOR_CLAUDE.md`](REVIEW_FOR_CLAUDE.md).
-The repository is intentionally public so external reviewers can audit the current `main` branch directly.
+Review the implementation branch and its exact commit, rather than assuming `main` contains the current desktop product.
 
 ## Status
 
-Not yet a production release. The next gate is:
-
-1. green deterministic CI
-2. external code review of the current `main` branch
-3. finalized character/image assets
-4. Windows real-world testing
+No automatic merge is part of this work. See the implementation ledger for verified checks, Windows package results, and the manual acceptance items that remain.

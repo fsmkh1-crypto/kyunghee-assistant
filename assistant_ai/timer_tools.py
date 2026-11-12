@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime
 import re
 
 from stats_summary import summarize_recent
@@ -77,6 +78,17 @@ TOOLS = [
         "Change named workday reminder times. Use 24-hour HH:MM and null for unchanged fields." + _MUTATION,
         {field: {"type": ["string", "null"]} for field in WORKDAY_FIELDS},
     ),
+    _function("get_image_catalog", "Read installed image sets, roles and the currently displayed image. Never invent an image identifier.", {}),
+    _function(
+        "propose_image_action",
+        "Prepare an image change card only when the current user asks for an image change. This does not apply it: the user must click Apply. Read the catalog first. Ask to clarify an unclear role or set.",
+        {
+            "kind": _choices(("image", "base_set", "follow")),
+            "role": {"type": ["string", "null"]},
+            "ref": {"type": ["string", "null"]},
+            "set_id": {"type": ["string", "null"]},
+        },
+    ),
 ]
 
 _TOOL_PARAMETERS = {tool["name"]: tool["parameters"]["properties"] for tool in TOOLS}
@@ -124,8 +136,11 @@ class TimerTools:
         app = self.app
         daily, session = app.state.daily, app.state.session
         break_enabled_today = app.preferences.break_reminders and not daily.break_reminders_suppressed
+        now = datetime.now().astimezone()
         return {
             "date": daily.day,
+            "current_time": now.isoformat(timespec="seconds"),
+            "timezone": now.tzname(),
             "is_away": session.is_away,
             "manual_away": session.manual_away,
             "continuous_seconds": _seconds(session.continuous_seconds),
@@ -135,6 +150,11 @@ class TimerTools:
             "break_reminders_enabled_today": break_enabled_today,
             "next_break_in_seconds": _seconds(app.engine.remaining_to_break()) if break_enabled_today and not session.is_away else None,
             "workday_mode": app._current_workday_state().mode,
+            "personality": app.preferences.personality,
+            "custom_dialogue": app.preferences.custom_dialogue[:2000],
+            "ignored_breaks": session.ignored_breaks,
+            "recent_dialogue": list(getattr(app, "_assistant_recent_dialogue", ())),
+            "today_events": [event for event in getattr(app, "_assistant_events", ()) if event.get("date") == daily.day],
         }
 
     def notification_settings(self):
@@ -151,6 +171,8 @@ class TimerTools:
                 return {"ok": True, **self.notification_settings()}
             if name == "get_usage_stats":
                 return {"ok": True, **self._usage_stats(arguments["days"])}
+            if name in {"get_image_catalog", "propose_image_action"}:
+                return {"ok": False, "error": "이미지 제안은 대화창의 이미지 선택 기능에서 처리해요."}
             if name == "set_timer_action":
                 return self._timer_action(arguments["action"], confirm)
             changes, description = self._preference_change(name, arguments)

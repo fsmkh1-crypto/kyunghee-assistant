@@ -88,6 +88,14 @@ class App:
     TRAY_TITLE = APP_NAME
 
     def __init__(self):
+        from user_data_backup import unfinished_restore_journals
+        if unfinished_restore_journals(DATA_DIR):
+            message = ("완료되지 않은 데이터 복원이 있어 타이머를 시작하지 않았어요.\n"
+                       "사용자 데이터 폴더의 .restore-journal-* 및 backups 폴더를 보존하고 복구 상태를 확인해 주세요.\n"
+                       "설치 폴더 docs/BACKUP_RESTORE.md의 복구 안내를 참고하세요.")
+            if os.name == "nt":
+                ctypes.windll.user32.MessageBoxW(None, message, "승아 타이머 데이터 복구 확인", 0x30)
+            raise RuntimeError(message)
         self.preferences = load_user_settings(SETTINGS_FILE)
         self.workday_policy = self.preferences.workday_policy()
         self.state = load_state(STATE_FILE)
@@ -247,7 +255,8 @@ class App:
 
         top = tk.Frame(left, bg=PANEL)
         top.pack(fill="x", padx=20, pady=(18, 8))
-        self._label(top, "연속 집중 시간", size=10, weight="bold", fg=MUTED, bg=PANEL).pack(anchor="w")
+        self.timer_caption = self._label(top, "연속 집중 시간", size=10, weight="bold", fg=MUTED, bg=PANEL)
+        self.timer_caption.pack(anchor="w")
         self.cont = self._label(top, "00:00:00", size=30, weight="bold", bg=PANEL)
         self.cont.pack(anchor="w", pady=(4, 1))
 
@@ -490,7 +499,7 @@ class App:
         self.break_gate.reset()
         self._destroy_toast()
         self.engine.accept_break()
-        text = "좋아. 잠깐 쉬고 와. 시간은 내가 멈춰둘게."
+        text = "좋아. 잠깐 쉬고 와. 집중 시간은 멈추고 자리비움 시간을 기록할게."
         self._say("away_start", text)
         self.show_toast(text)
 
@@ -606,7 +615,10 @@ class App:
             fg=AMBER if s.is_away else GREEN,
         )
         self.away_btn.configure(text="복귀하기" if s.is_away else "자리비움 시작")
-        self.cont.configure(text=fmt_clock(s.continuous_seconds))
+        clock_seconds = self.engine.current_away_duration() if s.is_away else s.continuous_seconds
+        self.cont.configure(text=fmt_clock(clock_seconds))
+        if hasattr(self, "timer_caption"):
+            self.timer_caption.configure(text="현재 자리비움 시간" if s.is_away else "연속 집중 시간")
         if d.break_reminders_suppressed:
             self.remain.configure(text="오늘 꺼짐")
             self.next_break.configure(text="오늘 휴식 알림: 꺼짐")
@@ -748,7 +760,8 @@ class App:
     def _tray_menu_items(self):
         return (
             item("열기", lambda: self._tray_call(self.show), default=True),
-            item("자리비움 시작", lambda: self._tray_call(self.toggle_manual_away)),
+            item(lambda _item: "복귀하기" if self.state.session.is_away else "자리비움 시작",
+                 lambda: self._tray_call(self.toggle_manual_away)),
             item("오늘 기록 보기", lambda: self._tray_call(self.show_stats)),
             item("설정", lambda: self._tray_call(lambda: (self._show_page("settings"), self.show()))),
             item("종료", lambda: self._tray_call(self.quit)),

@@ -48,6 +48,15 @@ class UserSettingsTests(unittest.TestCase):
             save_user_settings(path, expected)
             self.assertEqual(load_user_settings(path), expected)
 
+    def test_profile_pack_selection_round_trips_and_rejects_invalid_numbers(self):
+        expected = UserSettings(builtin_image_set="pack:03", welcome_seen=True)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            save_user_settings(path, expected)
+            self.assertEqual(load_user_settings(path), expected)
+        for value in ("pack:00", "pack:100", "pack:../03"):
+            self.assertEqual(settings_from_dict({"builtin_image_set": value}).builtin_image_set, "random")
+
     def test_bad_file_falls_back_to_defaults(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"

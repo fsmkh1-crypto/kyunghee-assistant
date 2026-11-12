@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+from collections import deque
 from ctypes import wintypes
 import tkinter as tk
 
@@ -25,25 +26,35 @@ _WM_MOUSEACTIVATE = 0x0021
 _WM_NCHITTEST = 0x0084
 _WM_LBUTTONDOWN = 0x0201
 _WM_RBUTTONDOWN = 0x0204
+_WM_MOUSEWHEEL = 0x020A
 _MA_NOACTIVATE = 3
 _HTCLIENT = 1
+_RGN_DIFF = 4
+_CLICK_POLL_MS = 25
+_MAX_CLICKS_PER_POLL = 32
 
 
 class SpeechHitbox:
     """An owned Windows mouse target over a color-keyed Tk reply."""
 
-    def __init__(self, root, on_next, on_dismiss):
+    def __init__(self, root, on_next, on_dismiss, *, on_scroll=None):
         self._root = root
         self._on_next = on_next
         self._on_dismiss = on_dismiss
+        self._on_scroll = on_scroll
         self._hwnd = None
+        self._target_hwnd = None
         self._visible = False
         self._generation = 0
         self._class_name = f"SeungaTimerSpeechHitbox_{id(self):x}"
         self._registered = False
         self._closed = False
+        self._clicks = deque()
+        self._poll_id = None
         self._user32 = ctypes.WinDLL("user32", use_last_error=True)
         self._configure_win32()
+        # Register from Python/Tk's normal call stack, never from our WndProc.
+        self._schedule_click_poll()
 
     def _configure_win32(self):
         api = self._user32
@@ -93,13 +104,21 @@ class SpeechHitbox:
         api.SetWindowPos.restype = wintypes.BOOL
         api.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
         api.ShowWindow.restype = wintypes.BOOL
+        api.SetWindowRgn.argtypes = (wintypes.HWND, wintypes.HANDLE, wintypes.BOOL)
+        api.SetWindowRgn.restype = ctypes.c_int
 
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.GetModuleHandleW.argtypes = (wintypes.LPCWSTR,)
         kernel32.GetModuleHandleW.restype = wintypes.HINSTANCE
-        gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+        self._gdi32 = gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
         gdi32.GetStockObject.argtypes = (ctypes.c_int,)
         gdi32.GetStockObject.restype = wintypes.HBRUSH
+        gdi32.CreateRectRgn.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int)
+        gdi32.CreateRectRgn.restype = wintypes.HANDLE
+        gdi32.CombineRgn.argtypes = (wintypes.HANDLE, wintypes.HANDLE, wintypes.HANDLE, ctypes.c_int)
+        gdi32.CombineRgn.restype = ctypes.c_int
+        gdi32.DeleteObject.argtypes = (wintypes.HANDLE,)
+        gdi32.DeleteObject.restype = wintypes.BOOL
         self._wndproc = wndproc_type(self._handle_message)
         self._window_class = WindowClass(
             lpfnWndProc=self._wndproc,
@@ -115,17 +134,54 @@ class SpeechHitbox:
         if message == _WM_MOUSEACTIVATE:
             return _MA_NOACTIVATE
         if message in (_WM_LBUTTONDOWN, _WM_RBUTTONDOWN):
-            if self._visible:
-                action = self._on_next if message == _WM_LBUTTONDOWN else self._on_dismiss
-                try:
-                    self._root.after_idle(self._dispatch_click, action, self._generation)
-                except tk.TclError:
-                    pass
+            if self._visible and not self._closed:
+                # Tcl can invoke this ctypes callback while dispatching Windows
+                # messages. Calling *any* Tk API here (even after/after_idle)
+                # re-enters _tkinter outside its expected thread-state boundary.
+                # Only enqueue plain Python data; Tk owns the polling callback.
+                self._clicks.append((message, self._generation))
+            return 0
+        if message == _WM_MOUSEWHEEL:
+            if self._visible and not self._closed:
+                # Wheel deltas remain plain data until Tk's polling callback.
+                delta = ctypes.c_short((int(wparam) >> 16) & 0xFFFF).value
+                self._clicks.append((message, self._generation, delta))
             return 0
         return self._user32.DefWindowProcW(hwnd, message, wparam, lparam)
 
+    def _schedule_click_poll(self):
+        if self._closed or self._poll_id is not None:
+            return
+        try:
+            self._poll_id = self._root.after(_CLICK_POLL_MS, self._poll_clicks)
+        except tk.TclError:
+            self._poll_id = None
+
+    def _poll_clicks(self):
+        self._poll_id = None
+        if self._closed:
+            self._clicks.clear()
+            return
+        try:
+            # Bound each Tk turn while keeping the native click order intact.
+            for _ in range(_MAX_CLICKS_PER_POLL):
+                if not self._clicks:
+                    break
+                event = self._clicks.popleft()
+                message, generation = event[:2]
+                if message == _WM_MOUSEWHEEL:
+                    if self._on_scroll is None:
+                        continue
+                    action = lambda delta=event[2]: self._on_scroll(delta)
+                else:
+                    action = self._on_next if message == _WM_LBUTTONDOWN else self._on_dismiss
+                self._dispatch_click(action, generation)
+        finally:
+            if self._visible and not self._closed:
+                self._schedule_click_poll()
+
     def _dispatch_click(self, action, generation):
-        if self._visible and generation == self._generation:
+        if not self._closed and self._visible and generation == self._generation:
             action()
 
     def _create_window(self, owner):
@@ -151,6 +207,47 @@ class SpeechHitbox:
             raise ctypes.WinError(ctypes.get_last_error())
         return rect
 
+    def _interaction_exclusions(self, widget, left, top, width, height):
+        """Measure opaque controls on the normal Tk stack, never in WndProc."""
+        controls = getattr(widget, "native_interaction_widgets", None)
+        if controls is None:
+            return ()
+        exclusions = []
+        for child in controls():
+            if not child.winfo_viewable():
+                continue
+            rect = self._rect(child.winfo_id())
+            bounds = (max(0, rect.left - left), max(0, rect.top - top),
+                      min(width, rect.right - left), min(height, rect.bottom - top))
+            if bounds[2] > bounds[0] and bounds[3] > bounds[1]:
+                exclusions.append(bounds)
+        return tuple(exclusions)
+
+    def _set_region(self, width, height, exclusions):
+        """Leave actual Text/Scrollbar/Button children reachable through holes."""
+        gdi = self._gdi32
+        region = gdi.CreateRectRgn(0, 0, width, height)
+        if not region:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            for bounds in exclusions:
+                cutout = gdi.CreateRectRgn(*bounds)
+                if not cutout:
+                    raise ctypes.WinError(ctypes.get_last_error())
+                try:
+                    if not gdi.CombineRgn(region, region, cutout, _RGN_DIFF):
+                        raise ctypes.WinError(ctypes.get_last_error())
+                finally:
+                    gdi.DeleteObject(cutout)
+            if not self._user32.SetWindowRgn(self._hwnd, region, True):
+                raise ctypes.WinError(ctypes.get_last_error())
+            # SetWindowRgn transfers ownership on success. Windows destroys the
+            # region when replaced or when the overlay window is destroyed.
+            region = None
+        finally:
+            if region:
+                gdi.DeleteObject(region)
+
     def show_over(self, widget):
         if self._closed:
             return
@@ -160,7 +257,8 @@ class SpeechHitbox:
 
         api = self._user32
         owner = api.GetAncestor(self._root.winfo_id(), _GA_ROOT)
-        target = self._rect(widget.winfo_id())
+        target_hwnd = widget.winfo_id()
+        target = self._rect(target_hwnd)
         client = self._rect(self._root.winfo_id())
         left = max(target.left, client.left)
         top = max(target.top, client.top)
@@ -171,6 +269,14 @@ class SpeechHitbox:
             return
         if self._hwnd is None:
             self._create_window(owner)
+        if target_hwnd != self._target_hwnd:
+            # Normal dialogue and AI replies can share this overlay. Input
+            # queued over the previous surface must not affect the new one.
+            self._generation += 1
+            self._clicks.clear()
+            self._target_hwnd = target_hwnd
+        exclusions = self._interaction_exclusions(widget, left, top, width, height)
+        self._set_region(width, height, exclusions)
 
         # Sit above the timer and behind any window already above the timer.
         previous = api.GetWindow(owner, _GW_HWNDPREV)
@@ -184,14 +290,26 @@ class SpeechHitbox:
         if not api.SetWindowPos(self._hwnd, previous, left, top, width, height, flags):
             raise ctypes.WinError(ctypes.get_last_error())
         self._visible = True
+        self._schedule_click_poll()
 
     def hide(self):
-        if self._visible:
-            self._visible = False
+        was_visible = self._visible
+        self._visible = False
+        if was_visible:
             self._generation += 1
+        self._clicks.clear()
+        if self._poll_id is not None:
+            try:
+                self._root.after_cancel(self._poll_id)
+            except tk.TclError:
+                pass
+            self._poll_id = None
+        if was_visible:
             self._user32.ShowWindow(self._hwnd, _SW_HIDE)
 
     def close(self):
+        if self._closed:
+            return
         self._closed = True
         self.hide()
         if self._hwnd is not None:

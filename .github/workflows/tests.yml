@@ -12,13 +12,45 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Install runtime dependencies
         run: python -m pip install -r requirements.txt
       - name: Compile source
-        run: python -m py_compile app_brand.py desktop_app.py desktop_compact.py desktop_gallery.py desktop_gallery_final.py desktop_preview.py install_asset_pack.py asset_rotation.py app.py asset_manager.py break_reminder.py image_render.py messages.py settings.py state.py timer_engine.py windows_display.py windows_idle.py workday.py
+        run: python -m compileall -q -x "android-prototype|build|dist|\.git" .
+      - name: Probe Microsoft Korean IME with actual composition
+        if: matrix.os == 'windows-latest'
+        timeout-minutes: 4
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:APPDATA = Join-Path $env:RUNNER_TEMP "seunga-ime-probe"
+          ./tools/windows_ime_environment_probe.ps1 -OutputPath windows-ime-environment.json
+          Get-Content windows-ime-environment.json
+          $baselineIme = Join-Path $env:RUNNER_TEMP "seunga-214-windows-ime.py"
+          $baselineUi = Join-Path $env:RUNNER_TEMP "seunga-214-ui.py"
+          python -c "import pathlib,subprocess,sys; pathlib.Path(sys.argv[1]).write_bytes(subprocess.check_output(['git','show','d99dc19945b7b58d6df520c9b7888735ed546926:assistant_ai/windows_ime.py'])); pathlib.Path(sys.argv[2]).write_bytes(subprocess.check_output(['git','show','d99dc19945b7b58d6df520c9b7888735ed546926:assistant_ai/ui.py']))" $baselineIme $baselineUi
+          if ($LASTEXITCODE -ne 0) { throw "Could not prepare exact 2.1.4 comparison source." }
+          python tools/compare_native_text_baseline.py --baseline-ime $baselineIme --baseline-ui $baselineUi --report windows-native-baseline.json
+          $baselineExit = $LASTEXITCODE
+          if (Test-Path windows-native-baseline.json) { Get-Content windows-native-baseline.json }
+          if ($baselineExit -eq 3) {
+            Write-Warning "Native-message baseline comparison was inconclusive; see report."
+          } elseif ($baselineExit -ne 0) {
+            throw "Baseline comparison script failed with exit code $baselineExit."
+          }
+          python tools/probe_windows_ime.py --report windows-ime-report.json --baseline-ime $baselineIme --baseline-ui $baselineUi --allow-temporary-layout-load --allow-ime-mode-toggle
+          $probeExit = $LASTEXITCODE
+          if (Test-Path windows-ime-report.json) { Get-Content windows-ime-report.json }
+          if ($probeExit -eq 3) {
+            Write-Warning "Active Microsoft Korean IME could not be verified on this runner; see report. This is not an IME pass."
+          } elseif ($probeExit -ne 0) {
+            throw "Microsoft Korean IME probe failed with exit code $probeExit."
+          }
+          exit 0
       - name: Run unit and asset tests
         run: python -m unittest discover -s tests -v
       - name: Install PyInstaller
@@ -35,24 +67,79 @@ jobs:
           --name SeungaTimer
           --add-data "assets;assets"
           desktop_gallery_final.py
+      - name: Exercise packaged UI at 96, 120, 144 and 192 DPI
+        timeout-minutes: 4
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:APPDATA = Join-Path $env:RUNNER_TEMP "seunga-packaged-selftest"
+          $report = Join-Path $env:GITHUB_WORKSPACE "packaged-ui-report.json"
+          $process = Start-Process -FilePath dist\SeungaTimer\SeungaTimer.exe -ArgumentList @("--self-test", $report) -PassThru -Wait
+          if ($process.ExitCode -ne 0) {
+            if (Test-Path $report) { Get-Content $report }
+            $faultLog = [IO.Path]::ChangeExtension($report, ".fault.log")
+            if (Test-Path $faultLog) { Get-Content $faultLog }
+            throw "Packaged UI tests failed with exit code $($process.ExitCode)."
+          }
+          Get-Content $report
       - name: Smoke-test compact Windows app
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $env:APPDATA = Join-Path $env:RUNNER_TEMP "seunga-normal-startup"
           $process = Start-Process -FilePath dist\SeungaTimer\SeungaTimer.exe -PassThru
           Start-Sleep -Seconds 8
           if ($process.HasExited) {
             throw "Packaged app exited during startup with code $($process.ExitCode)."
           }
           Stop-Process -Id $process.Id -Force
+      - name: Exercise packaged offline IME entrypoint
+        timeout-minutes: 4
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $report = Join-Path $env:GITHUB_WORKSPACE "packaged-ime-report.json"
+          $process = Start-Process -FilePath dist\SeungaTimer\SeungaTimer.exe -ArgumentList @("--ime-self-test", $report) -PassThru -Wait
+          if (Test-Path $report) { Get-Content $report } else { throw "Packaged IME report missing." }
+          if ($process.ExitCode -eq 3) {
+            Write-Warning "Packaged IME entrypoint runs, but active Korean IME is unavailable; this is not a physical IME pass."
+          } elseif ($process.ExitCode -ne 0) {
+            throw "Packaged IME probe failed with exit code $($process.ExitCode)."
+          }
+      - name: Prepare Windows package
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          Copy-Item README.md,LICENSE,WINDOWS_SMOKE_TEST.md,IME_INPUT_TEST.cmd dist\SeungaTimer\
+          Copy-Item docs dist\SeungaTimer\docs -Recurse
+          Copy-Item packaged-ui-report.json dist\SeungaTimer\
+          Copy-Item windows-ime-report.json dist\SeungaTimer\
+          Copy-Item windows-ime-environment.json dist\SeungaTimer\
+          Copy-Item packaged-ime-report.json dist\SeungaTimer\
+          Copy-Item windows-native-baseline.json dist\SeungaTimer\
+          "Seunga Timer 2.1.5`nCommit: $env:GITHUB_SHA`nBuild: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID`nRun SeungaTimer.exe with its _internal folder. Close the older running version first." | Set-Content -Encoding utf8 dist\SeungaTimer\BUILD_INFO.txt
       - name: Upload compact Windows artifact
         if: matrix.os == 'windows-latest'
         uses: actions/upload-artifact@v4
         with:
-          name: seunga-timer-windows
+          name: seunga-timer-2.1.5-windows-x64
           path: dist/SeungaTimer
-          retention-days: 7
+          retention-days: 30
+      - name: Upload packaged test report
+        if: always() && matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: packaged-ui-report
+          path: |
+            packaged-ui-report.json
+            packaged-ui-report.fault.log
+            windows-ime-report.json
+            windows-ime-environment.json
+            packaged-ime-report.json
+            windows-native-baseline.json
 
   asset-import-tool:
     runs-on: ubuntu-latest
