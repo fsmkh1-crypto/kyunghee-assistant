@@ -47,14 +47,34 @@ class AssistantInteractionTests(unittest.TestCase):
         self.owner = AssistantWindows(self.root, self.service, context=lambda: {}, dispatch=Mock(),
                                       on_chat_state=lambda *state: self.states.append(state))
         self.owner.open_chat()
+        self.owner.chat_window.input.focus_force()
+        self.root.update()
         self.addCleanup(self.owner.close)
 
+    def finish_submission(self):
+        check_id = None
+        def check():
+            nonlocal check_id
+            if not self.owner.chat_window._submit_pending:
+                self.root.quit()
+            else:
+                check_id = self.root.after(5, check)
+        timeout = self.root.after(1000, self.root.quit)
+        check_id = self.root.after(5, check)
+        self.root.mainloop()
+        self.root.after_cancel(timeout)
+        self.root.after_cancel(check_id)
+        self.assertFalse(self.owner.chat_window._submit_pending)
+
     def send_without_network(self, text):
+        self.owner.open_chat()
+        self.owner.chat_window.input.focus_force()
+        self.root.update()
         self.owner.chat_window.input.delete("1.0", "end")
         self.owner.chat_window.input.insert("1.0", text)
         with patch("assistant_ai.ui.Thread"):
             self.owner.send()
-            self.root.update()
+            self.finish_submission()
         return self.owner._request_id
 
     def test_cancel_allows_new_request_and_discards_old_result(self):
@@ -113,7 +133,7 @@ class AssistantInteractionTests(unittest.TestCase):
         self.owner._poll()
         with patch("assistant_ai.ui.Thread") as worker:
             self.owner.send()
-            self.root.update()
+            self.finish_submission()
         self.assertEqual(worker.call_args.kwargs["args"][-1], request_id)
 
     def test_weather_one_time_region_does_not_change_default(self):

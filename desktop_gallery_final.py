@@ -5,6 +5,13 @@ import os
 import sys
 from pathlib import Path
 
+# Run the isolated, offline input check before importing the real app: app.py
+# initializes its profile/log directory during import. The probe owns a fresh
+# temporary profile and never loads the user's AI service, key or history.
+if __name__ == '__main__' and len(sys.argv) == 3 and sys.argv[1] == '--ime-self-test':
+    from tools.probe_windows_ime import main as run_ime_probe
+    raise SystemExit(run_ime_probe(['--report', sys.argv[2], '--manual-preparation-seconds', '5']))
+
 import app as core
 import asset_manager
 import desktop_compact as compact

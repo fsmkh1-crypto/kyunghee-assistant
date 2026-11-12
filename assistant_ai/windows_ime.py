@@ -1,8 +1,9 @@
 """Complete native text composition from an ordinary Tk callback.
 
 There are deliberately no native callbacks or window-procedure hooks here.
-Tk queues IME result characters, so callers must yield to the event loop after
-``committed`` before reading a Text widget. Never copy a composition string
+Tk queues IME result characters, so callers must wait for a normal event-loop
+turn and an input-edit acknowledgement after ``committed``. An idle callback
+alone is not an input barrier. Never copy a composition string
 into the widget: the IME/Tk own its insertion and replacement semantics.
 """
 from __future__ import annotations
@@ -29,14 +30,24 @@ def _libraries():
     user.GetAsyncKeyState.restype = ctypes.c_short
     user.GetKeyState.argtypes = (ctypes.c_int,)
     user.GetKeyState.restype = ctypes.c_short
+    user.GetFocus.argtypes = ()
+    user.GetFocus.restype = wintypes.HWND
+    user.GetAncestor.argtypes = (wintypes.HWND, wintypes.UINT)
+    user.GetAncestor.restype = wintypes.HWND
+    user.GetQueueStatus.argtypes = (wintypes.UINT,)
+    user.GetQueueStatus.restype = wintypes.DWORD
     return imm, user
 
 
-def prepare_input(hwnd: int, *, request_commit: bool = True) -> str:
-    """Return ready, modifiers, committed, pending, or failed.
+def prepare_input(hwnd: int, *, toplevel_hwnd: int | None = None, request_commit: bool = True) -> str:
+    """Return ready, no_ime, modifiers, committed, pending, unfocused or failed.
 
     GCS_COMPSTR reports bytes, not characters. Its contents are never read.
-    Ctrl/Alt must be released before completion: Tk's synthesized result-key
+    ``hwnd`` is the logical Text widget, which need not own native focus.
+    Tk's Windows caret/IME handling uses its toplevel client HWND. Resolve the
+    actual native focus, and never complete input belonging to another window.
+    Ctrl/Alt must be released even when no composition remains: an automatic
+    completion may already have queued its result. Tk's synthesized result-key
     events inherit modifiers, and its Text bindings ignore Control-key text.
     A caller that already requested completion should only poll, not request
     completion twice. Non-Windows text input uses the normal Tk event loop.
@@ -45,9 +56,27 @@ def prepare_input(hwnd: int, *, request_commit: bool = True) -> str:
         return "ready"
     try:
         imm, user = _libraries()
-        context = imm.ImmGetContext(hwnd)
+        expected_root = user.GetAncestor(toplevel_hwnd or hwnd, 2)  # GA_ROOT
+        focused = user.GetFocus()
+        if not expected_root:
+            return "failed"
+        if not focused or user.GetAncestor(focused, 2) != expected_root:
+            return "unfocused"
+        if any((user.GetAsyncKeyState(key) | user.GetKeyState(key)) & 0x8000
+               for key in (0x11, 0x12)):  # Ctrl, Alt
+            return "modifiers"
+        # Current (high-word) queue flags, not the low-word "since last call"
+        # flags. Let native input/posted/sent messages run before declaring
+        # readiness. Tk timers themselves are deliberately not included.
+        if user.GetQueueStatus(0x004F) >> 16:  # QS_KEY/MOUSE/POSTMESSAGE/SENDMESSAGE
+            return "pending"
+        context_hwnd = focused
+        context = imm.ImmGetContext(context_hwnd)
+        if not context and toplevel_hwnd and focused != toplevel_hwnd:
+            context_hwnd = toplevel_hwnd
+            context = imm.ImmGetContext(context_hwnd)
         if not context:
-            return "ready"  # No IME input context is associated with this HWND.
+            return "no_ime"  # Confirmed owned native window, no associated IMM context.
         try:
             length = imm.ImmGetCompositionStringW(context, 0x0008, None, 0)  # GCS_COMPSTR
             if length == 0:
@@ -58,13 +87,8 @@ def prepare_input(hwnd: int, *, request_commit: bool = True) -> str:
                 return "failed"
             if not request_commit:
                 return "pending"
-            # Tk uses the queue's GetKeyState when synthesizing result keys;
-            # physical release may precede processing its WM_KEYUP message.
-            if any((user.GetAsyncKeyState(key) | user.GetKeyState(key)) & 0x8000
-                   for key in (0x11, 0x12)):  # Ctrl, Alt
-                return "modifiers"
             return "committed" if imm.ImmNotifyIME(context, 0x0015, 0x0001, 0) else "failed"
         finally:
-            imm.ImmReleaseContext(hwnd, context)
+            imm.ImmReleaseContext(context_hwnd, context)
     except (OSError, AttributeError):
         return "failed"

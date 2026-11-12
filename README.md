@@ -4,13 +4,13 @@ Windows productivity timer and virtual secretary.
 
 ## Current development target
 
-`2.1.4` — fixes repeated cooldown resets, gives chat history more space and a stable reading position, joins timer notifications to the same conversation, and waits for Korean IME composition before sending. Preserves situation-image controls, the three-line scrollable bubble and configurable AI-only chatter. Preserves the native speech-click crash fix, away-clock and conversation fixes, and complete review implementation based on Seunga Timer 2.0.3 (`15accd3`).
+`2.1.5` — follows up on the missing final Korean character: use the native focused IME context, preserve already committed Unicode input carrying Ctrl/Alt, and wait for composition results before taking a send snapshot. The chat title shows the running version. Preserves 2.1.4's cooldown fixes, larger chat and reading position, unified timer history, situation-image controls, the three-line bubble and configurable AI-only chatter. Active Microsoft Korean IME checks are reported separately from simulated input tests; an unavailable CI IME is not a passing IME test.
 
 The implementation and verification ledger is [docs/IMPLEMENTATION_CHECKLIST_2_1.md](docs/IMPLEMENTATION_CHECKLIST_2_1.md). Windows acceptance steps and remaining physical-device checks are documented separately; automated checks do not imply a live API quality test.
 
 ## Desktop app
 
-Development is focused on the Windows desktop app. `RUN.cmd` and Windows source autostart launch `desktop_gallery_final.py`. The Windows job in the **tests** workflow publishes `seunga-timer-2.1.4-windows-x64` for branch pushes. Sign in to GitHub, open the successful workflow run, then select the package under **Artifacts**. Keep `SeungaTimer.exe` beside its `_internal` folder. The package includes Python.
+Development is focused on the Windows desktop app. `RUN.cmd` and Windows source autostart launch `desktop_gallery_final.py`. The Windows job in the **tests** workflow publishes `seunga-timer-2.1.5-windows-x64` for branch pushes. Sign in to GitHub, open the successful workflow run, then select the package under **Artifacts**. Exit the old running app, extract the new ZIP into its own folder, and keep `SeungaTimer.exe` beside its `_internal` folder. Check the chat title for `2.1.5`; `BUILD_INFO.txt` identifies the exact package commit. The package includes Python.
 
 - Read long speech by scrolling inside the bubble (at most three visible lines). Use its explicit chat button, tray or keyboard shortcut to open chat. Click the timer/character for settings; drag them to move the widget.
 - Screen dice changes the current image until the next situation. Explicit pinning and restoration are available.
@@ -23,6 +23,8 @@ Development is focused on the Windows desktop app. `RUN.cmd` and Windows source 
 - Selective user-data backup, validated restore with a recovery snapshot, and privacy-preserving diagnostics are available in the data panel. Keys are excluded.
 
 For the Seunga Timer Windows package, see the [Korean installation and usage guide](docs/AI_ASSISTANT_2_GUIDE.md).
+
+The package's `IME_INPUT_TEST.cmd` runs an isolated offline IME check through `SeungaTimer.exe --ime-self-test <report.json>`. It uses fixed input and a fake service, blocks networking, and leaves personal profiles untouched. User mode does not install/load an input locale or toggle the IME automatically. It reports unavailable separately from passed. This is actual IME automation where available, not proof of physical keyboard behavior on every PC.
 
 The earlier `android-prototype/` is retained only as inactive design history and is not a current development target.
 

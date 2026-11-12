@@ -20,6 +20,9 @@ class NativeCompositionTests(unittest.TestCase):
         self.imm.ImmNotifyIME.return_value = True
         self.user.GetAsyncKeyState.return_value = 0
         self.user.GetKeyState.return_value = 0
+        self.user.GetFocus.return_value = 42
+        self.user.GetAncestor.return_value = 43
+        self.user.GetQueueStatus.return_value = 0
         self.enterContext(patch.object(windows_ime.os, "name", "nt"))
         self.enterContext(patch.object(windows_ime, "_libraries", return_value=(self.imm, self.user)))
 
@@ -34,7 +37,7 @@ class NativeCompositionTests(unittest.TestCase):
         self.imm.ImmNotifyIME.assert_called_once()
         self.imm.ImmGetCompositionStringW.return_value = 0
         self.assertEqual(self.ime.prepare_input(0x123456788, request_commit=False), "ready")
-        self.assertEqual(self.imm.ImmReleaseContext.call_count, 4)
+        self.assertEqual(self.imm.ImmReleaseContext.call_count, 3)
 
     def test_failure_releases_context_and_does_not_invent_characters(self):
         self.imm.ImmGetCompositionStringW.return_value = -2
@@ -59,6 +62,34 @@ class NativeCompositionTests(unittest.TestCase):
         self.imm.ImmNotifyIME.assert_not_called()
         self.imm.ImmGetCompositionStringW.return_value = 2
         self.assertEqual(self.ime.prepare_input(42), "committed")
+
+    def test_native_focus_context_is_used_instead_of_logical_text_context(self):
+        self.user.GetFocus.return_value = 100
+        self.imm.ImmGetContext.side_effect = lambda hwnd: 999 if hwnd == 100 else None
+        self.assertEqual(self.ime.prepare_input(42, toplevel_hwnd=100), "committed")
+        self.imm.ImmGetContext.assert_called_once_with(100)
+        self.imm.ImmReleaseContext.assert_called_once_with(100, 999)
+
+    def test_foreign_focus_is_never_committed_and_no_context_is_distinct(self):
+        self.user.GetAncestor.side_effect = lambda hwnd, _flags: 43 if hwnd == 42 else 44
+        self.user.GetFocus.return_value = 100
+        self.assertEqual(self.ime.prepare_input(42), "unfocused")
+        self.imm.ImmGetContext.assert_not_called()
+        self.user.GetAncestor.side_effect = None
+        self.user.GetFocus.return_value = 42
+        self.imm.ImmGetContext.return_value = None
+        self.assertEqual(self.ime.prepare_input(42), "no_ime")
+        self.imm.ImmNotifyIME.assert_not_called()
+
+    def test_zero_composition_waits_for_modifiers_and_pending_native_messages(self):
+        self.imm.ImmGetCompositionStringW.return_value = 0
+        self.user.GetKeyState.return_value = -32768
+        self.assertEqual(self.ime.prepare_input(42), "modifiers")
+        self.user.GetKeyState.return_value = 0
+        self.user.GetQueueStatus.return_value = 0x0008 << 16
+        self.assertEqual(self.ime.prepare_input(42), "pending")
+        self.user.GetQueueStatus.return_value = 0
+        self.assertEqual(self.ime.prepare_input(42), "ready")
 
 
 @unittest.skipUnless(os.name == "nt" or os.environ.get("DISPLAY"), "Tk display required")
@@ -89,6 +120,7 @@ class ChatWindowTests(unittest.TestCase):
         self.owner = AssistantWindows(self.root, self.service, context=lambda: {}, dispatch=Mock())
         self.owner.open_chat()
         self.chat = self.owner.chat_window
+        self.chat.input.focus_force()
         self.root.update()
         self.fitted_client_size = self.chat.winfo_width(), self.chat.winfo_height()
         self.addCleanup(self.owner.close)
@@ -124,6 +156,21 @@ class ChatWindowTests(unittest.TestCase):
         actual = self.chat.winfo_width(), self.chat.winfo_height()
         self.assertEqual(actual, target)  # Do not silently accept a resize cap.
         return actual
+
+    def finish_submission(self):
+        check_id = None
+        def check():
+            nonlocal check_id
+            if not self.chat._submit_pending:
+                self.root.quit()
+            else:
+                check_id = self.root.after(5, check)
+        timeout = self.root.after(1000, self.root.quit)
+        check_id = self.root.after(5, check)
+        self.root.mainloop()
+        self.root.after_cancel(timeout)
+        self.root.after_cancel(check_id)
+        self.assertFalse(self.chat._submit_pending, "Submission did not complete in the normal event loop")
 
     def test_new_messages_paging_font_change_and_reopen_keep_reading_anchor(self):
         self.populate()
@@ -172,6 +219,7 @@ class ChatWindowTests(unittest.TestCase):
         with patch("assistant_ai.ui.Thread"):
             self.chat.send_button.invoke()
             self.root.update()
+            self.finish_submission()
         self.turns.append(self.turn(1, origin="local_event", event="rest"))
         self.owner.refresh_chat_history()
         self.root.update()
@@ -189,6 +237,7 @@ class ChatWindowTests(unittest.TestCase):
         with patch("assistant_ai.ui.Thread"):
             self.chat.send_button.invoke()
             self.root.update()
+            self.finish_submission()
         self.assertEqual(self.chat.history.get("1.0", "end").count("다시ㅋ"), 2)
         self.owner.refresh_chat_history()
         self.owner.refresh_chat_history()
@@ -208,7 +257,7 @@ class ChatWindowTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.chat.input.delete("1.0", "end")
                 self.chat.input.insert("1.0", "근데 느림...")
-                def commit(_hwnd, *, request_commit):
+                def commit(_hwnd, *, toplevel_hwnd, request_commit):
                     if request_commit:
                         self.chat.after_idle(lambda: self.chat.input.insert("end-1c", "ㅋ"))
                         return "committed"
@@ -217,15 +266,164 @@ class ChatWindowTests(unittest.TestCase):
                     self._activate_send(path)
                     self.chat.request_send()  # Rapid repeated activation is one send.
                     send.assert_not_called()
-                    self.root.update()
+                    self.finish_submission()
                     send.assert_called_once_with("근데 느림...ㅋ")
-                    self.assertEqual([call.kwargs["request_commit"] for call in native.call_args_list], [True, False])
+                    self.assertTrue(native.call_args_list[0].kwargs["request_commit"])
+                    self.assertTrue(all(not call.kwargs["request_commit"] for call in native.call_args_list[1:]))
+
+    def test_idle_only_geometry_updates_cannot_send_before_queued_result(self):
+        self.chat.input.insert("1.0", "근데 느림...")
+        self.root.update()
+        self.chat.input.bind("<<TestImeResult>>", lambda _event: self.chat.input.insert("end-1c", "ㅋ"))
+        def commit(_hwnd, **options):
+            if options["request_commit"]:
+                self.chat.input.event_generate("<<TestImeResult>>", when="tail")
+                return "committed"
+            return "ready"
+        with patch("assistant_ai.ui.prepare_input", side_effect=commit), patch.object(self.owner, "send") as send:
+            self.chat.request_send()
+            self.root.update_idletasks()
+            send.assert_not_called()
+            self.finish_submission()
+            send.assert_called_once_with("근데 느림...ㅋ")
+
+    def test_known_composition_waits_for_late_edit_acknowledgement(self):
+        self.chat.input.insert("1.0", "근데 느림...")
+        self.root.update()
+        early = []
+        def commit(_hwnd, **options):
+            if options["request_commit"]:
+                self.chat.after(120, lambda: self.chat.input.insert("end-1c", "ㅋ"))
+                return "committed"
+            return "ready"
+        with patch("assistant_ai.ui.prepare_input", side_effect=commit), patch.object(self.owner, "send") as send:
+            self.chat.request_send()
+            self.root.after(70, lambda: early.append(send.called))
+            self.finish_submission()
+            send.assert_called_once_with("근데 느림...ㅋ")
+            self.assertEqual(early, [False])
+
+    def test_missing_commit_acknowledgement_times_out_without_consuming_draft(self):
+        self.chat.input.insert("1.0", "근데 느림...")
+        self.root.update()
+        with patch("assistant_ai.ui.prepare_input", side_effect=lambda _hwnd, **kw: "committed" if kw["request_commit"] else "ready"), patch("assistant_ai.ui.time.monotonic", return_value=100) as clock, patch.object(self.owner, "send") as send:
+            self.chat.request_send()
+            self.root.after(70, lambda: setattr(clock, "return_value", 106))
+            self.finish_submission()
+            send.assert_not_called()
+        self.assertEqual(self.chat.input.get("1.0", "end-1c"), "근데 느림...")
+
+    def test_same_character_selection_commit_is_an_edit_acknowledgement(self):
+        self.chat.input.insert("1.0", "ㅋ")
+        self.chat.input.tag_add("sel", "1.0", "end-1c")
+        self.chat.input.mark_set("insert", "1.0")
+        self.root.update()
+        def commit(_hwnd, **options):
+            if options["request_commit"]:
+                self.chat.after(25, lambda: self.chat.input.tk.call("tk::TextInsert", self.chat.input._w, "ㅋ"))
+                return "committed"
+            return "ready"
+        with patch("assistant_ai.ui.prepare_input", side_effect=commit), patch.object(self.owner, "send") as send:
+            self.chat.request_send()
+            self.finish_submission()
+            send.assert_called_once_with("ㅋ")
+
+    def test_focus_loss_before_final_snapshot_preserves_draft(self):
+        self.chat.input.insert("1.0", "전송 전 초안ㅋ")
+        with patch("assistant_ai.ui.prepare_input", side_effect=["ready", "unfocused"]), patch.object(self.owner, "send") as send:
+            self.chat.request_send()
+            self.finish_submission()
+            send.assert_not_called()
+        self.assertEqual(self.chat.input.get("1.0", "end-1c"), "전송 전 초안ㅋ")
+
+    def test_unrelated_user_edit_cancels_pending_send_instead_of_acknowledging_ime(self):
+        self.chat.input.insert("1.0", "근데 느림...")
+        self.root.update()
+        def commit(_hwnd, **options):
+            if options["request_commit"]:
+                self.chat.after(120, lambda: self.chat.input.insert("end-1c", "ㅋ"))
+                return "committed"
+            return "ready"
+        with patch("assistant_ai.ui.prepare_input", side_effect=commit), patch.object(self.owner, "send") as send:
+            self.chat.request_send()
+            self.root.after(40, lambda: self.chat.input.event_generate("<KeyPress-x>"))
+            self.finish_submission()
+            self.root.after(160, self.root.quit)
+            self.root.mainloop()
+            send.assert_not_called()
+        self.assertEqual(self.chat.input.get("1.0", "end-1c"), "근데 느림...xㅋ")
+
+    def test_hide_inside_native_completion_invalidates_its_continuation(self):
+        self.chat.input.insert("1.0", "보존할 초안ㅋ")
+        for state in ("ready", "committed"):
+            with self.subTest(state=state):
+                self.owner.open_chat()
+                self.chat.input.focus_force()
+                self.root.update()
+                def hide(_hwnd, **_options):
+                    self.chat._hide()
+                    return state
+                with patch("assistant_ai.ui.prepare_input", side_effect=hide), patch.object(self.owner, "send") as send:
+                    self.chat.request_send()
+                    self.finish_submission()
+                    send.assert_not_called()
+                self.assertIsNone(self.chat._send_after_id)
+                self.assertEqual(self.chat.input.get("1.0", "end-1c"), "보존할 초안ㅋ")
+
+    def test_escape_while_composition_pending_cancels_submission(self):
+        self.chat.input.insert("1.0", "보존할 초안ㅋ")
+        with patch("assistant_ai.ui.prepare_input", return_value="pending"), patch.object(self.owner, "send") as send:
+            self.chat.request_send()
+            self.root.after(40, lambda: self.chat.input.event_generate("<Escape>"))
+            self.finish_submission()
+            send.assert_not_called()
+        self.assertEqual(self.chat.state(), "withdrawn")
+        self.assertEqual(self.chat.input.get("1.0", "end-1c"), "보존할 초안ㅋ")
+
+    def test_destroy_inside_native_completion_does_not_rearm_or_touch_tk(self):
+        def destroy(_hwnd, **_options):
+            self.chat.destroy()
+            return "committed"
+        with patch("assistant_ai.ui.prepare_input", side_effect=destroy), patch.object(self.owner, "send") as send, patch.object(self.root, "report_callback_exception") as error:
+            self.chat.request_send()
+            self.finish_submission()
+            send.assert_not_called()
+            error.assert_not_called()
+        self.owner.chat_window = None
+
+    def test_unicode_guard_preserves_selection_undo_and_ordinary_shortcuts(self):
+        self.chat.input.insert("1.0", "앞뒤")
+        self.chat.input.mark_set("insert", "1.1")
+        self.chat.input.edit_reset()
+        event = SimpleNamespace(char="ㅋ", keycode=ord("ㅋ"), state=4, send_event=True)
+        self.assertEqual(self.chat._preserve_native_text(event), "break")
+        self.assertEqual(self.chat.input.get("1.0", "end-1c"), "앞ㅋ뒤")
+        self.chat.input.edit_undo()
+        self.assertEqual(self.chat.input.get("1.0", "end-1c"), "앞뒤")
+        for char, keycode in (("\x03", 67), ("\x16", 86), ("\r", 13), ("", 229)):
+            self.assertIsNone(self.chat._preserve_native_text(SimpleNamespace(char=char, keycode=keycode, state=4, send_event=True)))
+        self.assertEqual(self.chat.input.get("1.0", "end-1c"), "앞뒤")
+
+    def test_button_keyboard_activation_restores_composer_before_completion(self):
+        self.chat.input.insert("1.0", "근데 느림...")
+        self.chat.send_button.focus_force()
+        self.root.update()
+        def commit(_hwnd, **options):
+            self.assertIs(self.chat.focus_get(), self.chat.input)
+            if options["request_commit"]:
+                self.chat.after(25, lambda: self.chat.input.insert("end-1c", "ㅋ"))
+                return "committed"
+            return "ready"
+        with patch("assistant_ai.ui.prepare_input", side_effect=commit), patch.object(self.owner, "send") as send:
+            self.chat.send_button.invoke()
+            self.finish_submission()
+            send.assert_called_once_with("근데 느림...ㅋ")
 
     def test_failed_or_hidden_pending_submission_preserves_draft(self):
         self.chat.input.insert("1.0", "아직 조합 중ㅋ")
         with patch("assistant_ai.ui.prepare_input", return_value="failed"), patch.object(self.owner, "send") as send:
             self.chat.send_button.invoke()
-            self.root.update()
+            self.finish_submission()
             send.assert_not_called()
         self.assertEqual(self.chat.input.get("1.0", "end-1c"), "아직 조합 중ㅋ")
         self.assertIn("초안은 유지", self.chat.status.get())
@@ -271,12 +469,13 @@ class ChatWindowTests(unittest.TestCase):
                 self.chat.input.delete("1.0", "end")
                 self.chat.input.insert("1.0", text)
                 self.root.update()
-                self.assertEqual(prepare_input(self.chat.input.winfo_id()), "ready")
                 self.assertEqual(self.chat.input.get("1.0", "end-1c"), text)
                 with patch.object(self.owner, "send") as send:
                     self._activate_send(path)
-                    self.root.update()
+                    self.finish_submission()
                     send.assert_called_once_with(text)
+                self.assertIn(prepare_input(self.chat.input.winfo_id(), toplevel_hwnd=self.chat.winfo_id(),
+                                            request_commit=False), {"ready", "no_ime"})
 
     def test_exact_unicode_snapshot_reaches_api_storage_and_reopened_history(self):
         from assistant_ai.service import AssistantService
@@ -296,14 +495,14 @@ class ChatWindowTests(unittest.TestCase):
             for path in ("button", "keyboard"):
                 for text in values:
                     self.chat.input.insert("1.0", text[:-1])
-                    def commit(_hwnd, *, request_commit):
+                    def commit(_hwnd, *, toplevel_hwnd, request_commit):
                         if request_commit:
                             self.chat.after_idle(lambda: self.chat.input.insert("end-1c", text[-1:]))
                             return "committed"
                         return "ready"
                     with patch("assistant_ai.ui.prepare_input", side_effect=commit), patch("assistant_ai.ui.Thread", side_effect=lambda **kw: SimpleNamespace(start=lambda: kw["target"](*kw["args"]))):
                         self._activate_send(path)
-                        self.root.update()
+                        self.finish_submission()
                         self.owner._poll()
                     self.assertEqual(payloads[-1]["input"][-1], {"role": "user", "content": text})
                     self.assertEqual(service.recent_turns()[-1].user, text)

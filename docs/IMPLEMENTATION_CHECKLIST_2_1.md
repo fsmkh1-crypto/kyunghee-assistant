@@ -4,6 +4,16 @@
 
 상태는 구현 완료 여부를 나타낸다. 관련 검증 파일과 실행 결과를 함께 확인한다. `검증`은 해당 자동·모의 검증 범위에서 확인했다는 뜻이며 실제 API 품질이나 모든 Windows 환경을 보증하지 않는다.
 
+## 2.1.5 입력 후속 검증 범위
+
+사용자는 Ctrl+Enter에서 마지막 입력 글자가 여전히 빠진다고 보고했다. 제보 당시 실행 버전은 확인되지 않았으므로 이를 2.1.4 실기 재현으로 단정하지 않는다. 기존 모의 테스트는 IME 결과 문자를 완료 확인 전에 삽입했으며, Windows 검사도 이미 확정된 Text 입력이었다. 이 검사들은 실제 Microsoft 한국어 IME가 Ctrl을 누를 때 확정하는 순서를 입증하지 못했다.
+
+- 실제 native focus가 같은 대화창에 속하는지 확인해 그 창의 IME 문맥을 사용한다. 다른 창의 조합을 확정하거나 실패를 준비 완료로 취급하지 않는다.
+- Tk가 이미 전달한 Unicode 결과 문자에 Ctrl/Alt 상태가 붙어도 입력란에서 보존한다. 물리 Ctrl 단축키와 Enter는 유지하며 미확정 조합 문자열을 임의로 복사해 넣지 않는다.
+- 문자 이벤트 처리와 확정 결과 반영을 확인한 뒤 전송 원문을 읽는다. 확정 중 창 닫기·취소·실패에서는 전송을 재개하지 않고 초안을 유지한다.
+- 기준 커밋 `d99dc19945b7b58d6df520c9b7888735ed546926`과 비교하는 Windows IME probe는 실제 조합 관측과 가짜 입력 검사를 구분한다. 실제 Microsoft Korean IME/조합 상태를 확인하지 못하면 `unavailable`로 기록하며 통과로 세지 않는다. 최종 결과는 해당 빌드의 `windows-ime-report.json`, PR과 별도 검증 기록을 따른다.
+- 대화창의 실행 버전 표시와 패키지의 `BUILD_INFO.txt`로 이전 실행본과 구별한다. 실제 API 호출 없이 합성 입력과 가짜 응답을 사용하며 사용자 대화나 키를 진단 업로드하지 않는다.
+
 | ID | 작업 | 상태 | 구현·검증 근거 |
 | --- | --- | --- | --- |
 | IMG-01 | 배포 진입점의 화면 주사위 복원 | 구현 | `desktop_gallery.py`, `image_catalog.py`, `image_actions.py`, `asset_pack_import.py`; `test_random_gallery`, `test_asset_pack_import`, `test_image_actions`, `test_image_catalog` |

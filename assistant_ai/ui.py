@@ -14,7 +14,7 @@ import webbrowser
 from uuid import uuid4
 
 from app import AMBER, BG, BORDER, MUTED, PANEL, PANEL_2, PURPLE, PURPLE_2, TEXT
-from app_brand import APP_NAME
+from app_brand import APP_NAME, APP_VERSION
 
 from .api import AIError
 from .config import SettingsError
@@ -729,6 +729,7 @@ class AssistantWindows:
     def retry(self, *, edit=False):
         if self._failed_request is None or self._cancel is not None:
             return
+        self.chat_window._cancel_pending_send()
         request_id, text = self._failed_request
         if edit:
             self._editing_retry_id = request_id
@@ -775,6 +776,7 @@ class AssistantWindows:
     def clear_history(self):
         if self._cancel is not None:
             return
+        self.chat_window._cancel_pending_send()
         try:
             counts = self.service.history_counts()
             detail = f"저장된 대화 {counts.get('conversation_turns', 0):,}개와 이번 실행의 대화 {counts.get('session_turns', 0):,}개를 지울까요?\n두 집계에는 같은 대화가 포함될 수 있어요. 장기 기억 {counts.get('memories', 0):,}개는 유지해요."
@@ -1172,12 +1174,18 @@ class _ChatWindow(_Window):
         dpi_scale = owner.root.winfo_fpixels("1i") / 96
         scale = min(2, max(1, dpi_scale))
         width, height = (round(size * scale) for size in self.DEFAULT_SIZE)
-        super().__init__(owner, "승아와 대화", width, height)
+        super().__init__(owner, f"승아와 대화 · {APP_VERSION}", width, height)
         self.minsize(*self.MIN_SIZE)
         self.resizable(True, True)
         self._send_after_id = None
         self._submit_pending = False
+        self._submit_generation = 0
         self._ime_commit_requested = False
+        self._ime_commit_revision = None
+        self._input_revision = 0
+        self._native_text_tag = None
+        self._native_text_command = None
+        self._windows_text_input = self.tk.call("tk", "windowingsystem") == "win32"
         self._history_sections = []
         self._rendered = False
         self._hidden_view = None
@@ -1185,7 +1193,7 @@ class _ChatWindow(_Window):
         self._pending_history_view = None
         header = tk.Frame(self.body, bg=PANEL)
         header.pack(fill="x", padx=12, pady=(10, 4))
-        _label(header, "승아와 대화", size=15).pack(side="left")
+        _label(header, f"승아와 대화 · {APP_VERSION}", size=15).pack(side="left")
         _button(header, "AI 설정", owner.open_settings).pack(side="right")
         menu_button = tk.Menubutton(header, text="도구 ▾", font=_font(self, 10), bg=PANEL_2, fg=TEXT,
                                     activebackground=BORDER, activeforeground=TEXT, relief="flat", takefocus=True,
@@ -1231,6 +1239,14 @@ class _ChatWindow(_Window):
         _add_scrollbar(input_frame, self.input)
         self.input.bind("<Control-Return>", self._send_from_keyboard)
         self.input.bind("<<Modified>>", self._input_modified)
+        for sequence in ("<KeyPress>", "<ButtonPress>", "<<Paste>>", "<<Cut>>", "<<Undo>>", "<<Redo>>"):
+            self.input.bind(sequence, self._interrupt_pending_edit, add="+")
+        command = self.input.register(self._finish_send_event)
+        self.input.bind("<<SeungaSubmitReady>>", f"{command} %d")
+        if self._windows_text_input:
+            self._native_text_tag = f"{self.input._w}_committed_text"
+            self._native_text_command = self.input.bind_class(self._native_text_tag, "<KeyPress>", self._preserve_native_text)
+            self.input.bindtags((self._native_text_tag, *self.input.bindtags()))
         for widget in (*history_frame.winfo_children(), *input_frame.winfo_children()):
             for sequence in ("<KeyPress>", "<ButtonPress>", "<MouseWheel>", "<Button-4>", "<Button-5>"):
                 widget.bind(sequence, owner._note_chat_interaction, add="+")
@@ -1301,6 +1317,10 @@ class _ChatWindow(_Window):
 
     def destroy(self):
         self._cancel_pending_send()
+        if self._native_text_tag is not None:
+            self.input.unbind_class(self._native_text_tag, "<KeyPress>")
+            self._root().deletecommand(self._native_text_command)
+            self._native_text_tag = self._native_text_command = None
         if self._restore_after_id is not None:
             self.after_cancel(self._restore_after_id)
             self._restore_after_id = None
@@ -1337,38 +1357,91 @@ class _ChatWindow(_Window):
 
     def request_send(self):
         """Button and Ctrl+Enter share one composition-aware submission path."""
-        if self.owner._closed or self.owner._cancel is not None or self._submit_pending:
+        if (self.owner._closed or self.owner._cancel is not None or self._submit_pending
+                or self.state() in {"withdrawn", "iconic"}):
             return
         self._submit_pending = True
+        self._submit_generation += 1
         self._ime_commit_requested = False
+        self._ime_commit_revision = None
         self._send_deadline = time.monotonic() + 5
-        self._send_after_id = self.after_idle(self._prepare_send)
+        focused = self.focus_get()
+        if focused is not None and focused.winfo_toplevel() is self:
+            # Tab/Space can activate Send with logical focus on the button.
+            # Tk reroutes result keys to that logical focus at delivery time.
+            # focus_set never forces focus away from another application.
+            self.input.focus_set()
+        self._schedule_send_check(self._submit_generation)
 
     def _cancel_pending_send(self):
+        self._submit_generation += 1
         if self._send_after_id is not None:
             self.after_cancel(self._send_after_id)
             self._send_after_id = None
         self._submit_pending = False
 
-    def _prepare_send(self):
+    def _submission_alive(self, token):
+        if not self._submit_pending or token != self._submit_generation:
+            return False
+        if (self.owner._closed or self.owner._cancel is not None
+                or self.state() in {"withdrawn", "iconic"}):
+            self._cancel_pending_send()
+            return False
+        return True
+
+    def _schedule_send_check(self, token):
+        # update_idletasks() explicitly skips input events, but runs after_idle
+        # callbacks. A timer plus a tail-queued window event cannot submit from
+        # that idle-only path while a committed character is still waiting.
+        self._send_after_id = self.after(15, lambda: self._prepare_send(token))
+
+    def _check_native_input(self, *, request_commit):
+        if self._windows_text_input and self.focus_get() is not self.input:
+            return "unfocused"
+        return prepare_input(self.input.winfo_id(), toplevel_hwnd=self.winfo_id(),
+                             request_commit=request_commit)
+
+    def _send_state_failed(self, state):
+        if state in {"failed", "unfocused"} or time.monotonic() >= self._send_deadline:
+            self._cancel_pending_send()
+            self.status.set("입력창으로 돌아와 Ctrl·Alt 키를 놓고 다시 보내 주세요. 입력 확정을 확인하지 못해 초안은 유지했어요.")
+            return True
+        return False
+
+    def _prepare_send(self, token):
+        if not self._submission_alive(token):
+            return
         self._send_after_id = None
-        if self.owner._closed or self.owner._cancel is not None:
-            self._submit_pending = False
+        if self.input.edit_modified():
+            self._input_modified(None)
+        revision = self._input_revision
+        state = self._check_native_input(request_commit=not self._ime_commit_requested)
+        # A native call may dispatch Windows/Tk events before returning. Hide,
+        # destruction or a new request must invalidate this continuation too.
+        if not self._submission_alive(token) or self._send_state_failed(state):
             return
-        state = prepare_input(self.input.winfo_id(), request_commit=not self._ime_commit_requested)
-        if state == "failed" or time.monotonic() >= self._send_deadline:
-            self._submit_pending = False
-            self.status.set("입력 확정을 기다리고 있어요. Ctrl·Alt 키를 놓고 보내기를 다시 눌러 주세요. 초안은 유지했어요.")
-            return
-        if state == "ready":
-            self._send_committed_input()
-        elif state == "committed":
-            # Native IME completion queues characters at Tcl's event tail.
-            # Never read/clear the Text in that same native call stack.
+        if state == "committed":
             self._ime_commit_requested = True
-            self._send_after_id = self.after_idle(self._prepare_send)
+            self._ime_commit_revision = revision
+        if (state in {"ready", "no_ime"}
+                and (self._ime_commit_revision is None or self._input_revision > self._ime_commit_revision)):
+            self.input.event_generate("<<SeungaSubmitReady>>", when="tail", data=str(token))
         else:
-            self._send_after_id = self.after(15, self._prepare_send)
+            self._schedule_send_check(token)
+
+    def _finish_send_event(self, token):
+        if str(self._submit_generation) != token:
+            return
+        generation = self._submit_generation
+        if not self._submission_alive(generation):
+            return
+        state = self._check_native_input(request_commit=False)
+        if not self._submission_alive(generation) or self._send_state_failed(state):
+            return
+        if state not in {"ready", "no_ime"}:
+            self._schedule_send_check(generation)
+            return
+        self._send_committed_input()
 
     def _send_committed_input(self):
         self._send_after_id = None
@@ -1378,11 +1451,47 @@ class _ChatWindow(_Window):
 
     def _input_modified(self, _event):
         if self.input.edit_modified():
+            self._input_revision += 1
             self.input.edit_modified(False)
             size = len(self.input.get("1.0", "end-1c"))
             hint = " · 긴 메시지는 입력 비용이 늘 수 있어요" if size > 4000 else " · Tab으로 버튼 이동"
             self.input_count.set(f"{size:,}자{hint}")
             self.owner._draft_changed()
+
+    def _preserve_native_text(self, event):
+        # Tk 8.6 win/tkWinX.c emits committed IME/WM_UNICHAR characters with
+        # the Unicode code point as keycode and current Ctrl/Alt state. Its
+        # Text class ignores Control-Key/Alt-Key, even if composition already
+        # finished BEFORE Ctrl+Enter. Win32 physical virtual-key codes fit in
+        # one byte; this narrow signature excludes ordinary shortcuts.
+        # %E exposes a boolean, not Tk's private send_event=-3 marker.
+        character = event.char
+        if (not event.send_event or not event.state & (0x4 | 0x20000)
+                or len(character) != 1 or event.keycode <= 0xFF
+                or ord(character) != event.keycode):
+            return None
+        # Use the same editing operation as the Text class: selection,
+        # insertion cursor and undo semantics remain Tk's responsibility.
+        self.input.tk.call("tk::TextInsert", self.input._w, character)
+        self.owner._note_chat_interaction(event)
+        return "break"
+
+    def _interrupt_pending_edit(self, event):
+        if not self._submit_pending:
+            return
+        character = getattr(event, "char", "")
+        keycode = getattr(event, "keycode", 0)
+        if (self._windows_text_input and getattr(event, "send_event", False)
+                and isinstance(keycode, int) and keycode > 0xFF
+                and len(character) == 1 and ord(character) == keycode):
+            return  # An IME result is the acknowledgement we are waiting for.
+        keysym = getattr(event, "keysym", "")
+        if keysym in {"Control_L", "Control_R", "Alt_L", "Alt_R", "Shift_L", "Shift_R", "Meta_L", "Meta_R"}:
+            return
+        if keysym == "Return" and getattr(event, "state", 0) & 4:
+            return  # Repeated Ctrl+Enter remains a single submission.
+        self._cancel_pending_send()
+        self.status.set("입력 중인 초안을 유지했어요. 작성한 뒤 다시 보내 주세요.")
 
     def update_availability(self):
         try:

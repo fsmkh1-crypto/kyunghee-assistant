@@ -1,17 +1,22 @@
-# Windows smoke test — 승아 타이머 2.1.4
+# Windows smoke test — 승아 타이머 2.1.5
 
 Run this on a real Windows PC before calling the build ready for daily use.
 
 ## Setup
 
-1. For a packaged test, extract the Windows ZIP and keep `SeungaTimer.exe` beside `_internal`. Python is not required.
+1. Exit the previously running timer. Extract the new ZIP into a separate folder and keep `SeungaTimer.exe` beside `_internal`. Python is not required. Check the chat title says **2.1.5** and `BUILD_INFO.txt` names the intended commit; the single-instance guard can otherwise leave the old app running.
 2. For source testing only, install Python 3.12+ and run `python -m pip install -r requirements.txt`.
 3. Start the packaged EXE, or use `RUN_DEBUG.cmd` for source debugging.
 4. Confirm `%APPDATA%\KyungheeAssistant\kyunghee.log` is being written.
+5. For a local offline IME check, run `IME_INPUT_TEST.cmd` beside the packaged EXE. Set Korean Hangul mode during the preparation countdown, then leave input alone. The separate temporary chat uses a fixed `ㅋ`, a fake service and blocked networking; it never loads personal keys/history. The console prints a unique temporary JSON path. Exit 3 means unavailable, not passed. Actual IME automation is still distinct from physical typing of the full reported phrase.
 
 ## Must-pass checks
 
 ### 0. Review implementation acceptance
+
+- **2.1.5 IME follow-up:** Record the visible running version and whether the user sends with the button or Ctrl+Enter. With Microsoft Korean IME, physically type `근데 느림...ㅋ`; do not paste it. Send with the final jamo still composing, with Ctrl held/released, and after Tab to the send button. Repeat at the middle of a line, replacing selected text, and with mixed Korean/jamo/Latin/emoji. Normal Ctrl+A/C/V/Z and plain Enter must remain normal editing/newline operations. Compare the sent bubble and saved/reopened history. Use only a local fake API for request inspection; do not collect real conversation contents or keys.
+- **2.1.5 cancellation:** Escape/close or switch away during composition completion, reopen, and check the draft remains and no message was sent. Repeat rapid send activation and API failure; there must be at most one submission, and failed text must remain available. Do not interpret waiting for composition as a failed network request.
+- **2.1.5 test evidence:** `windows-ime-report.json` distinguishes real Microsoft Korean IME composition produced by keyboard input from committed-text insertion and synthesized Windows-message tests. `unavailable` means this runner could not prove active IME composition; report the reason and perform the physical input checks. Neither mocked IME state nor a directly inserted string proves the original user scenario.
 
 - **2.1.4 IME:** With Microsoft Korean IME, type (do not paste) `근데 느림...ㅋ` and send while the final `ㅋ` is still composing. Repeat via Send, Ctrl+Enter (including holding then releasing Ctrl), rapid repeated sends, Escape/close during commit, and mixed Korean/emoji. Sent bubble, saved history after restart, and the captured request text in an isolated fake-transport test must match; never log real API keys. Plain Enter remains newline. Automated delayed-commit tests are not proof of this physical IME scenario.
 - **2.1.4 reading:** Load more than 40 turns, scroll to an older paragraph, receive a break/return message, load older history, resize and hide/reopen. Preserve the paragraph being read; at the bottom, follow new messages. At narrow/high-DPI sizes, history and Send/Cancel remain accessible.
