@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from time import perf_counter
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -158,6 +159,7 @@ class ChatWindowTests(unittest.TestCase):
         return actual
 
     def finish_submission(self, *, diagnostics=None):
+        started = perf_counter()
         check_id = None
         def check():
             nonlocal check_id
@@ -165,13 +167,18 @@ class ChatWindowTests(unittest.TestCase):
                 self.root.quit()
             else:
                 check_id = self.root.after(5, check)
-        timeout = self.root.after(1000, self.root.quit)
+        # Let the product's five-second composition deadline run before the
+        # fixture watchdog. A one-second cutoff can quit in the first timer
+        # batch after Windows lays out a newly inserted Unicode draft. Tests
+        # still assert the actual send/payload, so a product timeout is failure.
+        timeout = self.root.after(6000, self.root.quit)
         check_id = self.root.after(5, check)
         self.root.mainloop()
         self.root.after_cancel(timeout)
         self.root.after_cancel(check_id)
         if self.chat._submit_pending:
             state = {
+                "elapsed_seconds": round(perf_counter() - started, 3),
                 "generation": self.chat._submit_generation,
                 "commit_requested": self.chat._ime_commit_requested,
                 "revision": self.chat._input_revision,
@@ -531,10 +538,12 @@ class ChatWindowTests(unittest.TestCase):
             service = AssistantService(Path(directory))
             service.save_settings(replace(service.load_settings(), enabled=True, conversation_storage_enabled=True))
             self.owner.service = self.chat.service = service
-            values = ("근데 느림...ㅋ", "  분해 자모 카 · 이모지 👩🏽‍💻 · 결합 e\u0301\n끝ㅋ \t")
+            values = ("근데 느림...ㅋ", "감사한다", "  분해 자모 카 · 이모지 👩🏽‍💻 · 결합 e\u0301\n끝ㅋ \t")
             for path in ("button", "keyboard"):
                 for text in values:
                     with self.subTest(path=path, text=text):
+                        started = perf_counter()
+                        previous_payload_count = len(payloads)
                         self.chat.input.insert("1.0", text[:-1])
                         trace = {"native_calls": [], "result_delivered": False}
                         def deliver():
@@ -542,16 +551,25 @@ class ChatWindowTests(unittest.TestCase):
                             trace["result_delivered"] = True
                             trace["delivery_revision"] = self.chat._input_revision
                             trace["delivery_modified"] = self.chat.input.edit_modified()
+                            trace["delivery_seconds"] = round(perf_counter() - started, 3)
+                            trace["input_after_delivery"] = self.chat.input.get("1.0", "end-1c")
                         def commit(_hwnd, *, toplevel_hwnd, request_commit):
-                            trace["native_calls"].append((request_commit, self.chat._input_revision))
+                            trace["native_calls"].append((request_commit, self.chat._input_revision,
+                                                          round(perf_counter() - started, 3)))
                             if request_commit:
                                 trace["result_after"] = self.chat.after_idle(deliver)
+                                self.addCleanup(self.chat.after_cancel, trace["result_after"])
                                 return "committed"
                             return "ready"
                         with patch("assistant_ai.ui.prepare_input", side_effect=commit), patch("assistant_ai.ui.Thread", side_effect=lambda **kw: SimpleNamespace(start=lambda: kw["target"](*kw["args"]))):
                             self._activate_send(path)
                             self.finish_submission(diagnostics=trace)
+                            if self.owner._poll_id is not None:
+                                self.root.after_cancel(self.owner._poll_id)
                             self.owner._poll()
+                        self.assertTrue(trace["result_delivered"])
+                        self.assertEqual(trace["input_after_delivery"], text)
+                        self.assertEqual(len(payloads), previous_payload_count + 1)
                         self.assertEqual(payloads[-1]["input"][-1], {"role": "user", "content": text})
                         self.assertEqual(service.recent_turns()[-1].user, text)
                     if self.chat._submit_pending:

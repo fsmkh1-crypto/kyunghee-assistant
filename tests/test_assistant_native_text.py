@@ -204,6 +204,11 @@ class NativeTextDeliveryTests(unittest.TestCase):
         self._post_unicode("ㅋ")
         self.assertEqual(self.chat.input.get("1.0", "end-1c"), "근데 느림...ㅋ")
 
+    def test_control_modified_native_last_korean_syllable_is_preserved(self):
+        self._draft("감사한")
+        self._post_unicode("다")
+        self.assertEqual(self.chat.input.get("1.0", "end-1c"), "감사한다")
+
     def test_native_unicode_preserves_codepoints_with_and_without_control(self):
         for control in (False, True):
             for char in ("ㅋ", "한", "あ", "א", "\u0301", "\U0001f600"):

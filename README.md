@@ -15,6 +15,7 @@ Development is focused on the Windows desktop app. `RUN.cmd` and Windows source 
 - Read long speech by scrolling inside the bubble (at most three visible lines). Use its explicit chat button, tray or keyboard shortcut to open chat. Click the timer/character for settings; drag them to move the widget.
 - Screen dice changes the current image until the next situation. Explicit pinning and restoration are available.
 - Import complete image ZIP sets from the image settings tab. Conflicting numbered sets receive the next available higher number, consistently across all ten roles; the preview shows the mapping. Imports live in the user profile and preserve existing artwork. Byte-identical complete sets are reused.
+- Timer notices continue in the main speech bubble and conversation history without a second automatic notification window. Break, snooze and quiet-today actions remain available from the tray menu.
 - Image changes from chat use a validated proposal, explicit Apply/Cancel, and Undo. Local image controls do not require an API key.
 - Settings have tabs, a fixed save area, draft indicators and discard. Gallery selections are previews until Apply is pressed; that action saves separately from general settings and has its own Undo.
 - Optional AI supports cancellation, retry/edit, local timer status, separate history/memory preferences, searchable/editable pinned memories, event controls and web search preferences.

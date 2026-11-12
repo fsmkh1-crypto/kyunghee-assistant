@@ -102,6 +102,57 @@ class DesktopWorkflowTests(unittest.TestCase):
         self.assertGreaterEqual(widget.winfo_width(), widget.winfo_reqwidth())
         self.assertGreaterEqual(widget.winfo_height(), widget.winfo_reqheight())
 
+    def test_timer_notices_use_speech_and_history_without_automatic_windows(self):
+        import tkinter as tk
+        with self.desktop() as desktop, \
+             patch.object(desktop, "_current_workday_state", return_value=SimpleNamespace(mode="normal")), \
+             patch.object(desktop, "_break_notifications_suppressed", return_value=False), \
+             patch.object(desktop, "_toast_window", side_effect=AssertionError("Automatic popup created")) as popup:
+            service = desktop._assistant_service
+            self.assertFalse(service.load_settings().enabled)
+            before = {str(widget) for widget in desktop.root.winfo_children() if isinstance(widget, tk.Toplevel)}
+            desktop.show_break_toast("이제 쉬어 갈 시간이에요.")
+            desktop.snooze_break()
+            with patch("app.pick", return_value="오빠, 두 번째야. 이번엔 진짜 쉬어."):
+                desktop.snooze_break()
+            self.assertEqual(desktop.speech.cget("text"), "오빠, 두 번째야. 이번엔 진짜 쉬어.")
+            self.assertEqual(desktop.state.session.ignored_breaks, 2)
+            desktop.accept_break()
+            self.assertTrue(desktop.state.session.is_away)
+
+            def automatic_return():
+                desktop.engine.stop_manual_away()
+                return SimpleNamespace(became_active=True, away_duration=90, break_due=False)
+
+            with patch.object(desktop.engine, "tick", side_effect=automatic_return):
+                desktop._tick_safe()
+            self.cancel_callbacks(desktop.root)
+            self.assertFalse(desktop.state.session.is_away)
+            desktop.suppress_break_reminders_today()
+            self.assertTrue(desktop.state.daily.break_reminders_suppressed)
+            desktop.toggle_manual_away()
+            desktop.toggle_manual_away()
+            desktop.root.withdraw()
+            desktop.show_break_toast("숨긴 동안의 휴식 안내")
+            desktop.root.update()
+
+            self.assertFalse(desktop.root.winfo_viewable())
+            self.assertIsNone(desktop.toast)
+            self.assertIsNone(desktop._assistant_windows.chat_window)
+            self.assertEqual({str(widget) for widget in desktop.root.winfo_children() if isinstance(widget, tk.Toplevel)}, before)
+            popup.assert_not_called()
+            turns = service.recent_turns(limit=20)
+            self.assertEqual([turn.event for turn in turns],
+                             ["rest", "snooze", "snooze", "break_started", "return", "rest", "away", "return", "rest"])
+            self.assertTrue(all(turn.user == "" and turn.origin == "local_event" for turn in turns))
+
+            # The existing explicit chat command still opens the conversation
+            # and reveals notices recorded while the timer widget was hidden.
+            desktop._open_assistant_chat()
+            desktop.root.update()
+            self.assertTrue(desktop.root.winfo_viewable())
+            self.assertIn("숨긴 동안의 휴식 안내", desktop._assistant_windows.chat_window.history.get("1.0", "end"))
+
     def test_settings_footer_actions_remain_visible_on_every_tab_at_common_dpi(self):
         for dpi in (96, 120, 144, 192):
             with self.subTest(dpi=dpi), self.desktop(dpi=dpi) as desktop:

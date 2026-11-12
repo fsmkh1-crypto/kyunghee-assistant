@@ -71,6 +71,8 @@ class DesktopAssistantMixin:
         self._assistant_important_event_at = float("-inf")
         self._assistant_dialogue_mode = None
         self._assistant_notification_event = None
+        self._assistant_break_notice_revision = 0
+        self._assistant_tray_state = None
         self._assistant_local_rotation = 0
         self._chat_phase = "idle"
         self._last_chat_reply = ""
@@ -105,6 +107,7 @@ class DesktopAssistantMixin:
         except Exception:
             self._assistant_service = None
             core.log.warning("AI assistant could not be initialized")
+        self._refresh_break_tray_menu()
 
     def _build_timer_page(self):
         super()._build_timer_page()
@@ -319,10 +322,60 @@ class DesktopAssistantMixin:
         *existing, quit_item = super()._tray_menu_items()
         return (
             *existing,
+            core.item("지금 휴식 시작", lambda: self._tray_call(lambda: self._run_break_menu_action("start")),
+                      enabled=lambda _item: self._break_menu_action_enabled("start")),
+            core.item(lambda _item: f"휴식 {self.preferences.snooze_minutes}분 미루기",
+                      lambda: self._tray_call(lambda: self._run_break_menu_action("snooze")),
+                      enabled=lambda _item: self._break_menu_action_enabled("snooze")),
+            core.item("오늘 휴식 알림 그만", lambda: self._tray_call(lambda: self._run_break_menu_action("stop")),
+                      enabled=lambda _item: self._break_menu_action_enabled("stop")),
             core.item("승아와 대화", lambda: self._tray_call(self._open_assistant_chat)),
             core.item("승아 AI 설정", lambda: self._tray_call(self._open_assistant_settings)),
             quit_item,
         )
+
+    def _break_menu_action_enabled(self, action):
+        if action == "start":
+            return not self.state.session.is_away
+        reminders = self.preferences.break_reminders and not self.state.daily.break_reminders_suppressed
+        if action == "stop":
+            return reminders
+        return (reminders and not self.state.session.is_away
+                and self.engine.remaining_to_break() <= 0
+                and core.should_encourage_more_work(self._current_workday_state().mode))
+
+    def _run_break_menu_action(self, action):
+        # Tray callbacks queue onto Tk's thread. Recheck there because the
+        # timer may have changed while the user was choosing a menu item.
+        try:
+            if self._break_menu_action_enabled(action):
+                {"start": self.accept_break, "snooze": self.snooze_break,
+                 "stop": self.suppress_break_reminders_today}[action]()
+        finally:
+            self._refresh_break_tray_menu()
+
+    def _refresh_break_tray_menu(self):
+        # Windows pystray snapshots labels/enabled flags into its native menu.
+        # Its click handler refreshes before our queued Tk action runs, so
+        # timer transitions and completed actions must refresh it explicitly.
+        icon = getattr(self, "tray_icon", None)
+        if icon is None or self._assistant_shutdown.is_set():
+            return
+        try:
+            if not icon.visible:
+                return
+            state = (self.state.session.is_away, self.preferences.snooze_minutes,
+                     self._break_menu_action_enabled("snooze"), self._break_menu_action_enabled("stop"))
+            if state != self._assistant_tray_state:
+                icon.update_menu()
+                self._assistant_tray_state = state
+        except Exception:
+            core.log.warning("Could not refresh timer tray actions")
+
+    def apply_preferences(self, preferences):
+        result = super().apply_preferences(preferences)
+        self._refresh_break_tray_menu()
+        return result
 
     def _open_assistant_chat(self):
         if self._assistant_windows is None:
@@ -444,42 +497,63 @@ class DesktopAssistantMixin:
 
     def toggle_manual_away(self):
         super().toggle_manual_away()
+        self._refresh_break_tray_menu()
         self._request_proactive("away" if self.state.session.is_away else "return")
 
     def accept_break(self):
-        previous_toast = self.toast
         previous_event = self._assistant_notification_event
         self._assistant_notification_event = "break_started"
         try:
             super().accept_break()
         finally:
             self._assistant_notification_event = previous_event
-        self._request_proactive("break_started", self.toast if self.toast is not previous_toast else None)
+            self._refresh_break_tray_menu()
+        self._request_proactive("break_started")
+
+    def snooze_break(self):
+        try:
+            return super().snooze_break()
+        finally:
+            self._refresh_break_tray_menu()
+
+    def suppress_break_reminders_today(self):
+        previous_event = self._assistant_notification_event
+        self._assistant_notification_event = "rest"
+        try:
+            return super().suppress_break_reminders_today()
+        finally:
+            self._assistant_notification_event = previous_event
+            self._refresh_break_tray_menu()
+
+    def show_toast(self, text):
+        # Core actions have already delivered this text through _say. Keep
+        # their timer behavior without opening a second notification window.
+        self._destroy_toast()
 
     def show_break_toast(self, text, allow_snooze=True):
-        previous_toast = self.toast
-        result = super().show_break_toast(text, allow_snooze=allow_snooze)
-        # The desktop layer can suppress a toast after the timer gate checked
-        # fullscreen state. Only a newly delivered alert enters the history.
-        if self.toast is not None and self.toast is not previous_toast and self.toast.winfo_exists():
-            self._say("break", text, work_mode=self._current_workday_state().mode)
-        return result
+        self._destroy_toast()
+        # Recheck after the timer gate, just as the former popup did. Only a
+        # delivered speech/history notice may trigger its proactive follow-up.
+        if self._break_notifications_suppressed():
+            return
+        self._say("break", text, work_mode=self._current_workday_state().mode)
+        self._assistant_break_notice_revision += 1
 
     def _tick_safe(self):
         was_away = self.state.session.is_away
         previous_mode = self.last_work_mode
-        previous_alert = self.break_gate.last_shown_at
-        previous_toast = self.toast
+        previous_notice = self._assistant_break_notice_revision
         super()._tick_safe()
+        self._refresh_break_tray_menu()
         away = self.state.session.is_away
-        if self.break_gate.last_shown_at > previous_alert and self.toast is not previous_toast:
-            self._request_proactive("rest", self.toast)
+        if self._assistant_break_notice_revision != previous_notice:
+            self._request_proactive("rest")
         elif self.last_work_mode != previous_mode and self.last_work_mode != "normal":
             self._request_proactive("leave")
         elif away != was_away:
             if away and self.last_work_mode == "normal":
                 self._say("away_start")
-            self._request_proactive("away" if away else "return", self.toast if self.toast is not previous_toast else None)
+            self._request_proactive("away" if away else "return")
         else:
             # AI cadence is independent of the local message rotation. An AI
             # reply refreshes last_dialogue_at, which otherwise postpones the

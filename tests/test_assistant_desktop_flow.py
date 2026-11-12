@@ -50,6 +50,14 @@ class DesktopAssistantFlowTests(unittest.TestCase):
             def snooze_break(self):
                 from app import App
                 return App.snooze_break(self)
+            def suppress_break_reminders_today(self):
+                from app import App
+                return App.suppress_break_reminders_today(self)
+            def _tray_menu_items(self):
+                from app import App
+                return App._tray_menu_items(self)
+            def apply_preferences(self, preferences):
+                self.preferences = preferences
             def _destroy_toast(self):
                 self.toast = None
             def show_toast(self, text):
@@ -86,6 +94,8 @@ class DesktopAssistantFlowTests(unittest.TestCase):
         app._assistant_important_event_at = float("-inf")
         app._assistant_dialogue_mode = None
         app._assistant_notification_event = None
+        app._assistant_break_notice_revision = 0
+        app._assistant_tray_state = None
         app._assistant_local_rotation = 0
         app._assistant_windows = None
         app._chat_phase = "idle"
@@ -112,7 +122,7 @@ class DesktopAssistantFlowTests(unittest.TestCase):
         app._update_ui = Mock()
         app._refresh_chat_layout = Mock()
         app._open_assistant_chat = Mock()
-        app._break_notifications_suppressed = lambda: False
+        app._break_notifications_suppressed = lambda: app._suppress_toast
         app.ui_commands = queue.Queue()
         app._assistant_tools = SimpleNamespace(context=lambda: {
             "date": "2026-11-09", "is_away": False, "workday_mode": "normal", "break_reminders_enabled_today": True,
@@ -369,7 +379,9 @@ class DesktopAssistantFlowTests(unittest.TestCase):
         with patch("assistant_ai.desktop.time.monotonic", return_value=100), \
              patch("app.rollover_daily"), patch("app.pick", return_value="이제 쉬어 갈 시간이에요."):
             app._tick_safe()
-        self.assertEqual(app.shown_toasts, [("break", "이제 쉬어 갈 시간이에요.", True)])
+        self.assertEqual(app.shown_toasts, [])
+        self.assertIsNone(app.toast)
+        self.assertEqual(app._assistant_break_notice_revision, 1)
         app._assistant_service.record_notification.assert_called_once_with(
             "이제 쉬어 갈 시간이에요.", event="rest", origin="local_event")
         app._assistant_windows.refresh_chat_history.assert_called_once_with()
@@ -429,7 +441,184 @@ class DesktopAssistantFlowTests(unittest.TestCase):
             self.assertEqual(app._chat_phase, "idle")
             app._assistant_windows.open_chat.assert_not_called()
             app.root.focus_force.assert_not_called()
+            self.assertEqual(app.shown_toasts, [])
+            self.assertIsNone(app.toast)
             client.assert_not_called()
+
+    def test_repeated_due_breaks_keep_gate_history_and_event_without_popup(self):
+        from break_reminder import BreakReminderGate
+        app = self.app
+        app._use_real_tick = True
+        app.preferences.break_reminders = True
+        app.state.daily = SimpleNamespace(break_reminders_suppressed=False)
+        app.break_gate = BreakReminderGate()
+        app.engine.tick = lambda: SimpleNamespace(became_active=False, break_due=True)
+        with patch.object(app, "_request_proactive") as proactive, patch("app.rollover_daily"):
+            for second in (100, 399, 400, 401, 700):
+                with patch("assistant_ai.desktop.time.monotonic", return_value=second):
+                    app._tick_safe()
+        self.assertEqual(app._assistant_break_notice_revision, 3)
+        self.assertEqual(app._assistant_service.record_notification.call_count, 3)
+        self.assertEqual([call.args for call in proactive.call_args_list],
+                         [("rest",), ("periodic",), ("rest",), ("periodic",), ("rest",)])
+        self.assertEqual(app.break_gate.last_shown_at, 700)
+        self.assertEqual(app.shown_toasts, [])
+        self.assertIsNone(app.toast)
+
+    def test_suppression_after_break_gate_does_not_claim_delivery(self):
+        from break_reminder import BreakReminderGate
+        app = self.app
+        app._use_real_tick = True
+        app.preferences.break_reminders = True
+        app.state.daily = SimpleNamespace(break_reminders_suppressed=False)
+        app.break_gate = BreakReminderGate()
+        app.engine.tick = lambda: SimpleNamespace(became_active=False, break_due=True)
+        app._break_notifications_suppressed = Mock(side_effect=[False, True])
+        with patch.object(app, "_request_proactive") as proactive, patch("app.rollover_daily"), \
+             patch("assistant_ai.desktop.time.monotonic", return_value=100):
+            app._tick_safe()
+        self.assertEqual(app.break_gate.last_shown_at, 100)
+        self.assertEqual(app._assistant_break_notice_revision, 0)
+        app._assistant_service.record_notification.assert_not_called()
+        proactive.assert_called_once_with("periodic")
+        self.assertEqual(app.shown_toasts, [])
+
+    def test_break_followup_uses_main_speech_and_hidden_notice_stays_in_history(self):
+        from break_reminder import BreakReminderGate
+        for visible in (True, False):
+            with self.subTest(visible=visible):
+                self.setUp()
+                app = self.app
+                app._use_real_tick = True
+                app.preferences.break_reminders = True
+                app.state.daily = SimpleNamespace(break_reminders_suppressed=False)
+                app.break_gate = BreakReminderGate()
+                app.engine.tick = lambda: SimpleNamespace(became_active=False, break_due=True)
+                app.root.winfo_viewable.return_value = visible
+                app._assistant_service.proactive.return_value = "AI 휴식 안내"
+                with patch("app.rollover_daily"), patch("app.pick", return_value="먼저 보이는 휴식 안내"), \
+                     patch("assistant_ai.desktop.time.monotonic", return_value=100):
+                    app._tick_safe()
+                    if visible:
+                        app.ui_commands.get(timeout=3)()
+                records = app._assistant_service.record_notification.call_args_list
+                self.assertEqual(records[0].args, ("먼저 보이는 휴식 안내",))
+                self.assertEqual(records[0].kwargs, {"event": "rest", "origin": "local_event"})
+                if visible:
+                    self.assertEqual(app._speech_text, "AI 휴식 안내")
+                    self.assertEqual(len(records), 2)
+                    self.assertEqual(records[1].kwargs, {"event": "rest", "origin": "proactive"})
+                else:
+                    self.assertEqual(app._speech_text, "먼저 보이는 휴식 안내")
+                    self.assertEqual(len(records), 1)
+                    app._assistant_service.proactive.assert_not_called()
+                    app.root.deiconify.assert_not_called()
+                self.assertEqual(app.shown_toasts, [])
+                self.assertIsNone(app.toast)
+
+    def test_break_menu_keeps_actions_and_hidden_chat_access_on_ui_queue(self):
+        app = self.app
+        app.preferences.break_reminders = True
+        app.preferences.snooze_minutes = 7
+        app.state.daily = SimpleNamespace(break_reminders_suppressed=False)
+        app.engine.remaining_to_break = lambda: 0
+        app._tray_call = app.ui_commands.put
+        app.root.winfo_viewable.return_value = False
+        with patch.object(app, "accept_break") as start, patch.object(app, "snooze_break") as snooze, \
+             patch.object(app, "suppress_break_reminders_today") as stop:
+            menu = {entry.text: entry for entry in app._tray_menu_items()}
+            for label, action in (("지금 휴식 시작", start), ("휴식 7분 미루기", snooze),
+                                  ("오늘 휴식 알림 그만", stop), ("승아와 대화", app._open_assistant_chat)):
+                self.assertTrue(menu[label].enabled)
+                menu[label](None)
+                action.assert_not_called()
+                app.ui_commands.get_nowait()()
+                action.assert_called_once_with()
+            # A menu can remain open while the timer changes. Its queued
+            # command must not restart a break that has already begun.
+            start.reset_mock()
+            menu["지금 휴식 시작"](None)
+            app.state.session.is_away = True
+            app.ui_commands.get_nowait()()
+            start.assert_not_called()
+            self.assertFalse(menu["지금 휴식 시작"].enabled)
+            self.assertFalse(menu["휴식 7분 미루기"].enabled)
+            app.state.session.is_away = False
+            app.last_work_mode = "leave"
+            self.assertFalse(menu["휴식 7분 미루기"].enabled)
+            app.last_work_mode = "normal"
+            app.engine.remaining_to_break = lambda: 30
+            self.assertFalse(menu["휴식 7분 미루기"].enabled)
+            app.state.daily.break_reminders_suppressed = True
+            self.assertFalse(menu["오늘 휴식 알림 그만"].enabled)
+        self.assertEqual(app.shown_toasts, [])
+
+    def test_native_tray_snapshot_refreshes_after_due_action_and_settings_changes(self):
+        from break_reminder import BreakReminderGate
+        app = self.app
+        app.preferences.break_reminders = True
+        app.preferences.snooze_minutes = 7
+        app.state.daily = SimpleNamespace(break_reminders_suppressed=False)
+        app.break_gate = BreakReminderGate()
+        app.engine.remaining_to_break = lambda: 90
+        app._tray_call = app.ui_commands.put
+        menu = tuple(app._tray_menu_items())
+        native_menu = {}
+
+        def rebuild_native_menu():
+            native_menu.clear()
+            native_menu.update((entry.text, entry.enabled) for entry in menu)
+
+        app.tray_icon = SimpleNamespace(visible=False, update_menu=Mock(side_effect=rebuild_native_menu))
+        app._refresh_break_tray_menu()
+        app.tray_icon.update_menu.assert_not_called()
+        app.tray_icon.visible = True
+        app._refresh_break_tray_menu()
+        app._refresh_break_tray_menu()
+        self.assertEqual(app.tray_icon.update_menu.call_count, 1)
+        self.assertFalse(native_menu["휴식 7분 미루기"])
+
+        app._use_real_tick = True
+        app.engine.remaining_to_break = lambda: 0
+        app.engine.tick = lambda: SimpleNamespace(became_active=False, break_due=True)
+        with patch.object(app, "_request_proactive"), patch("app.rollover_daily"):
+            app._tick_safe()
+        self.assertTrue(native_menu["휴식 7분 미루기"])
+        self.assertEqual(app.tray_icon.update_menu.call_count, 2)
+
+        def snooze():
+            app.state.session.ignored_breaks += 1
+            app.engine.remaining_to_break = lambda: 420
+
+        app.engine.snooze_break = snooze
+        next(entry for entry in menu if entry.text == "휴식 7분 미루기")(None)
+        self.assertTrue(native_menu["휴식 7분 미루기"])
+        app.ui_commands.get_nowait()()
+        self.assertFalse(native_menu["휴식 7분 미루기"])
+        self.assertEqual(app.tray_icon.update_menu.call_count, 3)
+        app.apply_preferences(SimpleNamespace(show_message=True, break_reminders=True, snooze_minutes=11))
+        self.assertIn("휴식 11분 미루기", native_menu)
+        self.assertNotIn("휴식 7분 미루기", native_menu)
+        self.assertEqual(app.tray_icon.update_menu.call_count, 4)
+
+        app.state.session.is_away = True
+        app._refresh_break_tray_menu()
+        self.assertFalse(native_menu["지금 휴식 시작"])
+        app.state.daily.break_reminders_suppressed = True
+        app.tray_icon.update_menu.side_effect = OSError("fake native shutdown")
+        previous = app._assistant_tray_state
+        with patch("assistant_ai.desktop.core.log.warning") as warning:
+            app._refresh_break_tray_menu()
+        warning.assert_called_once()
+        self.assertEqual(app._assistant_tray_state, previous)
+        app.tray_icon.update_menu.side_effect = rebuild_native_menu
+        app._refresh_break_tray_menu()
+        self.assertFalse(native_menu["오늘 휴식 알림 그만"])
+        count = app.tray_icon.update_menu.call_count
+        app._assistant_shutdown.set()
+        app.preferences.snooze_minutes = 12
+        app._refresh_break_tray_menu()
+        self.assertEqual(app.tray_icon.update_menu.call_count, count)
 
     def test_suppressed_break_toast_does_not_create_phantom_history(self):
         app = self.app
@@ -455,7 +644,7 @@ class DesktopAssistantFlowTests(unittest.TestCase):
                 with patch("assistant_ai.desktop.core.log.warning") as warning:
                     app.show_break_toast("휴식 안내는 계속 보여요.")
                 self.assertEqual(app._speech_text, "휴식 안내는 계속 보여요.")
-                self.assertEqual(len(app.shown_toasts), 1)
+                self.assertEqual(app.shown_toasts, [])
                 warning.assert_called_once()
 
     def test_local_notification_does_not_extend_actual_reading_five_minute_guard(self):
