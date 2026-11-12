@@ -820,7 +820,8 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
         if not source:
             return
         try:
-            preview = preview_numbered_pack(Path(source), self.IMPORTED_ASSET_DIR)
+            preview = preview_numbered_pack(Path(source), self.IMPORTED_ASSET_DIR,
+                                            reserved_asset_dirs=(asset_manager.ASSET_DIR,))
             preview_images = preview_role_images(Path(source))
             source_stat = Path(source).stat()
             source_signature = (source_stat.st_mtime_ns, source_stat.st_size)
@@ -831,11 +832,37 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
         top.title('이미지 ZIP 미리보기')
         top.configure(bg=core.PANEL)
         top.transient(self.root)
-        top.geometry('550x540')
+        top.geometry('550x600')
+        # Reserve the action row before the DPI-scaled text and thumbnails.
+        buttons = tk.Frame(top, bg=core.PANEL)
+        buttons.pack(side='bottom', fill='x', padx=18, pady=18)
+        self._button(buttons, '취소', top.destroy).pack(side='right')
+        def numbering_summary(result):
+            lines = []
+            if result.renumbered:
+                lines.append('번호 충돌 · 10개 역할 함께 변경: ' + ', '.join(
+                    f'{old} → {new}' for old, new in result.renumbered))
+            if result.auto_assigned:
+                lines.append('번호 없는 세트 자동 배정: ' + ', '.join(result.auto_assigned))
+            lines.append(f'아래 미리보기: 가져온 세트 {result.preview_set}')
+            return '\n'.join(lines)
         summary = (f'{Path(source).name}\n10개 역할 완전성·이미지 읽기 검사 통과\n'
                    f"세트: {', '.join(preview.sets)} · 추가 {preview.added}장 · 동일 파일 재사용 {preview.identical}장\n"
+                   + numbering_summary(preview) + '\n'
                    '가져온 세트는 사용자 보관함에 저장됩니다. 기본 그림은 유지됩니다.')
-        self._label(top, summary, size=10, bg=core.PANEL, wraplength=470, justify='left').pack(fill='x', padx=18, pady=18)
+        summary_frame = tk.Frame(top, bg=core.PANEL)
+        summary_frame.pack(fill='x', padx=18, pady=18)
+        summary_text = tk.Text(summary_frame, height=6, wrap='word', font=(self.FONT_FAMILY, 10),
+                               bg=core.PANEL, fg=core.TEXT, bd=0, highlightthickness=1,
+                               takefocus=True, exportselection=False)
+        summary_scroll = tk.Scrollbar(summary_frame, command=summary_text.yview)
+        summary_scroll.pack(side='right', fill='y')
+        summary_text.configure(yscrollcommand=summary_scroll.set)
+        summary_text.pack(side='left', fill='x', expand=True)
+        summary_text.insert('1.0', summary)
+        summary_text.configure(state='disabled')
+        summary_text.bind('<Tab>', lambda _event: (summary_text.tk_focusNext().focus_set(), 'break')[1])
+        top._import_summary = summary_text
         previews = tk.Frame(top, bg=core.PANEL)
         previews.pack(fill='x', padx=12)
         top._import_previews = []
@@ -849,22 +876,26 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
             self._label(card, dict(self.IMAGE_ROWS).get(role, role), size=8, bg=core.PANEL_2).pack()
         result_label = self._label(top, '', size=9, fg=core.GREEN, bg=core.PANEL, wraplength=470)
         result_label.pack(fill='x', padx=18)
-        buttons = tk.Frame(top, bg=core.PANEL)
-        buttons.pack(side='bottom', fill='x', padx=18, pady=18)
-        self._button(buttons, '취소', top.destroy).pack(side='right')
+        top._import_result_label = result_label
         def perform():
             try:
                 current_stat = Path(source).stat()
                 if (current_stat.st_mtime_ns, current_stat.st_size) != source_signature:
                     raise ValueError('미리보기 이후 ZIP이 변경되었습니다. 다시 선택해 주세요.')
-                result = import_numbered_pack(Path(source), self.IMPORTED_ASSET_DIR)
+                result = import_numbered_pack(Path(source), self.IMPORTED_ASSET_DIR,
+                                              reserved_asset_dirs=(asset_manager.ASSET_DIR,), expected_plan=preview)
                 self._gallery_thumb_cache.clear()
                 self._refresh_global_set_picker()
                 self._settings_preview_cache.clear()
-                result_label.configure(text=f'가져오기 완료: 추가 {result.added}장 · 재사용 {result.identical}장\n전체 세트 메뉴와 갤러리에 바로 표시됩니다.')
+                mapping = ', '.join(f'{old} → {new}' for old, new in result.renumbered)
+                if len(mapping) > 80:
+                    mapping = '번호 변경 내역은 위에서 스크롤해 확인할 수 있습니다.'
+                result_label.configure(text=f'가져오기 완료: 추가 {result.added}장 · 재사용 {result.identical}장\n'
+                                       + (mapping + '\n' if mapping else '') +
+                                       f'미리본 세트 {result.preview_set} · 전체 세트 메뉴와 갤러리에 바로 표시됩니다.')
                 apply_button.configure(state='disabled')
-                if result.sets:
-                    self._button(buttons, '이 세트 적용', lambda: self._choose_base_set('가져온 세트 ' + result.sets[0]), primary=True).pack(side='left')
+                if result.preview_set:
+                    self._button(buttons, '이 세트 적용', lambda: self._choose_base_set('가져온 세트 ' + result.preview_set), primary=True).pack(side='left')
                 self.settings_status.configure(text='ZIP 가져오기 완료 · 새 세트를 선택할 수 있습니다.', fg=core.GREEN)
             except Exception as exc:
                 result_label.configure(text=f'가져오기 실패 · 기존 파일 유지: {exc}', fg=core.AMBER)

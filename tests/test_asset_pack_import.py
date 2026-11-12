@@ -81,15 +81,18 @@ class AdditivePackTests(unittest.TestCase):
         repeated = import_numbered_pack(self.archive, self.assets)
         self.assertEqual((repeated.added, repeated.identical), (0, 10))
 
-    def test_conflict_aborts_before_any_write(self):
+    def test_conflict_moves_complete_set_without_changing_existing_files(self):
         self.pack()
         installed = self.assets / "warning" / "warning_22.png"
         installed.parent.mkdir(parents=True)
         installed.write_bytes(b"existing-asset")
-        with self.assertRaises(ValueError):
-            import_numbered_pack(self.archive, self.assets)
+        result = import_numbered_pack(self.archive, self.assets)
+        self.assertEqual(result.sets, ('23',))
+        self.assertEqual(result.renumbered, (('22', '23'),))
         self.assertEqual(installed.read_bytes(), b"existing-asset")
-        self.assertEqual(list(self.assets.rglob("*.png")), [installed])
+        for role in ROLES:
+            self.assertEqual((self.assets / role / f'{role}_23.png').read_bytes(), png())
+        self.assertEqual(len(list(self.assets.rglob('*.png'))), 11)
 
     def test_incomplete_or_invalid_pack_never_creates_destination(self):
         self.pack(roles=ROLES - {"profile"})
@@ -135,10 +138,10 @@ class AdditivePackTests(unittest.TestCase):
         master.parent.mkdir(parents=True)
         master.write_bytes(b"preserved-master")
         first = import_numbered_pack(self.archive, self.assets)
-        self.assertEqual(first, ImportResult(("01",), 10, 0, ("01",), ()))
+        self.assertEqual(first, ImportResult(("01",), 10, 0, ("01",), (), preview_set='01'))
         before = self.snapshot()
         second = import_numbered_pack(self.archive, self.assets)
-        self.assertEqual(second, ImportResult(("01",), 0, 10, (), ("01",)))
+        self.assertEqual(second, ImportResult(("01",), 0, 10, (), ("01",), preview_set='01'))
         self.assertEqual(self.snapshot(), before)
         self.assertEqual(master.read_bytes(), b"preserved-master")
         self.assertEqual(self.archive.read_bytes(), original)
@@ -148,13 +151,13 @@ class AdditivePackTests(unittest.TestCase):
         self.write_entries(self.role_entries(prefix="renamed"))
         before = self.snapshot()
         result = import_numbered_pack(self.archive, self.assets)
-        self.assertEqual(result, ImportResult(("07",), 0, 10, (), ("07",)))
+        self.assertEqual(result, ImportResult(("07",), 0, 10, (), ("07",), preview_set='07'))
         self.assertEqual(self.snapshot(), before)
         entries = self.role_entries()
         entries["pack/profile.png"] = png("blue")
         self.write_entries(entries)
         result = import_numbered_pack(self.archive, self.assets)
-        self.assertEqual(result, ImportResult(("01",), 10, 0, ("01",), ()))
+        self.assertEqual(result, ImportResult(("01",), 10, 0, ("01",), (), preview_set='01'))
 
     def test_auto_number_reserves_partial_installed_and_incoming_explicit_numbers(self):
         self.install_fixture("01", {"default"})
@@ -164,7 +167,7 @@ class AdditivePackTests(unittest.TestCase):
         entries.update({f"numbered/{role}_03.png": png("blue") for role in ROLES})
         self.write_entries(entries)
         result = import_numbered_pack(self.archive, self.assets)
-        self.assertEqual(result, ImportResult(("03", "04"), 20, 0, ("04",), ()))
+        self.assertEqual(result, ImportResult(("03", "04"), 20, 0, ("04",), (), preview_set='03'))
         self.assertTrue(before.items() <= self.snapshot().items())
 
     def test_all_numbers_occupied_fails_without_modifying_partial_sets(self):
@@ -181,7 +184,8 @@ class AdditivePackTests(unittest.TestCase):
             with self.subTest(style=style):
                 self.write_entries(self.role_entries(style=style))
                 result = import_numbered_pack(self.archive, self.assets)
-                expected = ImportResult(("01",), 10, 0, ("01",), ()) if style == "alias" else ImportResult(("01",), 0, 10, (), ("01",))
+                expected = (ImportResult(("01",), 10, 0, ("01",), (), preview_set='01') if style == "alias"
+                            else ImportResult(("01",), 0, 10, (), ("01",), preview_set='01'))
                 self.assertEqual(result, expected)
                 self.assertEqual(len(list(self.assets.rglob("*.png"))), 10)
                 self.assertFalse(list(self.assets.rglob("*kyunghee.png")))
@@ -203,7 +207,7 @@ class AdditivePackTests(unittest.TestCase):
                   for name, role in CANONICAL_ALIASES.items()}
         self.pack(extras=extras)
         result = import_numbered_pack(self.archive, self.assets)
-        self.assertEqual(result, ImportResult(("22",), 10, 0))
+        self.assertEqual(result, ImportResult(("22",), 10, 0, preview_set='22'))
 
     def test_separate_identical_unnumbered_groups_and_incoming_numbered_pack_are_deduplicated(self):
         entries = self.role_entries(prefix="a")
@@ -211,7 +215,7 @@ class AdditivePackTests(unittest.TestCase):
         entries.update({f"explicit/{role}_22.png": png() for role in ROLES})
         self.write_entries(entries)
         result = import_numbered_pack(self.archive, self.assets)
-        self.assertEqual(result, ImportResult(("22",), 10, 0, (), ("22",)))
+        self.assertEqual(result, ImportResult(("22",), 10, 0, (), ("22",), preview_set='22'))
         self.assertEqual(len(list(self.assets.rglob("*.png"))), 10)
 
     def test_separate_identical_unnumbered_groups_create_one_set(self):
@@ -219,7 +223,7 @@ class AdditivePackTests(unittest.TestCase):
         entries.update(self.role_entries(prefix="b"))
         self.write_entries(entries)
         result = import_numbered_pack(self.archive, self.assets)
-        self.assertEqual(result, ImportResult(("01",), 10, 0, ("01",), ()))
+        self.assertEqual(result, ImportResult(("01",), 10, 0, ("01",), (), preview_set='01'))
 
     def test_partial_unnumbered_groups_are_not_merged_and_report_missing_roles(self):
         entries = self.role_entries(prefix="a", roles=ROLES - {"profile"})
@@ -303,10 +307,11 @@ class AdditivePackTests(unittest.TestCase):
         target = self.assets / "default" / "default_22.png"
         target.parent.mkdir(parents=True)
         self.make_link(target, outside)
-        with self.assertRaisesRegex(ValueError, "연결된 에셋 파일"):
-            import_numbered_pack(self.archive, self.assets)
+        result = import_numbered_pack(self.archive, self.assets)
+        self.assertEqual(result.renumbered, (('22', '23'),))
         self.assertEqual(outside.read_bytes(), b"preserved")
-        self.assertEqual(list(self.assets.rglob("*.png")), [target])
+        self.assertTrue(target.is_symlink())
+        self.assertEqual(len(list(self.assets.rglob('*.png'))), 11)
 
     def test_exclusive_write_collision_rolls_back_only_files_created_by_importer(self):
         self.pack()
@@ -399,6 +404,170 @@ class AdditivePackTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '서로 다른 폴더'):
             import_numbered_pack(self.archive, self.assets)
         self.assertFalse(self.assets.exists())
+
+    def test_consecutive_collisions_reserve_incoming_and_builtin_numbers(self):
+        self.install_fixture('22', color='blue')
+        self.install_fixture('23', roles={'profile'}, color='blue')
+        builtins = self.base / 'builtins'
+        (builtins / 'away').mkdir(parents=True)
+        (builtins / 'away/away_25.png').write_bytes(b'builtin partial set')
+        entries = {f'first/{role}_22.png': png() for role in ROLES}
+        entries.update({f'second/{role}_24.png': png('green') for role in ROLES})
+        self.write_entries(entries)
+        before = self.snapshot()
+        result = import_numbered_pack(self.archive, self.assets, reserved_asset_dirs=(builtins,))
+        self.assertEqual(result.sets, ('24', '26'))
+        self.assertEqual(result.renumbered, (('22', '26'),))
+        self.assertEqual(result.preview_set, '26')
+        for role in ROLES:
+            self.assertEqual((self.assets / role / f'{role}_26.png').read_bytes(), png())
+            self.assertEqual((self.assets / role / f'{role}_24.png').read_bytes(), png('green'))
+        for path, content in before.items():
+            self.assertEqual((self.assets / path).read_bytes(), content)
+        self.assertEqual((builtins / 'away/away_25.png').read_bytes(), b'builtin partial set')
+
+    def test_reimport_reuses_relocated_set_only_when_all_ten_files_match(self):
+        self.install_fixture('22', color='blue')
+        self.pack()
+        first = import_numbered_pack(self.archive, self.assets)
+        self.assertEqual(first.renumbered, (('22', '23'),))
+        before = self.snapshot()
+        repeated = import_numbered_pack(self.archive, self.assets)
+        self.assertEqual((repeated.added, repeated.identical, repeated.reused), (0, 10, ('23',)))
+        self.assertEqual(repeated.preview_set, '23')
+        self.assertEqual(self.snapshot(), before)
+        entries = {f'pack/{role}_22.png': png('green' if role == 'profile' else 'pink') for role in ROLES}
+        self.write_entries(entries)
+        self.assertEqual(import_numbered_pack(self.archive, self.assets).renumbered, (('22', '24'),))
+
+    def test_numbered_exact_and_case_duplicate_members_reuse_only_identical_bytes(self):
+        import warnings
+        for differing in (False, True):
+            with self.subTest(differing=differing):
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore', UserWarning)
+                    with zipfile.ZipFile(self.archive, 'w') as archive:
+                        for role in ROLES:
+                            archive.writestr(f'pack/{role}_22.png', png())
+                        archive.writestr('pack/default_22.png', png('blue' if differing else 'pink'))
+                        archive.writestr('pack/DEFAULT_22.PNG', png())
+                before = self.snapshot()
+                if differing:
+                    with self.assertRaisesRegex(ValueError, '서로 다른 default_22'):
+                        import_numbered_pack(self.archive, self.assets)
+                    self.assertEqual(self.snapshot(), before)
+                else:
+                    self.assertEqual(import_numbered_pack(self.archive, self.assets).added, 10)
+
+    def test_separate_complete_sets_with_same_number_and_different_content_are_ambiguous(self):
+        self.install_fixture('22', color='green')
+        entries = {f'a/{role}_22.png': png() for role in ROLES}
+        entries.update({f'b/{role}_22.png': png('blue') for role in ROLES})
+        self.write_entries(entries)
+        before = self.snapshot()
+        with self.assertRaisesRegex(ValueError, 'ZIP 안에 서로 다른'):
+            import_numbered_pack(self.archive, self.assets)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_99_collision_fails_entire_plan_without_wrapping_to_a_lower_number(self):
+        self.install_fixture('99', color='blue')
+        entries = {f'a/{role}_01.png': png('green') for role in ROLES}
+        entries.update({f'b/{role}_99.png': png() for role in ROLES})
+        self.write_entries(entries)
+        before = self.snapshot()
+        with self.assertRaisesRegex(ValueError, '99 다음.*01~99'):
+            import_numbered_pack(self.archive, self.assets)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_preview_cancel_and_stale_number_plan_preserve_profile_and_settings(self):
+        self.install_fixture('22', color='blue')
+        self.pack()
+        for relative in ('settings.json', 'manual_asset_overrides.json', 'image_sets/manifest.json', 'assets/asset_index.json'):
+            path = self.base / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('{"chosen": "pack:22", "default": "imported:default/default_22.png"}', encoding='utf-8')
+        originals = {path: path.read_bytes() for path in self.base.rglob('*') if path.is_file()}
+        preview = asset_pack_import.preview_numbered_pack(self.archive, self.assets)
+        self.assertEqual(preview.renumbered, (('22', '23'),))
+        self.assertEqual({path: path.read_bytes() for path in self.base.rglob('*') if path.is_file()}, originals)
+        self.install_fixture('23', roles={'default'}, color='green')
+        before = self.snapshot()
+        with self.assertRaisesRegex(ValueError, '미리보기 이후.*번호'):
+            import_numbered_pack(self.archive, self.assets, expected_plan=preview)
+        self.assertEqual(self.snapshot(), before)
+        # A fresh preview can be imported; unrelated manifests/settings stay byte-identical.
+        preview = asset_pack_import.preview_numbered_pack(self.archive, self.assets)
+        self.assertEqual(preview.renumbered, (('22', '24'),))
+        import_numbered_pack(self.archive, self.assets, expected_plan=preview)
+        for path, content in originals.items():
+            self.assertEqual(path.read_bytes(), content)
+
+    def test_failure_during_renumbered_writes_rolls_back_all_new_files(self):
+        self.install_fixture('22', color='blue')
+        self.pack()
+        before = self.snapshot()
+        original_zip = self.archive.read_bytes()
+        original_open = Path.open
+        count = 0
+
+        def fail_third_write(path, mode='r', *args, **kwargs):
+            nonlocal count
+            if mode == 'xb':
+                count += 1
+                if count == 3:
+                    raise OSError('simulated disk write failure')
+            return original_open(path, mode, *args, **kwargs)
+
+        with patch.object(Path, 'open', new=fail_third_write):
+            with self.assertRaisesRegex(OSError, 'disk write failure'):
+                import_numbered_pack(self.archive, self.assets)
+        self.assertEqual(count, 3)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.archive.read_bytes(), original_zip)
+
+    def test_renumbered_exclusive_write_race_preserves_concurrently_created_file(self):
+        self.install_fixture('22', color='blue')
+        self.pack()
+        before = self.snapshot()
+        original_open = Path.open
+        collision = self.assets / 'default/default_23.png'
+
+        def racing_open(path, mode='r', *args, **kwargs):
+            if path == collision and mode == 'xb':
+                collision.write_bytes(b'concurrently-created-original')
+            return original_open(path, mode, *args, **kwargs)
+
+        with patch.object(Path, 'open', new=racing_open):
+            with self.assertRaises(FileExistsError):
+                import_numbered_pack(self.archive, self.assets)
+        self.assertEqual(self.snapshot(), {**before, 'default/default_23.png': b'concurrently-created-original'})
+
+    def test_numbered_parent_role_mismatch_and_unsafe_paths_fail_before_renumber(self):
+        self.install_fixture('22', color='blue')
+        before = self.snapshot()
+        for path in ('pack/away/default_22.png', '../default_22.png', '/default_22.png', r'C:\default_22.png'):
+            with self.subTest(path=path):
+                entries = {f'pack/{role}_22.png': png() for role in ROLES - {'default'}}
+                entries[path] = png()
+                self.write_entries(entries)
+                with self.assertRaises(ValueError):
+                    import_numbered_pack(self.archive, self.assets)
+                self.assertEqual(self.snapshot(), before)
+
+    def test_unnumbered_preview_tracks_first_group_when_sorted_destinations_differ(self):
+        self.install_fixture('07', color='blue')
+        entries = self.role_entries(prefix='a', color='pink')
+        entries.update(self.role_entries(prefix='b', color='blue'))
+        self.write_entries(entries)
+        result = import_numbered_pack(self.archive, self.assets)
+        self.assertEqual(result.preview_set, '01')
+        # Reverse source colors: first group now reuses 07 despite sorted sets 01,07.
+        entries = self.role_entries(prefix='a', color='blue')
+        entries.update(self.role_entries(prefix='b', color='pink'))
+        self.write_entries(entries)
+        result = import_numbered_pack(self.archive, self.assets)
+        self.assertEqual(result.sets, ('01', '07'))
+        self.assertEqual(result.preview_set, '07')
 
 
 if __name__ == "__main__":

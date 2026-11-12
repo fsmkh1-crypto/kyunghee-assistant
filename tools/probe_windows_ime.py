@@ -755,8 +755,10 @@ def main(argv=None):
         report.update(status="failed", reason="A prohibited network attempt was blocked")
     report["finished_at"] = datetime.now(timezone.utc).isoformat()
     written = write_report(report, args.report)
+    # Redirected Windows stdout may be cp1252. Keep this console summary ASCII;
+    # the report file above retains the original Korean text as UTF-8.
     print(json.dumps({"status": report["status"], "reason": report.get("reason"),
-                      "report": str(args.report) if written else report.get("fallback_report")}, ensure_ascii=False))
+                      "report": str(args.report) if written else report.get("fallback_report")}, ensure_ascii=True))
     if not written and os.name == "nt" and getattr(sys, "frozen", False):
         # A windowed executable has no console to show the write failure.
         user = C.WinDLL("user32", use_last_error=True)

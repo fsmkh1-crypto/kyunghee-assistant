@@ -223,6 +223,81 @@ class RandomGalleryTkTests(unittest.TestCase):
         self.assertEqual(self.app._image_action_state()['__base_set__'], 'pack:22')
         self.assertEqual(self.app._resolve_builtin_asset('away').parent.parent, self.app.IMPORTED_ASSET_DIR)
 
+    def test_zip_renumber_preview_cancel_and_apply_preserve_existing_roles_and_settings(self):
+        app = self.app
+        pink = self.fixture('new-set.png', 'pink')
+        green = self.fixture('second-set.png', 'green')
+        rest = self.fixture('chosen-rest.png', 'orange')
+        app._import_role_images('rest', [rest])
+        self._preview_pack_fixture(1)
+        builtin = self.data / 'reserved-builtins'
+        (builtin / 'default').mkdir(parents=True)
+        (builtin / 'default/default_01.png').write_bytes(b'preserve builtin reservation')
+        archive = self.data / 'numbered-collision.zip'
+        with zipfile.ZipFile(archive, 'w') as zipped:
+            for role, _caption in app.IMAGE_ROWS:
+                zipped.write(pink, f'first/{role}_01.png')
+                zipped.write(green, f'second/{role}_02.png')
+        existing = {path: path.read_bytes() for path in app.IMPORTED_ASSET_DIR.rglob('*') if path.is_file()}
+        before_state = app._image_action_state()
+        saved_files = {path: path.read_bytes() for path in (self.settings, app.MANUAL_OVERRIDE_FILE, archive)}
+
+        def open_dialog():
+            with patch('desktop_gallery.filedialog.askopenfilename', return_value=str(archive)):
+                app._open_asset_pack_import()
+            app.root.update()
+            return next(w for w in app.root.winfo_children() if isinstance(w, tk.Toplevel) and hasattr(w, '_import_previews'))
+
+        def button(top, text):
+            return next(w for w in app._all_descendants(top) if isinstance(w, tk.Button) and w.cget('text') == text)
+
+        with patch('desktop_gallery.asset_manager.ASSET_DIR', builtin):
+            top = open_dialog()
+            self.assertIn('01 → 03', top._import_summary.get('1.0', 'end'))
+            self.assertEqual(ImageTk.getimage(top._import_previews[0]).getpixel((0, 0))[:3], (255, 192, 203))
+            self._click_hit(button(top, '취소'))
+            self.assertEqual({path: path.read_bytes() for path in app.IMPORTED_ASSET_DIR.rglob('*') if path.is_file()}, existing)
+            top = open_dialog()
+            self._click_hit(button(top, '가져오기'))
+        self.assertEqual(app._image_action_state(), before_state)
+        for path, content in saved_files.items():
+            self.assertEqual(path.read_bytes(), content)
+        self.assertIn('01 → 03', top._import_result_label.cget('text'))
+        self.assertIn('미리본 세트 03', top._import_result_label.cget('text'))
+        self.assertEqual(len(list(app.IMPORTED_ASSET_DIR.rglob('*.png'))), 30)
+        for path, content in existing.items():
+            self.assertEqual(path.read_bytes(), content)
+        self._click_hit(button(top, '이 세트 적용'))
+        self.assertEqual(app._image_action_state()['__base_set__'], 'pack:03')
+        self.assertEqual(app._image_action_state()['rest'], before_state['rest'])
+        self.assertEqual(app._resolve_builtin_asset('default').read_bytes(), pink.read_bytes())
+        self.assertEqual(app._resolve_builtin_asset('away').name, 'away_03.png')
+
+    def test_zip_inventory_change_after_preview_requires_a_new_preview_without_writes(self):
+        app = self.app
+        source = self.fixture('new-pack.png', 'pink')
+        archive = self.data / 'stale-pack.zip'
+        with zipfile.ZipFile(archive, 'w') as zipped:
+            for role, _caption in app.IMAGE_ROWS:
+                zipped.write(source, f'pack/{role}_01.png')
+        builtin = self.data / 'empty-builtins'
+        with patch('desktop_gallery.asset_manager.ASSET_DIR', builtin), patch(
+                'desktop_gallery.filedialog.askopenfilename', return_value=str(archive)):
+            app._open_asset_pack_import()
+            app.root.update()
+            top = next(w for w in app.root.winfo_children() if isinstance(w, tk.Toplevel) and hasattr(w, '_import_previews'))
+            self._preview_pack_fixture(1)
+            existing = {path: path.read_bytes() for path in app.IMPORTED_ASSET_DIR.rglob('*') if path.is_file()}
+            before_state = app._image_action_state()
+            before_settings = self.settings.read_bytes()
+            button = next(w for w in app._all_descendants(top) if isinstance(w, tk.Button) and w.cget('text') == '가져오기')
+            self._click_hit(button)
+        self.assertIn('미리보기 이후', top._import_result_label.cget('text'))
+        self.assertIn('다시 선택', top._import_result_label.cget('text'))
+        self.assertEqual({path: path.read_bytes() for path in app.IMPORTED_ASSET_DIR.rglob('*') if path.is_file()}, existing)
+        self.assertEqual(app._image_action_state(), before_state)
+        self.assertEqual(self.settings.read_bytes(), before_settings)
+
     def test_before_after_proposal_previews_cover_follow_base_and_legacy_custom(self):
         app = self.app
         red = self.fixture('before.png', 'red')

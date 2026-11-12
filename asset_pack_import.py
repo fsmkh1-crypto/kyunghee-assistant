@@ -40,6 +40,8 @@ class ImportResult:
     identical: int
     auto_assigned: tuple[str, ...] = ()
     reused: tuple[str, ...] = ()
+    renumbered: tuple[tuple[str, str], ...] = ()
+    preview_set: str | None = None
 
 
 @dataclass(frozen=True)
@@ -161,10 +163,16 @@ def _matching_installed_set(root: Path, numbers: set[str], files: dict[str, byte
     return None
 
 
-def import_numbered_pack(zip_path: Path, asset_dir: Path, *, dry_run: bool = False) -> ImportResult:
+def import_numbered_pack(zip_path: Path, asset_dir: Path, *, dry_run: bool = False,
+                         reserved_asset_dirs: tuple[Path, ...] = (),
+                         renumber_conflicts: bool = True,
+                         expected_plan: ImportResult | None = None) -> ImportResult:
     """Validate all groups, then add static role/role_NN.png destinations only.
 
-    Numbered filenames keep their explicit numbers. Complete unnumbered groups
+    Numbered filenames keep free explicit numbers. A conflicting whole set gets
+    the next free number above its original, up to 99; incoming explicit numbers
+    and numbers in reserved asset roots are reserved before allocation. Identical
+    complete profile sets are reused. Complete unnumbered groups
     accept role.png, approved canonical aliases, or role/Image.png. Grouping by
     their common pack folder prevents partial packs from being silently merged.
     Distinct complete groups may coexist with numbered sets; ambiguous mixed
@@ -172,6 +180,8 @@ def import_numbered_pack(zip_path: Path, asset_dir: Path, *, dry_run: bool = Fal
     Unnumbered groups reuse a byte-identical installed complete set, or receive
     the lowest free number in 01..99, including partial installed sets as occupied.
     ZIP members are read, never extracted; masters and the source ZIP are untouched.
+    Legacy adoption disables renumbering to preserve existing reference mappings.
+    An expected preview plan must still match before any destination writes.
     """
     numbered: dict[tuple[str, str], bytes] = {}
     unnumbered: dict[str, dict[str, bytes]] = {}
@@ -216,7 +226,7 @@ def import_numbered_pack(zip_path: Path, asset_dir: Path, *, dry_run: bool = Fal
         for candidate in selected:
             if candidate.number == "00":
                 raise ValueError("세트 번호는 01~99만 사용할 수 있습니다.")
-            if candidate.number is None and candidate.parent_role not in (None, candidate.role):
+            if candidate.parent_role not in (None, candidate.role):
                 raise ValueError(f"파일 이름과 역할 폴더가 서로 다릅니다: {_label(candidate.info.filename)}")
             total += candidate.info.file_size
             if total > MAX_PACK_BYTES:
@@ -243,9 +253,41 @@ def import_numbered_pack(zip_path: Path, asset_dir: Path, *, dry_run: bool = Fal
     root = Path(asset_dir).absolute()
     _validate_destination(root)
     installed_numbers = _occupied_numbers(root)
-    occupied = installed_numbers | numbers
+    reserved_numbers = set().union(*(_occupied_numbers(Path(path)) for path in reserved_asset_dirs))
+    occupied = installed_numbers | reserved_numbers | numbers
     auto_assigned = set()
     reused = set()
+    renumbered = []
+    preview_source = min(numbers) if numbers else None
+    preview_set = None
+    planned: dict[tuple[str, str], bytes] = {}
+    # Reserve all original numbers first, so moving 22 never takes an incoming 23.
+    for original in sorted(numbers):
+        files = {role: numbered[(role, original)] for role in ROLES}
+        number = original
+        if renumber_conflicts and original in installed_numbers | reserved_numbers:
+            matching = _matching_installed_set(root, {original}, files)
+            if matching is None:
+                number = _matching_installed_set(root, installed_numbers, files)
+                if number is not None:
+                    reused.add(number)
+                else:
+                    number = next((f'{value:02}' for value in range(int(original) + 1, 100)
+                                   if f'{value:02}' not in occupied), None)
+                    if number is None:
+                        raise ValueError(f'세트 {original} 다음에 사용할 번호가 없습니다. '
+                                         '세트 번호는 01~99이며 기존 이미지는 덮어쓰지 않습니다.')
+                    occupied.add(number)
+                renumbered.append((original, number))
+        if original == preview_source:
+            preview_set = number
+        for role, content in files.items():
+            key = (role, number)
+            if key in planned and planned[key] != content:
+                raise ValueError(f'세트 {number}의 가져오기 번호가 겹칩니다. 기존 이미지는 덮어쓰지 않습니다.')
+            planned[key] = content
+    numbered = planned
+    numbers = {number for _role, number in numbered}
     # A mixed ZIP may contain the same whole set both with and without numbers.
     unnumbered_choices: dict[tuple[bytes, ...], str] = {}
     for number in sorted(numbers):
@@ -267,6 +309,8 @@ def import_numbered_pack(zip_path: Path, asset_dir: Path, *, dry_run: bool = Fal
                 occupied.add(number)
                 auto_assigned.add(number)
             unnumbered_choices[fingerprint] = number
+        if preview_set is None:
+            preview_set = number
         for role, content in files.items():
             key = (role, number)
             if key in numbered and numbered[key] != content:
@@ -286,9 +330,13 @@ def import_numbered_pack(zip_path: Path, asset_dir: Path, *, dry_run: bool = Fal
             identical += 1
         else:
             pending.append((target, content))
+    result = ImportResult(tuple(sorted(numbers)), len(pending), identical,
+                          tuple(sorted(auto_assigned)), tuple(sorted(reused)), tuple(renumbered), preview_set)
+    if expected_plan is not None and result != expected_plan:
+        raise ValueError('미리보기 이후 사용 중인 세트 번호가 바뀌었습니다. '
+                         'ZIP을 다시 선택해 새 가져오기 번호를 확인해 주세요.')
     if dry_run:
-        return ImportResult(tuple(sorted(numbers)), len(pending), identical,
-                            tuple(sorted(auto_assigned)), tuple(sorted(reused)))
+        return result
     created = []
     try:
         for target, content in pending:
@@ -303,13 +351,13 @@ def import_numbered_pack(zip_path: Path, asset_dir: Path, *, dry_run: bool = Fal
         for target in reversed(created):
             target.unlink(missing_ok=True)
         raise
-    return ImportResult(tuple(sorted(numbers)), len(created), identical,
-                        tuple(sorted(auto_assigned)), tuple(sorted(reused)))
+    return result
 
 
-def preview_numbered_pack(zip_path: Path, asset_dir: Path) -> ImportResult:
+def preview_numbered_pack(zip_path: Path, asset_dir: Path, *,
+                          reserved_asset_dirs: tuple[Path, ...] = ()) -> ImportResult:
     """Decode and check the complete plan without creating destination files."""
-    return import_numbered_pack(zip_path, asset_dir, dry_run=True)
+    return import_numbered_pack(zip_path, asset_dir, dry_run=True, reserved_asset_dirs=reserved_asset_dirs)
 
 
 def adopt_legacy_imports(installation_root: Path, profile_root: Path) -> dict:
@@ -360,7 +408,7 @@ def adopt_legacy_imports(installation_root: Path, profile_root: Path) -> dict:
                 with zipfile.ZipFile(archive_path, 'w') as archive:
                     for role, path in files.items():
                         archive.write(path, f'{role}/{role}_{number:02d}.png')
-                imported = import_numbered_pack(archive_path, destination)
+                imported = import_numbered_pack(archive_path, destination, renumber_conflicts=False)
             result['copied' if imported.added else 'reused'].append(f'{number:02d}')
         except (OSError, ValueError, zipfile.BadZipFile):
             result['conflicts'].append(f'{number:02d}')

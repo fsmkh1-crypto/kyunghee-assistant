@@ -14,6 +14,8 @@
 - 기준 커밋 `d99dc19945b7b58d6df520c9b7888735ed546926`과 비교하는 Windows IME probe는 실제 조합 관측과 가짜 입력 검사를 구분한다. 실제 Microsoft Korean IME/조합 상태를 확인하지 못하면 `unavailable`로 기록하며 통과로 세지 않는다. 최종 결과는 해당 빌드의 `windows-ime-report.json`, PR과 별도 검증 기록을 따른다.
 - 대화창의 실행 버전 표시와 패키지의 `BUILD_INFO.txt`로 이전 실행본과 구별한다. 실제 API 호출 없이 합성 입력과 가짜 응답을 사용하며 사용자 대화나 키를 진단 업로드하지 않는다.
 
+2.1.5의 추가 요청으로 번호형 ZIP 충돌은 세트 단위로 다음 높은 빈 번호에 배정한다. 10개 역할의 번호를 함께 바꾸고 내장·사용자 파일과 같은 ZIP의 원래 번호를 예약하며, 미리보기와 완료 안내에 원래 번호와 결과 번호를 표시한다. 동일한 완전 세트는 재사용한다. 기존 설치본의 자동 이전은 기존 번호를 참조하는 설정을 보호하기 위해 충돌 시 중단하는 정책을 유지한다. 번호 없는 완전 세트는 최저 빈 번호 배정, 모호한 중복·불완전 세트는 거절하며 01~99를 넘기거나 기존 파일을 덮어쓰지 않는다. 관련 번호 계획·실패 롤백·취소 및 UI 검사는 `test_asset_pack_import`, `test_random_gallery`에 둔다.
+
 | ID | 작업 | 상태 | 구현·검증 근거 |
 | --- | --- | --- | --- |
 | IMG-01 | 배포 진입점의 화면 주사위 복원 | 구현 | `desktop_gallery.py`, `image_catalog.py`, `image_actions.py`, `asset_pack_import.py`; `test_random_gallery`, `test_asset_pack_import`, `test_image_actions`, `test_image_catalog` |
