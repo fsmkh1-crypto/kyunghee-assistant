@@ -404,6 +404,31 @@ class ChatWindowTests(unittest.TestCase):
             self.assertIsNone(self.chat._preserve_native_text(SimpleNamespace(char=char, keycode=keycode, state=4, send_event=True)))
         self.assertEqual(self.chat.input.get("1.0", "end-1c"), "앞뒤")
 
+    def test_native_text_bindtag_registers_dispatches_and_cleans_up_in_real_tk(self):
+        # Exercise registration on X11 too: calling the handler directly cannot
+        # catch Tk interpreting a dot-prefixed class tag as a nonexistent widget.
+        self.chat._install_native_text_binding()
+        tag, command = self.chat._native_text_tag, self.chat._native_text_command
+        self.assertEqual(self.chat.input.bindtags()[0], tag)
+        self.assertIn(command, self.root.bind_class(tag, "<KeyPress>"))
+        self.assertTrue(self.root.tk.call("info", "commands", command))
+        self.chat._install_native_text_binding()
+        self.assertEqual(self.chat.input.bindtags().count(tag), 1)
+        self.assertEqual(self.chat._native_text_command, command)
+        with patch.object(self.root, "report_callback_exception") as error:
+            self.chat.input.event_generate("<KeyPress-a>", when="tail")
+            self.root.update()
+            self.assertEqual(self.chat.input.get("1.0", "end-1c"), "a")
+            error.assert_not_called()
+            self.chat.destroy()
+            self.root.update()
+            error.assert_not_called()
+        self.owner.chat_window = None
+        self.assertFalse(self.root.bind_class(tag, "<KeyPress>"))
+        self.assertFalse(self.root.tk.call("info", "commands", command))
+        self.assertIsNone(self.chat._native_text_tag)
+        self.assertIsNone(self.chat._native_text_command)
+
     def test_button_keyboard_activation_restores_composer_before_completion(self):
         self.chat.input.insert("1.0", "근데 느림...")
         self.chat.send_button.focus_force()

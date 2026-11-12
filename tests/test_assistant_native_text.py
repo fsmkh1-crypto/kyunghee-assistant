@@ -134,7 +134,7 @@ class NativeTextDeliveryTests(unittest.TestCase):
                 events.append((event.keycode, event.char, event.state, event.send_event))
 
         original_tags = self.chat.input.bindtags()
-        observer_tag = f"{self.chat.input._w}_native_test_observer"
+        observer_tag = f"SeungaNativeTextObserver:{self.chat.input._w}"
         observer = self.root.bind_class(observer_tag, "<KeyPress>", observe)
         # Observe before the production guard: its successful insertion returns
         # break, so a normal widget binding would never see the intercepted key.

@@ -1244,9 +1244,7 @@ class _ChatWindow(_Window):
         command = self.input.register(self._finish_send_event)
         self.input.bind("<<SeungaSubmitReady>>", f"{command} %d")
         if self._windows_text_input:
-            self._native_text_tag = f"{self.input._w}_committed_text"
-            self._native_text_command = self.input.bind_class(self._native_text_tag, "<KeyPress>", self._preserve_native_text)
-            self.input.bindtags((self._native_text_tag, *self.input.bindtags()))
+            self._install_native_text_binding()
         for widget in (*history_frame.winfo_children(), *input_frame.winfo_children()):
             for sequence in ("<KeyPress>", "<ButtonPress>", "<MouseWheel>", "<Button-4>", "<Button-5>"):
                 widget.bind(sequence, owner._note_chat_interaction, add="+")
@@ -1314,6 +1312,16 @@ class _ChatWindow(_Window):
             self._restore_history_view(view)
         self._hidden_view = None
         return shown
+
+    def _install_native_text_binding(self):
+        if self._native_text_tag is not None:
+            return
+        # A tag beginning with '.' is parsed by Tk as a widget pathname, even
+        # in bind_class(). Keep the unique widget path after a class prefix.
+        tag = f"SeungaCommittedText:{self.input._w}"
+        command = self.input.bind_class(tag, "<KeyPress>", self._preserve_native_text)
+        self._native_text_tag, self._native_text_command = tag, command
+        self.input.bindtags((tag, *self.input.bindtags()))
 
     def destroy(self):
         self._cancel_pending_send()
