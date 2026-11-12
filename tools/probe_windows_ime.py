@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 import hashlib
 import importlib.util
 import json
+import logging
 import os
 from pathlib import Path
 import platform
@@ -736,6 +737,10 @@ def main(argv=None):
             except Exception as error:
                 record_cleanup_failure(report, f"Window cleanup: {type(error).__name__}: {error}")
             try:
+                # The UI may initialize a rotating app log inside this
+                # process's temporary profile. Close it before Windows tries
+                # to remove the directory, including the packaged entrypoint.
+                logging.shutdown()
                 profile.cleanup()
             except Exception as error:
                 record_cleanup_failure(report, f"Temporary profile cleanup: {type(error).__name__}: {error}")

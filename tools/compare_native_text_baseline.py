@@ -8,6 +8,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import logging
 import os
 from pathlib import Path
 import sys
@@ -54,6 +55,10 @@ def main():
                                   and not result.skipped else 'inconclusive'),
                           tests_run=result.testsRun, failures=len(result.failures), errors=len(result.errors),
                           skipped=len(result.skipped), log=output.getvalue())
+            # Importing the real UI can initialize app.py's rotating log in
+            # this isolated profile. Windows cannot remove an open log file.
+            # This subprocess owns the handlers; close them before teardown.
+            logging.shutdown()
     else:
         report['reason'] = 'Windows native dispatcher required'
     args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')

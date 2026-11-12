@@ -29,6 +29,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           $env:APPDATA = Join-Path $env:RUNNER_TEMP "seunga-ime-probe"
           ./tools/windows_ime_environment_probe.ps1 -OutputPath windows-ime-environment.json
+          Get-Content windows-ime-environment.json
           $baselineIme = Join-Path $env:RUNNER_TEMP "seunga-214-windows-ime.py"
           $baselineUi = Join-Path $env:RUNNER_TEMP "seunga-214-ui.py"
           python -c "import pathlib,subprocess,sys; pathlib.Path(sys.argv[1]).write_bytes(subprocess.check_output(['git','show','d99dc19945b7b58d6df520c9b7888735ed546926:assistant_ai/windows_ime.py'])); pathlib.Path(sys.argv[2]).write_bytes(subprocess.check_output(['git','show','d99dc19945b7b58d6df520c9b7888735ed546926:assistant_ai/ui.py']))" $baselineIme $baselineUi
