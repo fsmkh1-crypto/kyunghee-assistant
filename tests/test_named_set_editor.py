@@ -1,12 +1,17 @@
 """Offline real-Tk creation, review and re-selection of loose image sets."""
 from pathlib import Path
 from io import BytesIO
+import os
 import tkinter as tk
 from tkinter import ttk
 import unittest
 from unittest.mock import patch
 
 from PIL import Image
+
+# The editor imports the desktop module before the shared fixture does.
+# Unit discovery must not connect to a tray display on headless runners.
+os.environ.setdefault('PYSTRAY_BACKEND', 'dummy')
 
 from named_set_editor import NamedSetEditor, suggest_role_assignments
 from image_actions import BASE
