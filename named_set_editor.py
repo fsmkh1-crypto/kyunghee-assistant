@@ -93,20 +93,6 @@ class NamedSetEditor(tk.Toplevel):
         self.actions.bind("<Configure>", self._layout_actions)
         self._layout_actions()
 
-        header = tk.Frame(self, bg=core.PANEL)
-        header.pack(fill="x", padx=12, pady=(10, 4))
-        self.name = tk.StringVar(master=self)
-        app._label(header, "세트 이름", size=10, bg=core.PANEL).grid(row=0, column=0, sticky="w", padx=(0, 8))
-        self.name_entry = tk.Entry(header, textvariable=self.name, font=(app.FONT_FAMILY, 10),
-                                   bg=core.PANEL_2, fg=core.TEXT, insertbackground=core.TEXT)
-        self.name_entry.grid(row=0, column=1, sticky="ew")
-        header.columnconfigure(1, weight=1)
-        self.add_button = app._button(header, "이미지 추가", self.add_images)
-        self.add_button.grid(row=1, column=0, sticky="w", pady=(5, 0))
-        self.progress = tk.StringVar(master=self)
-        app._label(header, textvariable=self.progress, size=9, bg=core.PANEL).grid(
-            row=1, column=1, sticky="w", padx=8, pady=(5, 0))
-
         viewport = tk.Frame(self, bg=core.PANEL)
         viewport.pack(fill="both", expand=True, padx=12, pady=4)
         self.canvas = tk.Canvas(viewport, bg=core.PANEL, highlightthickness=0, width=1, height=1)
@@ -118,6 +104,25 @@ class NamedSetEditor(tk.Toplevel):
         self._content_id = self.canvas.create_window(0, 0, window=self.content, anchor="nw")
         self.canvas.bind("<Configure>", self._fit_content)
         self.content.bind("<Configure>", self._update_region)
+        # Name and file controls scroll with the assignments. Keeping this
+        # header fixed as well as the footer leaves less than one selector's
+        # height on small Windows work areas at 200% display scaling.
+        header = tk.Frame(self.content, bg=core.PANEL)
+        header.pack(fill="x", pady=(6, 8))
+        self.name = tk.StringVar(master=self)
+        app._label(header, "세트 이름", size=10, bg=core.PANEL).grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.name_entry = tk.Entry(header, textvariable=self.name, font=(app.FONT_FAMILY, 10),
+                                   bg=core.PANEL_2, fg=core.TEXT, insertbackground=core.TEXT)
+        self.name_entry.grid(row=0, column=1, sticky="ew")
+        header.columnconfigure(1, weight=1)
+        self.add_button = app._button(header, "이미지 추가", self.add_images)
+        self.add_button.grid(row=1, column=0, sticky="w", pady=(5, 0))
+        self.progress = tk.StringVar(master=self)
+        self.progress_label = app._label(header, textvariable=self.progress, size=9,
+                                         bg=core.PANEL, justify="left")
+        self.progress_label.grid(row=1, column=1, sticky="ew", padx=8, pady=(5, 0))
+        for widget in (self.name_entry, self.add_button):
+            widget.bind("<FocusIn>", lambda _event, target=widget: self.after_idle(self._ensure_visible, target))
         self.rows, self.assignments, self.selectors = {}, {}, {}
         for role, caption in app.IMAGE_ROWS:
             row = tk.Frame(self.content, bg=core.PANEL_2)
@@ -338,6 +343,7 @@ class NamedSetEditor(tk.Toplevel):
             return
         self._width = event.width
         self.canvas.itemconfigure(self._content_id, width=max(1, event.width))
+        self._wrap_label(self.progress_label, event.width - self.add_button.winfo_reqwidth() - 16)
         for _row, _thumbnail, label in self.rows.values():
             self._wrap_label(label, max(1, event.width - 110))
 

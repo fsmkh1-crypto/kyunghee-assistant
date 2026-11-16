@@ -15,7 +15,8 @@ class ImageCatalogTests(unittest.TestCase):
 
     def test_catalog_decodes_images_and_rejects_escape_or_unowned_paths(self):
         with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
+            # Windows TEMP may use an 8.3 alias; catalog paths are canonical.
+            base = Path(directory).resolve()
             root = base / 'assets'
             (root / 'default').mkdir(parents=True)
             good = root / 'default' / 'default_01.png'
@@ -40,7 +41,7 @@ class ImageCatalogTests(unittest.TestCase):
 
     def test_named_sets_preserve_legacy_image_roots_and_public_fields(self):
         with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
+            base = Path(directory).resolve()
             roots = {origin: base / origin for origin in ('builtin', 'imported', 'user', 'userset')}
             paths = {
                 'builtin:default/default_01.png': self.image(roots['builtin'] / 'default/default_01.png'),
@@ -62,7 +63,7 @@ class ImageCatalogTests(unittest.TestCase):
     def test_named_complete_sets_keep_unique_identity_and_all_ten_assignments(self):
         from named_image_sets import NamedImageSetStore, ROLES
         with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
+            base = Path(directory).resolve()
             root = base / 'usersets'
             source = self.image(base / 'source' / 'arbitrary_portrait_01.png')
             source_before = source.read_bytes()
@@ -94,7 +95,7 @@ class ImageCatalogTests(unittest.TestCase):
     def test_named_catalog_excludes_orphan_partial_and_corrupt_sets_without_repairing(self):
         from named_image_sets import NamedImageSetStore, ROLES
         with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
+            base = Path(directory).resolve()
             root = base / 'usersets'
             source = self.image(base / 'source.png')
             store = NamedImageSetStore(root)
@@ -117,7 +118,7 @@ class ImageCatalogTests(unittest.TestCase):
     def test_image_disappearing_after_named_validation_does_not_publish_partial_set(self):
         from named_image_sets import NamedImageSetStore, ROLES
         with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
+            base = Path(directory).resolve()
             source = self.image(base / 'source.png')
             root = base / 'usersets'
             image_set = NamedImageSetStore(root).create('이동 중', {role: source for role in ROLES})

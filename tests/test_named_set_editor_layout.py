@@ -9,7 +9,7 @@ import tempfile
 import unittest
 
 
-def _probe(dpi):
+def _probe(dpi, framed_client=False):
     import tkinter as tk
     from tkinter import font as tkfont
     import traceback
@@ -35,6 +35,18 @@ def _probe(dpi):
     app.FONT_FAMILY = next((families[name.casefold()] for name in preferred if name.casefold() in families), "Arial")
     app._gallery_thumb_cache = {}
     app._best_work_area = lambda *_args: (0, 0, 640, 480)
+    if framed_client:
+        # Windows' font metrics can wrap the three actions onto two rows,
+        # unlike the fonts installed on a Linux runner. Wider padding keeps
+        # real text/buttons while exercising that layout on either platform.
+        original_button = app._button
+
+        def wider_button(*args, **kwargs):
+            button = original_button(*args, **kwargs)
+            button.configure(padx=35)
+            return button
+
+        app._button = wider_button
     editor = None
 
     def settle(stage):
@@ -91,6 +103,11 @@ def _probe(dpi):
                 app, store, paths, on_saved=saved.append,
                 on_apply=lambda set_id: (applied.append(set_id), {"status": "applied"})[1],
             )
+            if framed_client:
+                # Linux's Xvfb has no native window decorations. Exercise a
+                # smaller client too, reserving room for a high-DPI Windows
+                # caption and borders within the same 640x480 work area.
+                editor.geometry("584x376")
             settle("initial")
             footer((editor.review_button, editor.save_button, editor.cancel_button))
             assert len(editor._photos) == 10
@@ -99,17 +116,44 @@ def _probe(dpi):
             editor.focus_force()
             editor.name_entry.focus_set()
             settle("keyboard start")
+            inside(editor.name_entry, editor.canvas)
             profile = editor.selectors["profile"]
+            reached = set()
             for _step in range(40):
                 focused = root.focus_get()
+                if focused in editor.selectors.values():
+                    inside(focused, editor.canvas)
+                    reached.add(focused)
+                if focused is editor.add_button:
+                    inside(focused, editor.canvas)
                 if focused is profile:
                     break
                 assert focused is not None, "keyboard focus left the editor"
                 focused.event_generate("<Tab>")
                 root.update()
             assert root.focus_get() is profile, "Tab could not reach the last role"
+            assert reached == set(editor.selectors.values()), "Tab skipped an assignment"
             assert editor.canvas.yview()[0] > 0, "last role focus did not scroll"
             inside(profile, editor.canvas)
+            footer((editor.review_button, editor.save_button, editor.cancel_button))
+
+            # The header now shares the scrollable body. Returning by keyboard
+            # must reveal both file addition and the name field, not focus
+            # controls above the visible canvas.
+            returned_to_add = False
+            for _step in range(40):
+                focused = root.focus_get()
+                assert focused is not None, "reverse navigation lost focus"
+                if focused is editor.add_button:
+                    returned_to_add = True
+                    inside(focused, editor.canvas)
+                if focused is editor.name_entry:
+                    inside(focused, editor.canvas)
+                    break
+                focused.event_generate("<Shift-Tab>" if os.name == "nt" else "<ISO_Left_Tab>")
+                root.update()
+            assert returned_to_add, "reverse Tab skipped image addition"
+            assert root.focus_get() is editor.name_entry, "reverse Tab could not return to the name"
             footer((editor.review_button, editor.save_button, editor.cancel_button))
 
             # A closed selector's default Tk wheel binding must not silently
@@ -185,16 +229,23 @@ def _probe(dpi):
 class NamedSetEditorLayoutTests(unittest.TestCase):
     def test_small_work_area_keeps_actions_and_keyboard_assignments_accessible(self):
         for dpi in (96, 120, 144, 192):
-            with self.subTest(dpi=dpi), tempfile.TemporaryDirectory() as profile:
-                env = dict(os.environ, APPDATA=profile, PYSTRAY_BACKEND="dummy")
-                result = subprocess.run(
-                    [sys.executable, "-c",
-                     "import runpy, sys; runpy.run_path(sys.argv[1])['_probe'](int(sys.argv[2]))",
-                     str(Path(__file__).resolve()), str(dpi)],
-                    cwd=Path(__file__).resolve().parents[1], env=env,
-                    capture_output=True, text=True, timeout=30,
-                )
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            with self.subTest(dpi=dpi):
+                self.run_probe(dpi)
+
+    def test_high_dpi_with_native_frame_space_keeps_the_assignment_viewport(self):
+        self.run_probe(192, framed_client=True)
+
+    def run_probe(self, dpi, *, framed_client=False):
+        with tempfile.TemporaryDirectory() as profile:
+            env = dict(os.environ, APPDATA=profile, PYSTRAY_BACKEND="dummy")
+            result = subprocess.run(
+                [sys.executable, "-c",
+                 "import runpy, sys; runpy.run_path(sys.argv[1])['_probe'](int(sys.argv[2]), sys.argv[3] == '1')",
+                 str(Path(__file__).resolve()), str(dpi), "1" if framed_client else "0"],
+                cwd=Path(__file__).resolve().parents[1], env=env,
+                capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":
