@@ -92,6 +92,8 @@ def _builtin_set_choice(value: object, default: str = "random") -> str:
     value = str(value).strip().lower()
     if value in {"random", "canonical"}:
         return value
+    if re.fullmatch(r"named:[0-9a-f]{32}", value):
+        return value
     if value.startswith("pack:") and value[5:].isdigit() and 1 <= int(value[5:]) <= 99:
         return f"pack:{int(value[5:]):02d}"
     if value.isdigit() and 1 <= int(value) <= 99:

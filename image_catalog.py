@@ -55,17 +55,22 @@ class CatalogImage:
     label: str
     origin: str
     path: Path
+    set_id: str | None = None
 
     def public(self) -> dict:
         stat = self.path.stat()
-        return {'ref': self.ref, 'role': self.role, 'label': self.label, 'origin': self.origin,
-                'version': f'{stat.st_mtime_ns}:{stat.st_size}'}
+        result = {'ref': self.ref, 'role': self.role, 'label': self.label, 'origin': self.origin,
+                  'version': f'{stat.st_mtime_ns}:{stat.st_size}'}
+        if self.set_id is not None:
+            result['set_id'] = self.set_id
+        return result
 
 
 class ImageCatalog:
     def __init__(self, roots: dict[str, Path], labels: dict[str, str]):
         self.roots = {prefix: Path(root).resolve() for prefix, root in roots.items()}
         self.labels = labels
+        self._named_store = None
 
     def encode(self, path: Path) -> str:
         path = require_image(path).resolve()
@@ -119,6 +124,30 @@ class ImageCatalog:
                 role = path.parent.name if path.parent.name in self.labels else path.stem.split('_', 1)[0]
                 role = role if role in self.labels else 'other'
                 entries.append(CatalogImage(ref, role, path.name, origin, path))
+            if origin == 'userset':
+                # The store validates the complete manifest and its images.
+                # Scanning named/* directly would expose unfinished imports.
+                # Import lazily because the store uses this module's decoder.
+                if self._named_store is None:
+                    from named_image_sets import NamedImageSetStore
+                    self._named_store = NamedImageSetStore(root)
+                for image_set in self._named_store.list_sets():
+                    named_entries = []
+                    try:
+                        for role, path in sorted(image_set.images.items()):
+                            named_entries.append(CatalogImage(
+                                self.encode(path), role, f'{image_set.name} · {path.name}',
+                                origin, path, image_set.id,
+                            ))
+                    except (OSError, ValueError):
+                        # A file may disappear between validation and encoding.
+                        # Keep the entire set out of this catalog snapshot.
+                        continue
+                    for item in named_entries:
+                        resolved = item.path.resolve()
+                        if resolved not in seen:
+                            seen.add(resolved)
+                            entries.append(item)
         return entries
 
 

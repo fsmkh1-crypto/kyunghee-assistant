@@ -48,6 +48,10 @@ ROOTS = {
 }
 IMAGE_ROOTS = {"images", "image_sets", "imported_assets"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+_NAMED_MANIFEST = re.compile(r"image_sets/named/([0-9a-f]{32})/manifest\.json")
+_NAMED_IMAGE = re.compile(
+    r"image_sets/named/[0-9a-f]{32}/(?:default|cheer|rest|away|warning|leave|stats|settings|alert|profile)\.(?:png|jpg|jpeg|webp)"
+)
 _SECRET = re.compile(
     r"(?i)\b(?:sk-[a-z0-9_-]{8,}|(?:gh[pousr]_|github_pat_)[a-z0-9_]{10,}|"
     r"AKIA[A-Z0-9]{16}|Bearer\s+[a-z0-9._~+/-]{8,})\b"
@@ -127,6 +131,10 @@ def _plain_path(path: Path) -> None:
 
 def _category(name: str) -> str:
     _safe_name(name)
+    if name.startswith("image_sets/named/"):
+        if _NAMED_MANIFEST.fullmatch(name) or _NAMED_IMAGE.fullmatch(name):
+            return "images"
+        raise BackupError("이름 붙인 이미지 세트 경로가 올바르지 않아요.")
     first = name.split("/", 1)[0]
     for category, roots in ROOTS.items():
         if first in roots:
@@ -213,6 +221,18 @@ def _relative_image(value: object, data_dir: Path | None) -> str:
 
 def _clean_json(name: str, data: bytes, data_dir: Path | None = None) -> bytes:
     raw = _json_read(data)
+    named = _NAMED_MANIFEST.fullmatch(name)
+    if named:
+        from named_image_sets import MAX_NAME_LENGTH, validate_manifest
+        try:
+            clean = validate_manifest(raw, "named:" + named[1])
+            redacted = _redact(clean["name"])
+            if redacted != clean["name"]:
+                # Keep redacted labels unambiguous without retaining secrets.
+                clean["name"] = redacted[:MAX_NAME_LENGTH - 35].strip() + " [" + named[1] + "]"
+            return _json_bytes(validate_manifest(clean, "named:" + named[1]))
+        except (ValueError, TypeError, KeyError):
+            raise BackupError("이름 붙인 이미지 세트 설명이 올바르지 않아요.") from None
     if name == "settings.json":
         from settings import UserSettings, settings_from_dict
         known = {f.name for f in fields(UserSettings)}
@@ -299,7 +319,7 @@ def _clean_json(name: str, data: bytes, data_dir: Path | None = None) -> bytes:
             return False
         for role, ref in raw.items():
             if role == "__base_set__":
-                if isinstance(ref, str) and re.fullmatch(r"(?:random|canonical|[0-9]{2}|pack:[0-9]{2})", ref):
+                if isinstance(ref, str) and re.fullmatch(r"(?:random|canonical|[0-9]{2}|pack:[0-9]{2}|named:[0-9a-f]{32})", ref):
                     clean[role] = ref
                 continue
             if not re.fullmatch(r"[a-z_]{1,40}", role) or not isinstance(ref, str):
@@ -454,6 +474,10 @@ def _source_files(data_dir: Path, categories: tuple[str, ...]):
                 if path.is_dir():
                     continue
                 name = path.relative_to(data_dir).as_posix()
+                if name.startswith("image_sets/named/") and not (path.parent / "manifest.json").is_file():
+                    # A save publishes its manifest last. Never back up a
+                    # half-written set or its transaction debris.
+                    continue
                 try:
                     _category(name)
                 except BackupError:
@@ -475,6 +499,31 @@ def preview_source(data_dir: Path, categories) -> BackupPreview:
         if size > MAX_FILE_BYTES or sum(counts.values()) > MAX_FILES or total > MAX_TOTAL_BYTES:
             raise BackupError("선택한 데이터가 백업 크기 한도를 초과했어요.")
     return BackupPreview(selected, sum(counts.values()), total, counts)
+
+
+def _validate_named_sets(data_dir: Path) -> None:
+    """Cross-check all named set images before publishing or restoring a backup."""
+    from named_image_sets import validate_manifest
+    root = data_dir / "image_sets" / "named"
+    if not root.exists():
+        return
+    for folder in root.iterdir():
+        _plain_path(folder)
+        if not folder.is_dir() or not re.fullmatch(r"[0-9a-f]{32}", folder.name):
+            raise BackupError("이름 붙인 이미지 세트 폴더가 올바르지 않아요.")
+        try:
+            raw = validate_manifest(_json_read(_read_limited(folder / "manifest.json", MAX_JSON_BYTES)),
+                                    "named:" + folder.name)
+            expected = {"manifest.json", *(item["file"] for item in raw["images"].values())}
+            if {item.name for item in folder.iterdir()} != expected:
+                raise ValueError("named set file inventory differs")
+            for item in raw["images"].values():
+                image = folder / item["file"]
+                _plain_path(image)
+                if not image.is_file() or image.stat().st_size != item["bytes"] or _digest(image) != item["sha256"]:
+                    raise ValueError("named set image differs")
+        except (OSError, ValueError, TypeError, KeyError):
+            raise BackupError("이름 붙인 이미지 세트의 파일이 없거나 변경되었어요.") from None
 
 
 def create_backup(data_dir: Path, output: Path, categories, *, app_version: str = APP_VERSION) -> BackupPreview:
@@ -503,6 +552,7 @@ def create_backup(data_dir: Path, output: Path, categories, *, app_version: str 
                 raise BackupError("백업 크기 한도를 초과했어요.")
             entries.append({"name": name, "category": category, "size": size,
                             "sha256": _digest(target)})
+        _validate_named_sets(staging / "data")
         manifest = {"format": FORMAT, "schema_version": SCHEMA_VERSION,
                     "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                     "app_version": _version(app_version), "categories": list(selected), "files": entries}
@@ -589,6 +639,8 @@ def _read_bundle(archive: Path, staging: Path | None = None) -> tuple[dict, Back
                         _check_image(target)
             if listed != set(bundle.namelist()):
                 raise BackupError("목록에 없는 파일이 백업에 포함되어 있어요.")
+            if staging is not None:
+                _validate_named_sets(staging)
             created_at = manifest.get("created_at", "")
             if not isinstance(created_at, str) or not re.fullmatch(r"[0-9T:+.Z-]{1,40}", created_at):
                 raise BackupError("백업 생성 날짜가 올바르지 않아요.")

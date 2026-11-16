@@ -4,13 +4,15 @@ Windows productivity timer and virtual secretary.
 
 ## Current development target
 
-`2.1.5` — follows up on the missing final Korean character: use the native focused IME context, preserve already committed Unicode input carrying Ctrl/Alt, and wait for composition results before taking a send snapshot. The chat title shows the running version. Preserves 2.1.4's cooldown fixes, larger chat and reading position, unified timer history, situation-image controls, the three-line bubble and configurable AI-only chatter. Active Microsoft Korean IME checks are reported separately from simulated input tests; an unavailable CI IME is not a passing IME test.
+`2.1.6` — adds named whole image sets assembled from multiple loose files. Assign all ten situations, review the final name and images, save without changing the current selection, then explicitly apply or reselect the set later. Existing image overrides, numbered ZIP sets and backups remain supported. Preserves 2.1.5's Korean input handling and unified timer notices, as well as the earlier timer, chat, inline scrolling and configurable AI features.
 
 The implementation and verification ledger is [docs/IMPLEMENTATION_CHECKLIST_2_1.md](docs/IMPLEMENTATION_CHECKLIST_2_1.md). Windows acceptance steps and remaining physical-device checks are documented separately; automated checks do not imply a live API quality test.
 
+See [named whole image sets assembled from loose files](docs/NAMED_IMAGE_SETS.md). This feature is not included in the previously delivered 2.1.5 ZIP. Source tests, Wine checks and actual Windows package tests are separate verification levels; use the report accompanying a particular build.
+
 ## Desktop app
 
-Development is focused on the Windows desktop app. `RUN.cmd` and Windows source autostart launch `desktop_gallery_final.py`. The Windows job in the **tests** workflow publishes `seunga-timer-2.1.5-windows-x64` for branch pushes. Sign in to GitHub, open the successful workflow run, then select the package under **Artifacts**. Exit the old running app, extract the new ZIP into its own folder, and keep `SeungaTimer.exe` beside its `_internal` folder. Check the chat title for `2.1.5`; `BUILD_INFO.txt` identifies the exact package commit. The package includes Python.
+Development is focused on the Windows desktop app. `RUN.cmd` and Windows source autostart launch `desktop_gallery_final.py`. A successful Windows job in the **tests** workflow produces a versioned Windows artifact. When using an authorized GitHub build, sign in and select the package under **Artifacts**. Exit the old running app, extract the new ZIP into its own folder, and keep `SeungaTimer.exe` beside its `_internal` folder. Check the chat title for `2.1.6`; `BUILD_INFO.txt` identifies the package source. The executable package includes Python. For a local Windows source build with Python installed, use `BUILD_WINDOWS.cmd`; its output is separate from older packages.
 
 - Read long speech by scrolling inside the bubble (at most three visible lines). Use its explicit chat button, tray or keyboard shortcut to open chat. Click the timer/character for settings; drag them to move the widget.
 - Screen dice changes the current image until the next situation. Explicit pinning and restoration are available.

@@ -25,6 +25,8 @@ from image_actions import ImageActionController, BASE, FOLLOW
 from asset_pack_import import import_numbered_pack, preview_numbered_pack, preview_role_images, adopt_legacy_imports
 from asset_rotation import raw_complete_sets
 from assistant_ai.ui_helpers import position_window
+from named_image_sets import NamedImageSetStore
+from named_set_editor import NamedSetEditor, IMAGE_FILETYPES
 
 
 # Keep one coherent built-in set, but collapse only byte-identical whole-set
@@ -73,6 +75,7 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
         self._gallery_previous: dict[str, str] = {}
         self._gallery_thumb_cache: dict[tuple, Image.Image] = {}
         self._image_preview_refs: dict[str, Path] = {}
+        self._named_image_sets = NamedImageSetStore(compact.USER_IMAGE_SET_DIR)
         self._image_catalog = ImageCatalog({
             'builtin': asset_manager.ASSET_DIR, 'user': compact.USER_IMAGE_DIR,
             'userset': compact.USER_IMAGE_SET_DIR, 'imported': self.IMPORTED_ASSET_DIR,
@@ -186,7 +189,7 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
         for item in self._image_catalog.entries():
             value = item.public()
             suffix = item.path.stem.rsplit('_', 1)[-1]
-            if suffix.isdigit() and len(suffix) == 2:
+            if 'set_id' not in value and suffix.isdigit() and len(suffix) == 2:
                 value['set_id'] = ('pack:' if item.origin == 'imported' else '') + suffix
             images.append(value)
         sets = [{'id': 'canonical', 'label': '기본 모델'}, {'id': 'random', 'label': '랜덤 내장 세트'}]
@@ -194,6 +197,8 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
             for number in raw_complete_sets(root):
                 if all(valid_image(root / role / f'{role}_{number:02d}.png') for role in asset_manager.VARIANT_FOLDERS):
                     sets.append({'id': f'{origin}{number:02d}', 'label': f"{'가져온' if origin else '내장'} 세트 {number:02d}"})
+        sets.extend({'id': item.id, 'label': self._named_set_label(item.name)}
+                    for item in self._named_image_sets.list_sets())
         role = getattr(self, 'character_role', None) or 'default'
         actual_path = None
         if getattr(self, '_random_gallery_active', False):
@@ -313,13 +318,26 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
             self._render_settings_preview()
 
     @staticmethod
-    def _builtin_base_label(value: str) -> str:
+    def _named_set_label(name):
+        return '내 세트 · ' + name
+
+    def _builtin_base_label(self, value: str) -> str:
+        if str(value).startswith('named:'):
+            item = self._named_image_sets.get(value)
+            return self._named_set_label(item.name) if item else '찾을 수 없는 내 세트'
         if str(value).startswith('pack:'):
             return '가져온 세트 ' + str(value).split(':', 1)[1]
         return compact.CompactDesktopApp._builtin_base_label(value)
 
-    @staticmethod
-    def _builtin_base_value(label: str) -> str:
+    def _builtin_base_value(self, label: str) -> str:
+        # Display names can contain punctuation/numbers. Match the complete
+        # label to a stable ID instead of parsing a user's name as a filename.
+        for item in self._named_image_sets.list_sets():
+            if label == self._named_set_label(item.name):
+                return item.id
+        current = self._image_action_state()[BASE]
+        if str(current).startswith('named:') and label == self._builtin_base_label(current):
+            return current  # Missing set data must not silently change selection.
         if str(label).startswith('가져온 세트 '):
             return 'pack:' + str(label).rsplit(' ', 1)[1]
         return compact.CompactDesktopApp._builtin_base_value(label)
@@ -378,6 +396,10 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
         return self._resolve_image_set_choice(role, self._image_action_state()[BASE])
 
     def _resolve_image_set_choice(self, role: str, base_set: str):
+        if str(base_set).startswith('named:'):
+            key = self.ROLE_TO_SETTING.get(role, role)
+            path = self._named_image_sets.resolve(base_set, key)
+            return path if path and valid_image(path) else asset_manager.resolve_canonical_asset(role)
         if str(base_set).startswith('pack:'):
             number = str(base_set).split(':', 1)[1]
             path = asset_manager.variant_asset(role, int(number), self.IMPORTED_ASSET_DIR) if number.isdigit() else None
@@ -387,6 +409,11 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
 
     def _base_set_preview_sources(self):
         base = self._image_action_state()[BASE]
+        if str(base).startswith('named:'):
+            snapshot = self._named_image_sets.get(base)
+            if snapshot is not None:
+                return ([snapshot.images[key] for key, _caption in self.IMAGE_ROWS],
+                        self._named_set_label(snapshot.name))
         sources = [self._resolve_builtin_asset(self.SETTING_TO_CANONICAL_ROLE.get(key, 'default'))
                    for key, _caption in self.IMAGE_ROWS]
         return [path for path in sources if path and valid_image(path)], self._builtin_base_label(base)
@@ -398,6 +425,12 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
         rows = list(self.IMAGE_ROWS)
         start = next((index for index, (role_key, _caption) in enumerate(rows) if role_key == key), 0)
         rows = rows[start:] + rows[:start]
+        base = self._image_action_state()[BASE]
+        if str(base).startswith('named:'):
+            snapshot = self._named_image_sets.get(base)
+            if snapshot is not None:
+                return ([snapshot.images[role_key] for role_key, _caption in rows],
+                        '전체 세트 · ' + self._named_set_label(snapshot.name))
         sources = [self._resolve_builtin_asset(self.SETTING_TO_CANONICAL_ROLE.get(role_key, 'default'))
                    for role_key, _caption in rows]
         return ([path for path in sources if path and valid_image(path)],
@@ -430,6 +463,9 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
     def _preview_role_for_path(self, source: Path) -> str | None:
         parent = source.parent.name
         labels = dict(self.IMAGE_ROWS)
+        if source.parent.parent == self._named_image_sets.sets_dir:
+            # Named sets use explicit role filenames inside a stable set ID.
+            return labels.get(source.stem)
         return labels.get(parent)
 
     def _select_settings_preview(self, key: str):
@@ -759,7 +795,9 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
         return result
 
     def _refresh_global_set_picker(self):
-        values = [self._builtin_base_label(item['id']) for item in self.image_action_catalog()['sets']]
+        sets = self.image_action_catalog()['sets']
+        values = [item['label'] if item['id'].startswith('named:') else self._builtin_base_label(item['id'])
+                  for item in sets]
         for widget in self._all_descendants(self.settings_page):
             if isinstance(widget, ttk.Combobox) and str(widget.cget('textvariable')) == str(self.builtin_image_set_var):
                 widget.configure(values=values)
@@ -774,6 +812,7 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
             result = proposal
         if hasattr(self, 'settings_status'):
             self.settings_status.configure(text=result['summary'])
+        return result
 
     def _build_image_detail_controls(self):
         section = getattr(self, '_settings_sections', {}).get('images')
@@ -784,13 +823,16 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
         self._button(row, 'ZIP 세트 가져오기', self._open_asset_pack_import).pack(side='left')
         self._button(row, '직전 이미지 변경 취소', self.undo_image_action).pack(side='left', padx=5)
         self._label(row, '선택 후 적용 버튼 · 되돌리기 가능', size=8, fg=core.MUTED, bg=core.PANEL).pack(side='left', padx=5)
+        named_row = tk.Frame(section, bg=core.PANEL)
+        named_row.pack(fill='x', padx=14, pady=(0, 5), after=row)
+        self._button(named_row, '낱장으로 새 전체 세트', self._open_named_set_editor, primary=True).pack(anchor='w')
         conflicts = getattr(self, '_asset_adoption', {}).get('conflicts', [])
         if conflicts:
             self._label(section, '기존 세트 ' + ', '.join(conflicts) + '은 다른 내용 때문에 자동 복사하지 않았습니다. 설치 폴더 원본은 보존됩니다.', size=8, fg=core.AMBER, bg=core.PANEL, wraplength=700).pack(fill='x', padx=14)
         rows = getattr(self, '_image_role_rows', {})
         if rows:
             role_row = tk.Frame(section, bg=core.PANEL)
-            role_row.pack(fill='x', padx=14, pady=6, after=row)
+            role_row.pack(fill='x', padx=14, pady=6, after=named_row)
             self._label(role_row, '상황', size=9, bg=core.PANEL).pack(side='left')
             role_var = self._image_role_var = tk.StringVar(value=dict(self.IMAGE_ROWS)['default'])
             selector = self._image_role_selector = ttk.Combobox(role_row, textvariable=role_var, state='readonly', values=[caption for _, caption in self.IMAGE_ROWS])
@@ -814,6 +856,29 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
         self._settings_preview_apply_button = self._button(preview_info, '평상시 이미지로 적용', self._apply_settings_preview, primary=True)
         self._settings_preview_apply_button.pack(anchor='w', pady=(10, 0))
         self._refresh_global_set_picker()
+
+    def _open_named_set_editor(self):
+        paths = filedialog.askopenfilenames(parent=self.root, title='새 전체 세트에 사용할 이미지 여러 장 선택',
+                                           filetypes=IMAGE_FILETYPES)
+        if not paths:
+            return
+        try:
+            return NamedSetEditor(self, self._named_image_sets, paths,
+                                  on_saved=self._named_set_saved, on_apply=self._apply_named_set)
+        except Exception as error:
+            messagebox.showerror('새 전체 세트 만들기', str(error), parent=self.root)
+
+    def _named_set_saved(self, saved):
+        self._gallery_thumb_cache.clear()
+        self._settings_preview_cache.clear()
+        self._refresh_global_set_picker()
+        self.settings_status.configure(text=f'‘{saved.name}’ 저장 완료 · 전체 이미지 세트 목록에서 선택할 수 있습니다.', fg=core.GREEN)
+
+    def _apply_named_set(self, set_id):
+        proposal = self.propose_image_action({'kind': 'base_set', 'set_id': set_id})
+        result = self.apply_image_action(proposal['id']) if proposal.get('status') == 'pending' else proposal
+        self.settings_status.configure(text=result['summary'])
+        return result
 
     def _open_asset_pack_import(self):
         source = filedialog.askopenfilename(parent=self.root, title='10개 역할 이미지 ZIP 가져오기', filetypes=[('이미지 세트 ZIP', '*.zip')])

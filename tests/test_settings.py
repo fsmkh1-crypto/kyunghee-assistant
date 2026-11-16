@@ -63,6 +63,23 @@ class UserSettingsTests(unittest.TestCase):
             path.write_text("{bad", encoding="utf-8")
             self.assertEqual(load_user_settings(path), UserSettings())
 
+    def test_named_full_set_selection_round_trip_keeps_existing_preferences(self):
+        selected = "named:" + "a1" * 16
+        expected = UserSettings(builtin_image_set=selected, image_default="my-photo.png",
+                                break_interval_minutes=45, snooze_minutes=8,
+                                builtin_image_warning="05", welcome_seen=True)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            save_user_settings(path, expected)
+            self.assertEqual(load_user_settings(path), expected)
+        self.assertEqual(settings_from_dict({"builtin_image_set": selected.upper()}).builtin_image_set,
+                         selected)
+        for invalid in ("named:", "named:../file", "named:" + "z" * 32,
+                        "named:" + "a" * 31, "named:" + "a" * 33):
+            with self.subTest(invalid=invalid):
+                self.assertEqual(settings_from_dict({"builtin_image_set": invalid}).builtin_image_set,
+                                 "random")
+
     def test_wrong_types_do_not_turn_strings_into_true(self):
         parsed = settings_from_dict({"always_on_top": "false", "break_reminders": 0})
         self.assertFalse(parsed.always_on_top)

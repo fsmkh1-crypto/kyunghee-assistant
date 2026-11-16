@@ -216,6 +216,104 @@ def _exercise_preview_navigation(desktop):
     desktop._show_page("timer")
 
 
+def _exercise_named_image_sets(desktop, progress=lambda _phase: None):
+    """Exercise the shipped editor and storage, inside the isolated profile."""
+    import tkinter as tk
+    from tkinter import ttk
+    from PIL import Image
+    from image_actions import BASE
+    from named_image_sets import NamedImageSetStore
+    from named_set_editor import NamedSetEditor
+
+    root = desktop.root
+    store = desktop._named_image_sets
+    sources_dir = store.root.parent / "named-set-smoke-sources"
+    sources_dir.mkdir()
+    sources = []
+    for index, (_role, _caption) in enumerate(desktop.IMAGE_ROWS):
+        path = sources_dir / f"picture_{index + 1:02d}.png"
+        Image.new("RGBA", (48, 64), (20 * index, 80, 140, 255)).save(path)
+        sources.append(path)
+    source_bytes = {path: path.read_bytes() for path in sources}
+    original_state = desktop._image_action_state()
+    original_sets = store.list_sets()
+
+    # Set up a genuine manual override through the existing image action path.
+    # Applying a whole set must keep that override and its file intact.
+    desktop._import_role_images("rest", [sources[0]])
+    manual = desktop._custom_image("rest")[0]
+    manual_bytes = manual.read_bytes()
+    before_apply = desktop._image_action_state()
+    editor = None
+    try:
+        progress("named images: open editor and assign ten roles")
+        desktop._show_page("settings")
+        with patch("desktop_gallery.filedialog.askopenfilenames", return_value=tuple(map(str, sources))), \
+                patch("desktop_gallery.messagebox.showerror", side_effect=AssertionError("named editor failed to open")):
+            editor = desktop._open_named_set_editor()
+        assert isinstance(editor, NamedSetEditor), "named image editor is unavailable in the package"
+        root.update()
+        assert len(editor.assignments) == 10, "named editor is missing a situation"
+        assert all(not value.get() for value in editor.assignments.values()), "ambiguous filenames were assigned automatically"
+        editor.name.set("승아의 새 하루 01")
+        for index, variable in enumerate(editor.assignments.values()):
+            if index == 9:
+                assert editor.review_button.cget("state") == "disabled", "incomplete named set can be reviewed"
+                assert editor.save_button.cget("state") == "disabled", "incomplete named set can be saved"
+            variable.set(editor._value_for(sources[index]))
+        assert "10/10" in editor.progress.get(), "named editor assignment count is incorrect"
+
+        progress("named images: preview and save without applying")
+        editor.review_button.invoke()
+        root.update()
+        assert editor.plan is not None, "named preview failed: " + editor.status.get()
+        assert editor.plan.name == "승아의 새 하루 01", "named preview lost the Unicode name"
+        assert store.list_sets() == original_sets, "named preview wrote a set"
+        for button in (editor.review_button, editor.save_button, editor.cancel_button):
+            _assert_action_visible(button, editor)
+        editor.save_button.invoke()
+        root.update()
+        saved = editor.saved_set
+        assert saved is not None, "named save failed: " + editor.status.get()
+        assert desktop._image_action_state() == before_apply, "saving a named set changed the selected images"
+        assert {path: path.read_bytes() for path in sources} == source_bytes, "named save modified source images"
+        reopened = NamedImageSetStore(store.root).get(saved.id)
+        assert reopened is not None and reopened.name == saved.name, "named set cannot be reopened from its manifest"
+        for index, role in enumerate(editor.assignments):
+            assert reopened.images[role].read_bytes() == source_bytes[sources[index]], "named role assignment changed: " + role
+        label = desktop._named_set_label(saved.name)
+        picker = next(widget for widget in _descendants(desktop.settings_page)
+                      if isinstance(widget, ttk.Combobox)
+                      and str(widget.cget("textvariable")) == str(desktop.builtin_image_set_var))
+        assert label in picker.cget("values"), "saved named set is missing from the whole-set picker"
+        assert desktop._builtin_base_value(label) == saved.id, "named label does not resolve to its stable ID"
+
+        progress("named images: explicit apply, manual preservation, reselect and undo")
+        _assert_action_visible(editor.apply_button, editor)
+        editor.apply_button.invoke()
+        root.update()
+        assert desktop._image_action_state() == {**before_apply, BASE: saved.id}, "named apply changed per-role choices"
+        assert desktop._custom_image("rest")[0] == manual and manual.read_bytes() == manual_bytes, "named apply lost the manual rest image"
+        assert desktop._resolve_builtin_asset("away") == saved.images["away"], "named runtime role did not resolve"
+        editor.destroy()
+        editor = None
+        assert desktop.undo_image_action()["status"] == "undone", "named apply cannot be undone"
+        assert desktop._image_action_state() == before_apply, "named undo did not restore the previous set"
+        assert desktop._choose_base_set(label)["status"] == "applied", "saved named set cannot be selected again"
+        assert desktop._image_action_state() == {**before_apply, BASE: saved.id}, "named re-selection changed a manual override"
+        assert desktop.undo_image_action()["status"] == "undone", "named re-selection cannot be undone"
+        assert desktop._image_action_state() == before_apply, "named re-selection undo changed existing choices"
+        assert NamedImageSetStore(store.root).get(saved.id) == reopened, "undo deleted or changed the saved set"
+        assert desktop.undo_image_action()["status"] == "undone", "manual fixture import cannot be undone"
+        assert desktop._image_action_state() == original_state, "named smoke did not restore the prior selection"
+        desktop._show_page("timer")
+        return {"roles": 10, "saved_without_apply": True, "manual_preserved": True,
+                "manifest_reopened": True, "reselected": True, "undo": True}
+    finally:
+        if editor is not None and editor.winfo_exists():
+            editor.destroy()
+
+
 def _exercise_inline_reply(desktop, progress=lambda _phase: None):
     root, windows = desktop.root, desktop._assistant_windows
     reply = ("긴 답변 보존 검사 — 한글과 emoji 🙂, 줄바꿈도 그대로 읽을 수 있어야 해요.\n" * 120
@@ -435,6 +533,7 @@ def _run_packaged_smoke(app_factory, report_path):
                         assert windows is not None, "assistant failed to initialize"
                         progress("preview navigation")
                         _exercise_preview_navigation(desktop)
+                        named_images = _exercise_named_image_sets(desktop, progress)
                         progress("away clock")
                         _exercise_away_clock(desktop)
                         approval_resize = _exercise_approval_actions(desktop, progress)
@@ -476,7 +575,8 @@ def _run_packaged_smoke(app_factory, report_path):
                         assert network.call_count == 0, "unexpected network request"
                         assert not callback_errors, "Tk callback failed:\n" + "\n".join(callback_errors)
                         report["checks"].append({"dpi": dpi, "status": "passed", "approval_resize": approval_resize,
-                                                 "flows": ["dice", "settings", "preview previous/next pixels and selection preservation", "visible cross-role Apply and Undo", "away clock and records", "small approval actions", "small image proposal actions", "three-line inline reply", "native repeated clicks and wheel", "scrollbar and keyboard reading", "explicit chat button", "conversation and draft preservation", "chat hide/reopen and retained answer", "unified timer history and storage reopen", "older history without scroll jump", "AI settings", "model choices and unsaved preview", "memories", "image picker", "gallery", "backup", "weather", "offline status", "image cancel"]})
+                                                 "named_images": named_images,
+                                                 "flows": ["dice", "settings", "preview previous/next pixels and selection preservation", "visible cross-role Apply and Undo", "named set assignment, save, apply, re-selection and undo", "away clock and records", "small approval actions", "small image proposal actions", "three-line inline reply", "native repeated clicks and wheel", "scrollbar and keyboard reading", "explicit chat button", "conversation and draft preservation", "chat hide/reopen and retained answer", "unified timer history and storage reopen", "older history without scroll jump", "AI settings", "model choices and unsaved preview", "memories", "image picker", "gallery", "backup", "weather", "offline status", "image cancel"]})
                     finally:
                         progress("close desktop")
                         for timer_id in root.tk.splitlist(root.tk.call("after", "info")):
