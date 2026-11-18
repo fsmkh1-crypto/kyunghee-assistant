@@ -896,8 +896,8 @@ class CompactDesktopApp(DesktopApp):
         return clock_x, max(18, round(character_top + visible_top + 4))
 
     def _timer_size(self):
-        # Size from the actual visible horizontal union. Transparent PNG padding
-        # is excluded, so large widget scales no longer reserve invisible width.
+        # Reserve both the visible UI union and the complete image canvas.
+        # Matching the fitting budget prevents repeated shrinkage of padded PNGs.
         growth = self._layout_growth()
         height = self.MIN_TIMER_SIZE[1] + round(growth * 3.40)
         union_left, union_right, _clock_width, _visible_gap = self._horizontal_union_bounds()
@@ -905,7 +905,7 @@ class CompactDesktopApp(DesktopApp):
         left_margin = 24
         right_margin = 8
         required_width = round(union_width + left_margin + right_margin)
-        width = max(360, required_width)
+        width = max(360, required_width, self._character_render_size()[0] + _clock_width + (6 if _clock_width else 0) + 32)
         required_height = max(
             self._scale(self.CHARACTER_MAX[1]) + 130,
             self._character_render_size()[1] + self._character_bottom_gap() + 42,

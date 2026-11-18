@@ -206,12 +206,12 @@ def _restore_state_image(app, _event=None):
 
 
 def _install_dynamic_timer_layout(app) -> None:
-    """Size the compact timer from the currently visible character silhouette.
+    """Size the compact timer from the complete rendered character canvas.
 
     The window remains asset-dependent, but a short/seated/profile asset no longer
     inherits the historical 610px full-body minimum height. The character, status
     group and message keep the existing anchor rules; only the required window
-    height is recomputed from the rendered image's visible top edge.
+    height reserves the same complete canvas used by the fitting budget.
     """
     if getattr(app, "_dynamic_timer_layout_installed", False):
         return
@@ -228,10 +228,10 @@ def _install_dynamic_timer_layout(app) -> None:
         try:
             _image_width, image_height = self._character_render_size()
             _visible_left, visible_top, _visible_right, _visible_bottom = self._character_visible_bounds()
-            bottom_gap = self._character_bottom_gap()
+            bottom_gap = max(72, self._message_bottom_gap() + self._message_render_height() + 6)
 
             top_clearance = max(42, self._scale(34))
-            visible_extent_to_label_bottom = max(1, image_height - visible_top)
+            visible_extent_to_label_bottom = max(1, image_height)  # reserve full canvas: no shrink feedback
             required_height = top_clearance + bottom_gap + visible_extent_to_label_bottom
 
             minimum_height = max(300, self._scale(250))

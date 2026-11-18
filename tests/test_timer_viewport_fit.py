@@ -4,7 +4,7 @@ os.environ.setdefault("PYSTRAY_BACKEND", "dummy")
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
-from PIL import Image
+from PIL import Image, ImageDraw
 from desktop_compact import CompactDesktopApp
 
 
@@ -71,6 +71,31 @@ class TimerViewportFitTests(unittest.TestCase):
         app._fit_character_to_viewport.assert_called_once_with(620, 440)
         app._apply_widget_appearance.assert_called_once_with()
         self.assertFalse(app._fitting_timer_viewport)
+
+    def test_transparent_padding_repeated_layout_does_not_shrink(self):
+        from compact_runtime_features import _install_dynamic_timer_layout
+        for ceiling in ((1000, 1000), (360, 300)):
+            with self.subTest(ceiling=ceiling):
+                app = self.make_app((300, 500))
+                image = Image.new('RGBA', (300, 500))
+                ImageDraw.Draw(image).rectangle((100, 100, 199, 449), fill=(255, 0, 0, 255))
+                app._character_fit_image = image
+                app.character_photo = _Photo(image)
+                app._character_alpha_bbox = image.getbbox()
+                app._layout_growth = lambda: 0
+                app._message_render_width = lambda: 320
+                app._character_bottom_gap = lambda: 72
+                _install_dynamic_timer_layout(app)
+                history = []
+                with patch('desktop_compact.ImageTk.PhotoImage', _Photo):
+                    for _ in range(20):
+                        requested = app._timer_size()
+                        viewport = tuple(min(want, cap) for want, cap in zip(requested, ceiling))
+                        app._fit_character_to_viewport(*viewport)
+                        history.append((app.character_photo.size, app._character_alpha_bbox, viewport))
+                self.assertEqual(history[1:], [history[1]] * 19)
+                if ceiling == (1000, 1000):
+                    self.assertEqual(app.character_photo.size, (300, 500))
 
     def test_no_source_during_initial_build_is_safe(self):
         app = self.make_app()

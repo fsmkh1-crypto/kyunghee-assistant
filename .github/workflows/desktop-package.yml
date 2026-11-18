@@ -1,5 +1,9 @@
 name: Desktop Package
 
+concurrency:
+  group: desktop-package-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   workflow_dispatch:
   push:
@@ -51,6 +55,7 @@ jobs:
       - name: Install build dependencies
         run: python -m pip install -r requirements.txt pyinstaller
       - name: Run regression tests
+        timeout-minutes: 8
         run: python -m unittest discover -s tests -v
       - name: Build standalone Windows app
         run: >-
