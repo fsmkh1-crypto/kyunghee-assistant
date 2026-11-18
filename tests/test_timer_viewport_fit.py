@@ -97,6 +97,31 @@ class TimerViewportFitTests(unittest.TestCase):
                 if ceiling == (1000, 1000):
                     self.assertEqual(app.character_photo.size, (300, 500))
 
+    def test_native_move_does_not_resize_client_as_outer_rectangle(self):
+        app = self.make_app()
+        app.root = SimpleNamespace(geometry=Mock(), update_idletasks=Mock())
+        app._native_toplevel_handle = lambda: 123
+        native = SimpleNamespace(user32=SimpleNamespace(SetWindowPos=Mock()))
+        with patch('desktop_compact.os.name', 'nt'), patch('desktop_compact.ctypes.windll', native, create=True):
+            app._set_window_rect(20, 30, 400, 500)
+        app.root.geometry.assert_called_once_with('400x500')
+        self.assertTrue(native.user32.SetWindowPos.call_args.args[-1] & 0x0001)
+
+    def test_speech_position_only_events_do_not_resize_again(self):
+        app = self.make_app()
+        app.current_page = 'timer'
+        speech = object()
+        app._visible_speech = lambda: speech
+        app._resize_for_page = Mock()
+        event = SimpleNamespace(widget=speech, width=320, height=70)
+        app._on_speech_resize(event)
+        app._on_speech_resize(event)
+        app._resize_for_page.assert_called_once_with('timer')
+        app._fitting_timer_viewport = True
+        event.height = 90
+        app._on_speech_resize(event)
+        app._resize_for_page.assert_called_once()
+
     def test_no_source_during_initial_build_is_safe(self):
         app = self.make_app()
         app._character_fit_image = None

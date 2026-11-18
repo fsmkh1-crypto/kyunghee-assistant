@@ -656,7 +656,10 @@ class CompactDesktopApp(DesktopApp):
                     int(y),
                     int(width),
                     int(height),
-                    SWP_NOZORDER | SWP_NOACTIVATE,
+                    # Tk geometry above already set the client dimensions.
+                    # Native W/H are outer dimensions before overrideredirect
+                    # is enabled during startup; resizing twice oscillates.
+                    SWP_NOZORDER | SWP_NOACTIVATE | 0x0001,  # SWP_NOSIZE
                 )
                 return
             except Exception:
