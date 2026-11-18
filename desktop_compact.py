@@ -688,6 +688,54 @@ class CompactDesktopApp(DesktopApp):
     def _layout_growth(self) -> int:
         return max(0, self._effective_widget_scale() - 100)
 
+    def _character_fit_limits(self) -> tuple[int, int]:
+        """Fit art to the timer's available monitor space, not source pixels.
+
+        Reserve the complete bottom control/message area before resizing. Do not
+        use the current root size here: while editing it is the settings window.
+        """
+        nominal = (self._scale(self.CHARACTER_MAX[0]), self._scale(self.CHARACTER_MAX[1]))
+        x, y = self.root.winfo_x(), self.root.winfo_y()
+        area = self._best_work_area(x, y, *nominal)
+        width = max(1, area[2] - area[0] - 12)
+        height = max(1, area[3] - area[1] - 12)
+        clock = self._clock_layout_width()
+        bottom = max(72, self._message_bottom_gap() + self._message_render_height() + 6)
+        top = max(42, self._scale(34))
+        return (max(1, min(nominal[0], width - 32 - clock - (6 if clock else 0))),
+                max(1, min(nominal[1], height - bottom - top)))
+
+    def _timer_layout_size(self) -> tuple[int, int]:
+        """Use the final timer client viewport for placement, never settings size."""
+        viewport = getattr(self, "_timer_viewport", None)
+        if viewport is not None:
+            return viewport
+        width, height = self._timer_size()
+        x, y = self.root.winfo_x(), self.root.winfo_y()
+        return self._clamp_rect(x, y, width, height)[2:]
+
+    def _fit_character_to_viewport(self, width: int, height: int) -> None:
+        """A monitor/client clamp must resize art as well as the outer window.
+
+        Keep the pre-clamp pixels so a later larger viewport never resamples an
+        already reduced thumbnail. This does not change the selected role/file.
+        """
+        source = getattr(self, "_character_fit_image", None)
+        if source is None:
+            return
+        clock = self._clock_layout_width()
+        bottom = max(72, self._message_bottom_gap() + self._message_render_height() + 6)
+        top = max(42, self._scale(34))
+        budget = (max(1, width - 32 - clock - (6 if clock else 0)),
+                  max(1, height - bottom - top))
+        image = resize_rgba_alpha_safe(source, budget)
+        image = self._clean_character_alpha(image)
+        if image.size == self._character_render_size():
+            return
+        self._character_alpha_bbox = image.getchannel("A").getbbox() or (0, 0, *image.size)
+        self.character_photo = ImageTk.PhotoImage(image)
+        self.character.configure(image=self.character_photo)
+
     def _character_render_size(self) -> tuple[int, int]:
         # Prefer the exact PhotoImage dimensions after a live scale change.
         photo = getattr(self, "character_photo", None)
@@ -773,7 +821,7 @@ class CompactDesktopApp(DesktopApp):
     def _cluster_horizontal_layout(self) -> tuple[int, int]:
         # Right-pack the complete visible union (clock/status, Kyunghee silhouette,
         # and message) instead of centering it inside a generously oversized canvas.
-        timer_width, _timer_height = self._timer_size()
+        timer_width, _timer_height = self._timer_layout_size()
         character_width, _character_height = self._character_render_size()
         visible_left, _visible_top, _visible_right, _visible_bottom = self._character_visible_bounds()
         union_left, union_right, clock_width, visible_gap = self._horizontal_union_bounds()
@@ -782,6 +830,11 @@ class CompactDesktopApp(DesktopApp):
         # _timer_size guarantees at least 24 px on the union's left side.
         cluster_left = max(cluster_left, round(24 - union_left))
         visible_character_left = cluster_left + clock_width + visible_gap
+        # Message wrap/clock requisitions can exceed a tiny screen. Never let
+        # those wider siblings push otherwise fitting character pixels outside.
+        visible_width = max(1, _visible_right - visible_left)
+        visible_character_left = min(max(0, visible_character_left),
+                                     max(0, timer_width - visible_width - 8))
         image_left = visible_character_left - visible_left
         character_center = image_left + character_width / 2
         return cluster_left, round(character_center - timer_width / 2)
@@ -835,7 +888,7 @@ class CompactDesktopApp(DesktopApp):
     def _clock_offset(self) -> tuple[int, int]:
         # Follow the rendered artwork both horizontally and vertically. This
         # removes the large empty diagonal gap visible at 80, 140 and 200%.
-        _timer_width, timer_height = self._timer_size()
+        _timer_width, timer_height = self._timer_layout_size()
         clock_x, _character_offset = self._cluster_horizontal_layout()
         _character_width, character_height = self._character_render_size()
         _visible_left, visible_top, _visible_right, _visible_bottom = self._character_visible_bounds()
@@ -860,20 +913,36 @@ class CompactDesktopApp(DesktopApp):
         return width, max(height, required_height)
 
     def _resize_for_page(self, name: str):
-        if name == "timer":
-            width, height = self._timer_size()
-        elif name == "settings":
-            width, height = self.SETTINGS_SIZE
-        else:
-            width, height = self.DETAIL_SIZE
-
+        if getattr(self, "_fitting_timer_viewport", False):
+            return
+        self._fitting_timer_viewport = True
         try:
-            x, y = self.root.winfo_x(), self.root.winfo_y()
-        except tk.TclError:
-            x, y = 0, 0
-        x, y, width, height = self._clamp_rect(x, y, width, height)
-        self.root.minsize(width, height)
-        self._set_window_rect(x, y, width, height)
+            if name == "timer":
+                width, height = self._timer_size()
+            elif name == "settings":
+                width, height = self.SETTINGS_SIZE
+            else:
+                width, height = self.DETAIL_SIZE
+            try:
+                x, y = self.root.winfo_x(), self.root.winfo_y()
+            except tk.TclError:
+                x, y = 0, 0
+            x, y, width, height = self._clamp_rect(x, y, width, height)
+            self.root.minsize(width, height)
+            self._set_window_rect(x, y, width, height)
+            if name == "timer":
+                # Native outer/client sizing can differ. Read the real hero
+                # area after geometry is committed, then use it everywhere.
+                self.root.update_idletasks()
+                hero = getattr(self, "hero", self.root)
+                actual_width, actual_height = hero.winfo_width(), hero.winfo_height()
+                width = actual_width if actual_width > 1 else width
+                height = actual_height if actual_height > 1 else height
+                self._timer_viewport = (width, height)
+                self._fit_character_to_viewport(width, height)
+                self._apply_widget_appearance()
+        finally:
+            self._fitting_timer_viewport = False
 
     def _restore_window_position(self):
         self.root.update_idletasks()
@@ -1132,7 +1201,7 @@ class CompactDesktopApp(DesktopApp):
             image = resize_rgba_alpha_safe(
                 src,
                 max_size,
-                crop=bool(mode == "crop" and custom),
+                crop=False,  # Whole artwork must remain visible, including legacy crop settings.
                 centering=centering,
             )
             if preserve_alpha:
@@ -1220,8 +1289,9 @@ class CompactDesktopApp(DesktopApp):
             return
         self._image_set_choices.pop(role, None)
         try:
-            max_size = (self._scale(self.CHARACTER_MAX[0]), self._scale(self.CHARACTER_MAX[1]))
+            max_size = self._character_fit_limits()
             image = self._load_character_image(role, max_size, preserve_alpha=True)
+            self._character_fit_image = image.copy()
             image = self._clean_character_alpha(image)
             alpha_bbox = image.getchannel("A").getbbox()
             self._character_alpha_bbox = alpha_bbox or (0, 0, image.width, image.height)
@@ -1492,7 +1562,7 @@ class CompactDesktopApp(DesktopApp):
 
     def _settings_preview_style(self, key: str):
         mode_label = self.image_mode_vars[key].get() if hasattr(self, "image_mode_vars") else "자동 맞춤"
-        mode = "crop" if mode_label == "가운데 크롭" else "fit"
+        mode = "crop" if mode_label in ("중앙 맞춤", "가운데 크롭") else "fit"
         alignment_labels = {
             "가운데": "center", "위": "top", "아래": "bottom",
             "왼쪽": "left", "오른쪽": "right",
@@ -1786,7 +1856,7 @@ class CompactDesktopApp(DesktopApp):
             self.image_path_vars[key].set(getattr(p, f"image_{key}"))
             self.image_builtin_vars[key].set(self._builtin_override_label(getattr(p, f"builtin_image_{key}")))
             config = self._image_set_store.get(key)
-            self.image_mode_vars[key].set("가운데 크롭" if config.fit_mode == "crop" else "자동 맞춤")
+            self.image_mode_vars[key].set("중앙 맞춤" if config.fit_mode == "crop" else "자동 맞춤")
             labels = {"center": "가운데", "top": "위", "bottom": "아래", "left": "왼쪽", "right": "오른쪽",
                       "top_left": "왼쪽 위", "top_right": "오른쪽 위", "bottom_left": "왼쪽 아래", "bottom_right": "오른쪽 아래"}
             self.image_alignment_vars[key].set(labels.get(config.alignment, "가운데"))
@@ -2101,7 +2171,7 @@ class CompactDesktopApp(DesktopApp):
         ).pack(anchor="w", pady=(0, 3), **pad)
         self._label(
             content,
-            "선택한 이미지는 앱 전용 폴더로 복사됩니다. 자동 맞춤 = 전체 표시 / 가운데 크롭 = 중앙 기준 자르기",
+            "선택한 이미지는 앱 전용 폴더로 복사됩니다. 이미지 전체를 창 안에 비율 유지로 표시합니다. 기존 중앙 맞춤 설정도 잘림 없이 맞춥니다.",
             size=8, fg=core.MUTED, bg=core.PANEL, wraplength=590, justify="left",
         ).pack(anchor="w", pady=(0, 7), **pad)
 
@@ -2167,7 +2237,7 @@ class CompactDesktopApp(DesktopApp):
             mode_value = config.fit_mode if config.images else getattr(p, f"image_{key}_mode")
             self.image_path_vars[key] = tk.StringVar(value=path_value)
             self.image_name_vars[key] = tk.StringVar(value=self._image_display_name(key, path_value))
-            self.image_mode_vars[key] = tk.StringVar(value="가운데 크롭" if mode_value == "crop" else "자동 맞춤")
+            self.image_mode_vars[key] = tk.StringVar(value="중앙 맞춤" if mode_value == "crop" else "자동 맞춤")
             self.image_alignment_vars[key] = tk.StringVar(value=alignment_labels.get(config.alignment, "가운데"))
             self.image_builtin_vars[key] = tk.StringVar(
                 value=self._builtin_override_label(getattr(p, f"builtin_image_{key}", ""))
@@ -2208,7 +2278,7 @@ class CompactDesktopApp(DesktopApp):
             fields_row = tk.Frame(options, bg=core.PANEL)
             fields_row.pack(fill="x", pady=2)
             for label, variable, choices, width in (
-                ("표시", self.image_mode_vars[key], ("자동 맞춤", "가운데 크롭"), 14),
+                ("표시", self.image_mode_vars[key], ("자동 맞춤", "중앙 맞춤"), 14),
                 ("정렬", self.image_alignment_vars[key],
                  ("가운데", "위", "아래", "왼쪽", "오른쪽", "왼쪽 위", "오른쪽 위", "왼쪽 아래", "오른쪽 아래"), 14),
             ):
@@ -2304,7 +2374,7 @@ class CompactDesktopApp(DesktopApp):
                 },
                 **{f"image_{k}": self.image_path_vars[k].get() for k, _ in self.IMAGE_ROWS},
                 **{
-                    f"image_{k}_mode": "crop" if self.image_mode_vars[k].get() == "가운데 크롭" else "fit"
+                    f"image_{k}_mode": "crop" if self.image_mode_vars[k].get() in ("중앙 맞춤", "가운데 크롭") else "fit"
                     for k, _ in self.IMAGE_ROWS
                 },
             )
@@ -2320,7 +2390,7 @@ class CompactDesktopApp(DesktopApp):
             for key, _caption in self.IMAGE_ROWS:
                 self._image_set_store.set_options(
                     key,
-                    fit_mode="crop" if self.image_mode_vars[key].get() == "가운데 크롭" else "fit",
+                    fit_mode="crop" if self.image_mode_vars[key].get() in ("중앙 맞춤", "가운데 크롭") else "fit",
                     alignment=alignment_values.get(self.image_alignment_vars[key].get(), "center"),
                 )
             self._image_set_choices.clear()

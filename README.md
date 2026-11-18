@@ -4,6 +4,8 @@ Windows productivity timer and virtual secretary.
 
 ## Current development target
 
+`2.1.8` fits complete images to the timer viewport without cutting heads or feet, including legacy crop settings, and aligns previews with runtime rendering. See [image window fit](docs/IMAGE_WINDOW_FIT_218.md).
+
 `2.1.7` keeps only GPT-6.2 Sol and GPT-6.2 Astra in AI settings. Existing model selections migrate to Sol, with other settings and user data preserved. See [GPT-6.2 update](docs/GPT62_UPDATE.md).
 
 `2.1.6-hotfix.1` is a repair candidate based on the 2.1.6 release. It corrects per-date time accounting at midnight, interrupted backup restores, invalid numeric state fields on startup, and disabled break reminder labels. Windows packaging and physical-device verification are separate from the source tests. See [핫픽스 검증 및 사용 안내](docs/HOTFIX_216_1.md).

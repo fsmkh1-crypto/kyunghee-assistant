@@ -107,16 +107,14 @@ def _gallery_candidates() -> list[Path]:
 
 def _render_gallery_image(app, path: Path) -> bool:
     try:
-        max_size = (
-            app._scale(app.CHARACTER_MAX[0]),
-            app._scale(app.CHARACTER_MAX[1]),
-        )
+        max_size = app._character_fit_limits()
         if not valid_image(path):
             return False
         with Image.open(path) as src:
             image = src.convert("RGBA")
             image.thumbnail(max_size, Image.Resampling.LANCZOS)
 
+        app._character_fit_image = image.copy()
         cleaner = getattr(app, "_clean_character_alpha", None)
         if cleaner is not None:
             image = cleaner(image)

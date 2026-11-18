@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - ui/dark-kyunghee-redesign
+      - fix/seunga-2.1.8-image-window-fit
     paths:
       - '*.py'
       - 'assistant_ai/**'

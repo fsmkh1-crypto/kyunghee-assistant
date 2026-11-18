@@ -357,7 +357,7 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
 
     def _manual_style(self, key: str):
         if hasattr(self, 'image_mode_vars') and key in self.image_mode_vars:
-            mode = 'crop' if self.image_mode_vars[key].get() == '가운데 크롭' else 'fit'
+            mode = 'crop' if self.image_mode_vars[key].get() in ('중앙 맞춤', '가운데 크롭') else 'fit'
         else:
             mode = getattr(self.preferences, f'image_{key}_mode', 'fit')
         if hasattr(self, 'image_alignment_vars') and key in self.image_alignment_vars:
@@ -515,16 +515,17 @@ class GalleryDesktopApp(compact.CompactDesktopApp):
             stat_key = (stat.st_mtime_ns, stat.st_size)
         except OSError:
             stat_key = (0, 0)
-        cache_key = ('gallery-preview', key, str(source), stat_key, mode, alignment, self.PREVIEW_SIZE)
+        cache_key = ('gallery-preview', key, str(source), stat_key, mode, alignment, self.PREVIEW_SIZE, self._character_fit_limits())
         preview = self._settings_preview_cache.get(cache_key)
         if preview is None:
             with Image.open(source) as src:
                 rendered = resize_rgba_alpha_safe(
                     src,
-                    self.PREVIEW_SIZE,
-                    crop=(mode == 'crop' and source_kind in {'수동 선택', '사용자 이미지'}),
+                    self._character_fit_limits(),
+                    crop=False,
                     centering=self._alignment_center(alignment),
                 )
+                rendered = resize_rgba_alpha_safe(rendered, self.PREVIEW_SIZE)
                 canvas = Image.new('RGBA', self.PREVIEW_SIZE, core.PANEL_2)
                 x = (self.PREVIEW_SIZE[0] - rendered.width) // 2
                 y = (self.PREVIEW_SIZE[1] - rendered.height) // 2
