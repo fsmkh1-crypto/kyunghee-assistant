@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, fields
 from datetime import date
 import json
+import math
 import os
 from pathlib import Path
 import time
@@ -40,6 +41,8 @@ class SessionState:
     away_started_mono: float | None = None
     idle_candidate_seconds: float = 0.0
     last_seen_wall: float = 0.0
+    # Pending idle time per date: [seconds, continuous day total at its end].
+    idle_candidate_days: dict[str, list[float]] = field(default_factory=dict)
 
 
 @dataclass
@@ -64,11 +67,14 @@ _FLOAT_FIELDS = {
     "idle_candidate_seconds",
     "last_seen_wall",
 }
+_OPTIONAL_FLOAT_FIELDS = {"away_started_wall", "away_started_mono"}
 _INT_FIELDS = {"away_count", "ignored_breaks"}
 _BOOL_FIELDS = {"is_away", "manual_away", "break_reminders_suppressed"}
 
 
 def _coerce(cls, data: dict):
+    if not isinstance(data, dict):
+        return cls()
     out = {}
     known = {f.name for f in fields(cls)}
     for name in known:
@@ -77,17 +83,42 @@ def _coerce(cls, data: dict):
         value = data[name]
         try:
             if name in _FLOAT_FIELDS:
-                out[name] = None if value is None else float(value)
+                if value is None and name in _OPTIONAL_FLOAT_FIELDS:
+                    out[name] = None
+                    continue
+                number = float(value)
+                if (math.isfinite(number) and not isinstance(value, bool)
+                        and (number >= 0 or name in _OPTIONAL_FLOAT_FIELDS)):
+                    out[name] = number
             elif name in _INT_FIELDS:
-                out[name] = int(value)
+                number = int(value)
+                if number >= 0 and not isinstance(value, bool):
+                    out[name] = number
             elif name in _BOOL_FIELDS:
                 if isinstance(value, str):
                     out[name] = value.strip().lower() in {"1", "true", "yes", "on"}
                 else:
                     out[name] = bool(value)
+            elif name == "idle_candidate_days":
+                if isinstance(value, dict):
+                    cleaned = {}
+                    for day, values in value.items():
+                        try:
+                            if date.fromisoformat(day).isoformat() != day:
+                                continue
+                            if not isinstance(values, list) or len(values) != 2:
+                                continue
+                            if any(isinstance(v, bool) for v in values):
+                                continue
+                            seconds, continuous = map(float, values)
+                            if 0 <= seconds <= continuous <= 1e15:
+                                cleaned[day] = [seconds, continuous]
+                        except (TypeError, ValueError, OverflowError):
+                            continue
+                    out[name] = {day: cleaned[day] for day in sorted(cleaned)[-(HISTORY_LIMIT + 1):]}
             elif name == "day":
                 out[name] = str(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             pass
     return cls(**out)
 
@@ -164,8 +195,26 @@ def rollover_daily(state: PersistedState, today: str | None = None):
         return
 
     was_away = state.session.is_away
+    session = state.session
+    # Legacy saves have only a scalar. Preserve their pending current-day tail
+    # before resetting the per-day session counter (including quick restarts).
+    if session.idle_candidate_seconds and not session.idle_candidate_days:
+        pending = min(session.idle_candidate_seconds, session.day_continuous_seconds,
+                      state.daily.active_seconds)
+        if pending > 0:
+            session.idle_candidate_days[state.daily.day] = [pending, session.day_continuous_seconds]
+    pending = session.idle_candidate_days.get(state.daily.day, [0, 0])[0]
+    state.daily.longest_continuous_today = max(
+        state.daily.longest_continuous_today,
+        max(0.0, session.day_continuous_seconds - pending),
+    )
     _archive_daily(state)
     state.daily = DailyStats(day=today)
+    retained_days = {item.day for item in state.history} | {today}
+    session.idle_candidate_days = {
+        day: values for day, values in session.idle_candidate_days.items()
+        if day in retained_days
+    }
     state.session.day_continuous_seconds = 0.0
     if was_away:
         state.daily.away_count = 1

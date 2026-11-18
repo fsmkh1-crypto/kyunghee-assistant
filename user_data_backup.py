@@ -256,7 +256,7 @@ def _clean_json(name: str, data: bytes, data_dir: Path | None = None) -> bytes:
             raise BackupError("AI 설정 파일의 값이 올바르지 않아요.") from None
         return _json_bytes({k: _redact(v) if isinstance(v, str) else v for k, v in asdict(clean).items()})
     if name == "state.json":
-        from state import DailyStats, SessionState, SCHEMA_VERSION as STATE_SCHEMA
+        from state import DailyStats, SessionState, HISTORY_LIMIT, SCHEMA_VERSION as STATE_SCHEMA
         def record(value, cls):
             if not isinstance(value, dict):
                 raise BackupError("타이머 기록 형식이 올바르지 않아요.")
@@ -272,6 +272,21 @@ def _clean_json(name: str, data: bytes, data_dir: Path | None = None) -> bytes:
                             date.fromisoformat(v)
                     except ValueError:
                         raise BackupError("타이머 날짜가 올바르지 않아요.") from None
+                elif field.name == "idle_candidate_days":
+                    if not isinstance(v, dict) or len(v) > HISTORY_LIMIT + 1:
+                        raise BackupError("타이머 날짜별 대기 기록 형식이 올바르지 않아요.")
+                    for day, values in v.items():
+                        if not isinstance(day, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+                            raise BackupError("타이머 날짜별 대기 기록 날짜가 올바르지 않아요.")
+                        try:
+                            date.fromisoformat(day)
+                        except ValueError:
+                            raise BackupError("타이머 날짜별 대기 기록 날짜가 올바르지 않아요.") from None
+                        if (not isinstance(values, list) or len(values) != 2
+                                or any(type(n) not in (int, float) or not math.isfinite(n)
+                                       or not 0 <= n <= 1e15 for n in values)
+                                or values[0] > values[1]):
+                            raise BackupError("타이머 날짜별 대기 기록 값이 올바르지 않아요.")
                 elif type(default) is bool:
                     if type(v) is not bool:
                         raise BackupError("타이머 상태 값이 올바르지 않아요.")
@@ -729,6 +744,7 @@ def restore_backup(archive: Path, data_dir: Path, categories, *, app_is_quiescen
     originals.mkdir()
     applied = []
     rollback_failed = False
+    safe_cleanup = False
     try:
         # Validate again after the current-data backup, before the first replacement.
         _, final_preview = _read_bundle(archive, staging)
@@ -764,24 +780,28 @@ def restore_backup(archive: Path, data_dir: Path, categories, *, app_is_quiescen
         for name in targets:
             target, original, replacement = data_dir / name, originals / name, staging / name
             existed = target.exists()
-            applied.append((name, existed, False))
+            applied.append((name, existed))
             if existed:
                 os.replace(target, original)
-                applied[-1] = (name, existed, True)
             if replacement.exists():
                 os.replace(replacement, target)
-        # Commit before removing originals. A cleanup failure must never cause a
-        # rollback after some originals have already been removed.
+        # Commit before removing originals. Never roll back a committed restore:
+        # cleanup may have already removed some originals.
         (journal / "committed").touch()
-        try:
-            shutil.rmtree(journal)
-        except OSError:
-            pass
+        safe_cleanup = True
         return RestoreResult(recovery, selected)
-    except Exception as error:
-        for name, existed, moved in reversed(applied):
+    except BaseException as error:
+        # A signal can arrive just after touch() succeeds, before Python records
+        # the commit. The on-disk marker is authoritative at that boundary.
+        if (journal / "committed").is_file():
+            safe_cleanup = True
+            raise
+        for name, existed in reversed(applied):
             try:
                 target, original = data_dir / name, originals / name
+                # os.replace can finish before an interruption is delivered.
+                # Inspect the journal rather than a post-replace Python flag.
+                moved = original.exists()
                 if existed and not moved:
                     continue
                 if target.is_dir():
@@ -790,15 +810,19 @@ def restore_backup(archive: Path, data_dir: Path, categories, *, app_is_quiescen
                     target.unlink(missing_ok=True)
                 if moved:
                     os.replace(original, target)
-            except OSError:
+            except BaseException:
+                # Even another termination request must not discard recovery
+                # evidence. Continue restoring other roots where possible.
                 rollback_failed = True
         if rollback_failed:
             raise RestoreRecoveryError("복원과 자동 되돌리기에 실패했어요. 앱을 종료하고 사용자 데이터의 .restore-journal- 폴더와 backups 복구 백업을 보존해 주세요.", recovery) from error
-        if isinstance(error, BackupError):
+        safe_cleanup = True
+        if not isinstance(error, Exception) or isinstance(error, BackupError):
             raise
         raise BackupError("복원에 실패하여 변경 사항을 모두 되돌렸어요. 현재 데이터 복구 백업은 backups 폴더에 있어요.") from error
     finally:
-        if not rollback_failed and journal.exists():
+        # Retain the journal unless commit or complete rollback was proven.
+        if safe_cleanup and journal.exists():
             try:
                 shutil.rmtree(journal)
             except OSError:

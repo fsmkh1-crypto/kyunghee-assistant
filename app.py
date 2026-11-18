@@ -535,7 +535,7 @@ class App:
 
     def _tick_safe(self):
         try:
-            rollover_daily(self.state)
+            # The engine splits the elapsed interval before archiving a day.
             result = self.engine.tick()
 
             if result.became_active:
@@ -619,7 +619,10 @@ class App:
         self.cont.configure(text=fmt_clock(clock_seconds))
         if hasattr(self, "timer_caption"):
             self.timer_caption.configure(text="현재 자리비움 시간" if s.is_away else "연속 집중 시간")
-        if d.break_reminders_suppressed:
+        if not self.preferences.break_reminders:
+            self.remain.configure(text="꺼짐")
+            self.next_break.configure(text="휴식 알림: 꺼짐")
+        elif d.break_reminders_suppressed:
             self.remain.configure(text="오늘 꺼짐")
             self.next_break.configure(text="오늘 휴식 알림: 꺼짐")
         else:

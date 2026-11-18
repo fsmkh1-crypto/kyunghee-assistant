@@ -1,5 +1,6 @@
 import unittest
 from dataclasses import asdict
+from datetime import datetime
 
 from state import DailyStats, PersistedState, SessionState, rollover_daily
 from timer_engine import (
@@ -15,7 +16,7 @@ from timer_engine import (
 class FakeEnv:
     def __init__(self):
         self.mono = 0.0
-        self.wall = 1_000_000.0
+        self.wall = datetime(2026, 9, 2, 12).timestamp()
         self.idle = 0.0
         self.tick = 1
 
@@ -129,6 +130,8 @@ class TimerEngineTests(unittest.TestCase):
         eng.tick()
         self.assertEqual(eng.current_away_duration(), 693)
         self.assertEqual(s.daily.manual_away_seconds, 693)
+        e.wall = datetime(2026, 9, 3, 12).timestamp()
+        eng.last_wall = e.wall
         rollover_daily(s, today="2026-09-03")
         self.assertEqual(s.daily.away_seconds, 0)
         self.assertEqual(s.history[-1].manual_away_seconds, 693)

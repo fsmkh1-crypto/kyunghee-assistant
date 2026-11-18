@@ -4,6 +4,8 @@ Windows productivity timer and virtual secretary.
 
 ## Current development target
 
+`2.1.6-hotfix.1` is a repair candidate based on the 2.1.6 release. It corrects per-date time accounting at midnight, interrupted backup restores, invalid numeric state fields on startup, and disabled break reminder labels. Windows packaging and physical-device verification are separate from the source tests. See [핫픽스 검증 및 사용 안내](docs/HOTFIX_216_1.md).
+
 `2.1.6` — adds named whole image sets assembled from multiple loose files. Assign all ten situations, review the final name and images, save without changing the current selection, then explicitly apply or reselect the set later. Existing image overrides, numbered ZIP sets and backups remain supported. Preserves 2.1.5's Korean input handling and unified timer notices, as well as the earlier timer, chat, inline scrolling and configurable AI features.
 
 The implementation and verification ledger is [docs/IMPLEMENTATION_CHECKLIST_2_1.md](docs/IMPLEMENTATION_CHECKLIST_2_1.md). Windows acceptance steps and remaining physical-device checks are documented separately; automated checks do not imply a live API quality test.
@@ -12,7 +14,7 @@ See [named whole image sets assembled from loose files](docs/NAMED_IMAGE_SETS.md
 
 ## Desktop app
 
-Development is focused on the Windows desktop app. `RUN.cmd` and Windows source autostart launch `desktop_gallery_final.py`. A successful Windows job in the **tests** workflow produces a versioned Windows artifact. When using an authorized GitHub build, sign in and select the package under **Artifacts**. Exit the old running app, extract the new ZIP into its own folder, and keep `SeungaTimer.exe` beside its `_internal` folder. Check the chat title for `2.1.6`; `BUILD_INFO.txt` identifies the package source. The executable package includes Python. For a local Windows source build with Python installed, use `BUILD_WINDOWS.cmd`; its output is separate from older packages.
+Development is focused on the Windows desktop app. `RUN.cmd` and Windows source autostart launch `desktop_gallery_final.py`. A successful Windows job in the **tests** workflow produces a versioned Windows artifact. When using an authorized GitHub build, sign in and select the package under **Artifacts**. Exit the old running app, extract the new ZIP into its own folder, and keep `SeungaTimer.exe` beside its `_internal` folder. For this hotfix, check the chat title for `2.1.6-hotfix.1`; `BUILD_INFO.txt` identifies the package source. The executable package includes Python. For a local Windows source build with Python installed, use `BUILD_WINDOWS.cmd`; its output is separate from older packages.
 
 - Read long speech by scrolling inside the bubble (at most three visible lines). Use its explicit chat button, tray or keyboard shortcut to open chat. Click the timer/character for settings; drag them to move the widget.
 - Screen dice changes the current image until the next situation. Explicit pinning and restoration are available.

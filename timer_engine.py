@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, time as day_time, timedelta
+
+from state import rollover_daily
 import time
 
 IDLE_THRESHOLD_SEC = 5 * 60
@@ -41,8 +44,14 @@ class TimerEngine:
 
         self.last_mono = self.clock()
         self.last_wall = self.wall()
+        # Close the rare midnight race between startup preparation and engine
+        # construction without inventing time while the application was closed.
+        today = datetime.fromtimestamp(self.last_wall).date().isoformat()
+        if today > self.state.daily.day:
+            rollover_daily(self.state, today=today)
         self.last_input_tick = self.idle_provider()[1]
         self.manual_grace_until = 0.0
+        self._restore_idle_candidates()
         if self.state.session.ignored_breaks == 0:
             self.state.session.next_break_at = self.break_interval_sec
 
@@ -72,6 +81,7 @@ class TimerEngine:
         s.next_break_at = self.break_interval_sec
         s.ignored_breaks = 0
         s.idle_candidate_seconds = 0.0
+        s.idle_candidate_days.clear()
 
     def _clear_away(self):
         s = self.state.session
@@ -103,6 +113,7 @@ class TimerEngine:
         _, tick = self.idle_provider()
         s, d = self.state.session, self.state.daily
         if not s.is_away:
+            self._confirm_idle()
             self._finalize_longest()
             d.away_count += 1
         self._reset_active_session()
@@ -125,28 +136,108 @@ class TimerEngine:
         s.ignored_breaks += 1
         s.next_break_at = s.continuous_seconds + self.snooze_sec
 
+    def _restore_idle_candidates(self):
+        s, d = self.state.session, self.state.daily
+        if s.idle_candidate_seconds and not s.idle_candidate_days:
+            pending = min(s.idle_candidate_seconds, s.day_continuous_seconds, d.active_seconds)
+            if pending > 0:
+                s.idle_candidate_days[d.day] = [pending, s.day_continuous_seconds]
+
+    def _day_stats(self, day):
+        if self.state.daily.day == day:
+            return self.state.daily
+        return next((d for d in self.state.history if d.day == day), None)
+
+    def _confirm_idle(self):
+        s = self.state.session
+        for day, (_, continuous) in s.idle_candidate_days.items():
+            d = self._day_stats(day)
+            if d is not None:
+                d.longest_continuous_today = max(d.longest_continuous_today, continuous)
+        s.idle_candidate_days.clear()
+        s.idle_candidate_seconds = 0.0
+
+    def _interval_parts(self, elapsed):
+        """Split a measured duration at local midnights, including DST days.
+
+        The clock remains monotonic; wall time only locates that duration on
+        calendar days. When the wall clock moves back into an archived day,
+        retain new measured time in the current day instead of rewriting history.
+        """
+        end = self.last_wall
+        start = end - elapsed
+        if datetime.fromtimestamp(end).date().isoformat() < self.state.daily.day:
+            yield self.state.daily.day, elapsed
+            return
+        cursor = start
+        while cursor < end:
+            day = datetime.fromtimestamp(cursor).date()
+            midnight = datetime.combine(day + timedelta(days=1), day_time()).timestamp()
+            stop = min(end, midnight)
+            yield day.isoformat(), stop - cursor
+            cursor = stop
+
+    def _select_day(self, day):
+        # New measured intervals must never rewrite an archived day, including
+        # the tick that crosses the same midnight again after a clock rollback.
+        # Deliberate idle reclassification uses _day_stats separately.
+        if day > self.state.daily.day:
+            rollover_daily(self.state, today=day)
+        return self.state.daily
+
+    def _finish_calendar_tick(self):
+        day = datetime.fromtimestamp(self.last_wall).date().isoformat()
+        previous_day = datetime.fromtimestamp(self._previous_wall).date().isoformat()
+        if day > previous_day and day > self.state.daily.day:
+            rollover_daily(self.state, today=day)
+
     def _record_active(self, elapsed: float, provisional_idle: bool):
         if elapsed <= 0:
             return
-        d, s = self.state.daily, self.state.session
-        d.active_seconds += elapsed
-        s.continuous_seconds += elapsed
-        s.day_continuous_seconds += elapsed
-        if provisional_idle:
-            s.idle_candidate_seconds += elapsed
-        else:
-            s.idle_candidate_seconds = 0.0
-            self._finalize_longest()
+        s = self.state.session
+        for day, seconds in self._interval_parts(elapsed):
+            d = self._select_day(day)
+            d.active_seconds += seconds
+            s.continuous_seconds += seconds
+            s.day_continuous_seconds += seconds
+            if provisional_idle:
+                s.idle_candidate_seconds += seconds
+                previous = s.idle_candidate_days.get(d.day, [0, 0])[0]
+                s.idle_candidate_days[d.day] = [previous + seconds, s.day_continuous_seconds]
+            else:
+                self._finalize_longest()
+        self._finish_calendar_tick()
 
     def _record_away(self, elapsed: float, manual: bool):
         if elapsed <= 0:
             return
-        d = self.state.daily
-        d.away_seconds += elapsed
-        if manual:
-            d.manual_away_seconds += elapsed
-        else:
-            d.auto_away_seconds += elapsed
+        for day, seconds in self._interval_parts(elapsed):
+            d = self._select_day(day)
+            d.away_seconds += seconds
+            if manual:
+                d.manual_away_seconds += seconds
+            else:
+                d.auto_away_seconds += seconds
+        self._finish_calendar_tick()
+
+    def _reclassify_idle(self):
+        s = self.state.session
+        total = 0.0
+        for day, (pending, _) in s.idle_candidate_days.items():
+            d = self._day_stats(day)
+            if d is None:
+                continue
+            seconds = min(pending, d.active_seconds)
+            d.active_seconds -= seconds
+            d.away_seconds += seconds
+            d.auto_away_seconds += seconds
+            if seconds > 0:
+                d.away_count += 1
+            if d is self.state.daily:
+                s.day_continuous_seconds = max(0.0, s.day_continuous_seconds - seconds)
+            total += seconds
+        s.continuous_seconds = max(0.0, s.continuous_seconds - total)
+        return total
 
     def _handle_long_gap(
         self,
@@ -164,7 +255,9 @@ class TimerEngine:
 
         if not was_away:
             self._finalize_longest()
-            d.away_count += 1
+            first_recorded_day = next(self._interval_parts(gap))[0]
+            if first_recorded_day <= d.day:
+                d.away_count += 1
             s.away_started_wall = now_wall - gap
 
         # Some clocks pause during suspend. Keep the display/return duration in
@@ -172,6 +265,10 @@ class TimerEngine:
         # recording it again. A virtual monotonic anchor may precede clock zero.
         s.away_started_mono = now_mono - (prior_away_duration + gap)
 
+        # Mark the interval away before splitting so each new day counts the
+        # same ongoing interval once.
+        s.is_away = True
+        self._confirm_idle()
         self._record_away(gap, manual=was_manual)
         self._reset_active_session()
         result.long_gap = True
@@ -199,6 +296,7 @@ class TimerEngine:
         now_wall = self.wall()
 
         previous_mono, previous_wall = self.last_mono, self.last_wall
+        self._previous_wall = previous_wall
         mono_gap = max(0.0, now_mono - previous_mono)
         wall_gap = max(0.0, now_wall - previous_wall)
         self.last_mono = now_mono
@@ -253,29 +351,21 @@ class TimerEngine:
         # A fresh input confirms all short-idle time accumulated so far as real
         # use. It remains in active_seconds and can contribute to longest.
         if input_changed:
-            s.idle_candidate_seconds = 0.0
+            self._confirm_idle()
             self._record_active(elapsed, provisional_idle=False)
         elif idle_sec < IDLE_THRESHOLD_SEC:
             self._record_active(elapsed, provisional_idle=True)
         else:
             # Five minutes without input: retroactively reclassify the entire
             # provisional no-input interval as away, including the current tick.
-            candidate = min(
-                s.idle_candidate_seconds,
-                d.active_seconds,
-                s.continuous_seconds,
-                s.day_continuous_seconds,
-            )
-            if candidate > 0:
-                d.active_seconds -= candidate
-                s.continuous_seconds -= candidate
-                s.day_continuous_seconds -= candidate
-
+            counted_today = s.idle_candidate_days.get(d.day, [0, 0])[0] > 0
+            candidate = self._reclassify_idle()
             self._finalize_longest()
             away_elapsed = candidate + elapsed
-            self._record_away(away_elapsed, manual=False)
-            d.away_count += 1
+            if not counted_today:
+                d.away_count += 1
             s.is_away = True
+            self._record_away(elapsed, manual=False)
             s.manual_away = False
             s.away_started_wall = now_wall - away_elapsed
             s.away_started_mono = now_mono - away_elapsed
