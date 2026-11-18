@@ -11,17 +11,15 @@ from assistant_ai.api import ResponsesClient, UsageLedger, WEB_SEARCH_TOOL
 from assistant_ai.config import AISettings, ConfigStore, DEFAULT_MODEL, MODELS
 
 
-NEW_MODELS = (
-    "gpt-6-luna", "gpt-6.1-terra", "gpt-6-sol", "gpt-6-astra", "gpt-5.4", "gpt-5.5",
-)
+NEW_MODELS = MODELS
 
 
 class ModelSelectionTests(unittest.TestCase):
-    def test_nine_choices_keep_default_and_saved_custom_selections(self):
-        self.assertEqual(len(MODELS), 9)
-        self.assertEqual(len(set(MODELS)), 9)
+    def test_only_62_choices_and_legacy_migration(self):
+        self.assertEqual(len(MODELS), 2)
+        self.assertEqual(len(set(MODELS)), 2)
         self.assertEqual(MODELS[0], DEFAULT_MODEL)
-        self.assertEqual(AISettings().model, "gpt-5.4-mini")
+        self.assertEqual(AISettings().model, "gpt-6.2-sol")
         with TemporaryDirectory() as directory:
             store = ConfigStore(Path(directory))
             for model in (*MODELS, "ft:gpt-5.4-mini:team:assistant:1234", "custom-model"):
@@ -30,7 +28,22 @@ class ModelSelectionTests(unittest.TestCase):
                     if model in MODELS:
                         settings = replace(settings, daily_budget_usd=0.50)
                     store.save(settings)
-                    self.assertEqual(store.load(), settings)
+                    self.assertEqual(store.load(), settings if model in MODELS else replace(settings, model=DEFAULT_MODEL))
+
+    def test_migration_preserves_settings_and_does_not_rewrite_file_on_read(self):
+        with TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory))
+            old = AISettings(model="gpt-6-astra", enabled=True,
+                             daily_budget_usd=0.10, proactive_enabled=True,
+                             conversation_storage_enabled=True, memory_enabled=True,
+                             proactive_interval_minutes=20)
+            store.save(old)
+            original = store.path.read_bytes()
+            migrated = store.load()
+            self.assertEqual(migrated, replace(old, model=DEFAULT_MODEL))
+            self.assertEqual(store.path.read_bytes(), original)
+            store.save(migrated)
+            self.assertEqual(store.load(), migrated)
 
     @unittest.skipUnless(os.name == "nt" or os.environ.get("DISPLAY"), "Tk display required")
     def test_help_changes_with_model_and_does_not_claim_custom_pricing(self):
@@ -46,16 +59,15 @@ class ModelSelectionTests(unittest.TestCase):
             def set(self, value):
                 self.value = value
 
-        window = SimpleNamespace(model=Variable("gpt-6-astra"), price=Variable())
+        window = SimpleNamespace(model=Variable("gpt-6.2-astra"), price=Variable())
         _SettingsWindow._update_price(window)
         self.assertIn("빠른 응답용 low 추론", window.price.get())
-        self.assertIn("입력 $10", window.price.get())
-        self.assertIn("캐시 쓰기 $12.5", window.price.get())
+        self.assertIn("입력 $8", window.price.get())
+        self.assertIn("캐시 쓰기 $10", window.price.get())
         self.assertIn("272,000토큰 초과", window.price.get())
-        window.model.set("gpt-6.1-sol")
+        window.model.set("gpt-6.2-sol")
         _SettingsWindow._update_price(window)
-        self.assertIn("API 기본 추론", window.price.get())
-        self.assertNotIn("low 추론", window.price.get())
+        self.assertIn("low 추론", window.price.get())
         window.model.set("custom-model")
         _SettingsWindow._update_price(window)
         self.assertIn("비용을 추정할 수 없어요", window.price.get())
@@ -109,6 +121,8 @@ class ModelRequestTests(unittest.TestCase):
         # Expected USD totals calculated from official standard prices for the
         # complete billed request, not just the tokens above the threshold.
         cases = {
+            "gpt-6.2-sol": (0.566, 1.127004),
+            "gpt-6.2-astra": (2.264, 4.508016),
             "gpt-6-luna": (0.0284, 0.0565502),
             "gpt-6.1-terra": (0.283, 0.563502),
             "gpt-6-sol": (0.568, 1.131004),

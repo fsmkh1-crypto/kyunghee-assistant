@@ -79,7 +79,7 @@ class ConfigMigrationTests(unittest.TestCase):
             settings = store.load()
             self.assertTrue(settings.proactive_enabled)
             self.assertEqual(settings.proactive_events, ("return",))
-            self.assertEqual(settings.model, "gpt-6.1-sol")
+            self.assertEqual(settings.model, "gpt-6.2-sol")
             self.assertEqual(settings.proactive_interval_minutes, 1)
 
     def test_saved_intervals_and_opt_ins_are_not_reset_by_one_minute_default(self):
@@ -89,7 +89,7 @@ class ConfigMigrationTests(unittest.TestCase):
                 for proactive in (False, True):
                     with self.subTest(minutes=minutes, proactive=proactive):
                         saved = AISettings(
-                            model="gpt-6.1-sol", enabled=True, proactive_enabled=proactive,
+                            model="gpt-6.2-sol", enabled=True, proactive_enabled=proactive,
                             proactive_interval_minutes=minutes, proactive_events=("return", "periodic"),
                             key_persistence="session", memory_enabled=True, conversation_storage_enabled=True,
                             chatter_enabled=not proactive,

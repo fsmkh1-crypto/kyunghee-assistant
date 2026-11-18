@@ -22,15 +22,12 @@ class ModelPrice:
     long_context_after: int | None = None
 
 
-DEFAULT_MODEL = "gpt-5.4-mini"
+DEFAULT_MODEL = "gpt-6.2-sol"
 DEFAULT_WEATHER_LOCATION = "세종시"
-MODELS = (
-    DEFAULT_MODEL, "gpt-6-luna", "gpt-5.6-luna", "gpt-6.1-terra",
-    "gpt-6.1-sol", "gpt-6-sol", "gpt-6-astra", "gpt-5.4", "gpt-5.5",
-)
+MODELS = (DEFAULT_MODEL, "gpt-6.2-astra")
 PROACTIVE_EVENTS = ("rest", "break_started", "away", "return", "leave", "periodic")
 KEY_PERSISTENCE_MODES = ("session", "windows")
-# Standard Responses text prices in USD, checked 2026-11-09:
+# Standard Responses text prices in USD, legacy prices checked 2026-11-09; GPT-6.2 checked 2026-11-18:
 # https://developers.openai.com/api/docs/pricing
 # https://developers.openai.com/api/docs/models/<model-id>
 # GPT-5.6/6 use the default 30-minute cache TTL (1.25x input for writes).
@@ -38,7 +35,9 @@ _MINI_PRICE = ModelPrice(0.75, 0.075, 4.50)
 _GPT54_PRICE = ModelPrice(2.50, 0.25, 15.00, long_context_after=272_000)
 _GPT55_PRICE = ModelPrice(5.00, 0.50, 30.00, long_context_after=272_000)
 MODEL_PRICES = {
-    DEFAULT_MODEL: _MINI_PRICE,
+    "gpt-5.4-mini": _MINI_PRICE,
+    "gpt-6.2-sol": ModelPrice(2.00, 0.10, 10.00, 1.25, 272_000),
+    "gpt-6.2-astra": ModelPrice(8.00, 0.40, 40.00, 1.25, 272_000),
     "gpt-5.4-mini-2026-03-17": _MINI_PRICE,
     "gpt-5.6-luna": ModelPrice(0.20, 0.02, 1.20, 1.25, 272_000),
     "gpt-6.1-sol": ModelPrice(2.00, 0.10, 10.00, 1.25, 272_000),
@@ -52,7 +51,8 @@ MODEL_PRICES = {
     "gpt-5.5-2026-04-23": _GPT55_PRICE,
 }
 MODEL_DESCRIPTIONS = {
-    DEFAULT_MODEL: "기본 모델 · 가벼운 대화와 타이머 제어",
+    DEFAULT_MODEL: "GPT-6.2 Sol · 기본 모델 · 일상 대화와 타이머 제어",
+    "gpt-6.2-astra": "GPT-6.2 Astra · 복잡한 요청 · 높은 비용",
     "gpt-6-luna": "저비용 · 짧은 대화와 자주 하는 작업",
     "gpt-5.6-luna": "기존 Luna · 가벼운 대화",
     "gpt-6.1-terra": "간결한 글쓰기와 도구 작업",
@@ -62,10 +62,10 @@ MODEL_DESCRIPTIONS = {
     "gpt-5.4": "GPT-5.4 · 일반·복합 작업",
     "gpt-5.5": "GPT-5.5 · 복잡한 요청",
 }
-# New choices use low to suit short interactive requests, including web search.
-# Preserve the original mini/Sol API defaults and the original Luna low setting.
-# Do not infer capabilities or pricing for arbitrary user-entered model IDs.
+# Current choices use low for short interactive requests, including web search.
+# Legacy entries remain for historical cost accounting and backward compatibility.
 MODEL_REASONING_EFFORT = {
+    "gpt-6.2-sol": "low", "gpt-6.2-astra": "low",
     "gpt-5.6-luna": "low", "gpt-6-luna": "low", "gpt-6.1-terra": "low",
     "gpt-6-sol": "low", "gpt-6-astra": "low", "gpt-5.4": "low", "gpt-5.5": "low",
 }
@@ -180,6 +180,9 @@ class ConfigStore:
             values["proactive_events"] = tuple(values["proactive_events"])
         settings = AISettings(**values)
         settings.validate()
+        if settings.model not in MODELS:
+            # Migrate only the model; preserve every other setting and budget.
+            settings = AISettings(**{**asdict(settings), "model": DEFAULT_MODEL})
         return settings
 
     def save(self, settings: AISettings) -> None:

@@ -143,7 +143,7 @@ class AssistantAPITests(unittest.TestCase):
         self.assertNotIn("max_output_tokens", payload)
         summary = UsageLedger(self.path, today=lambda: self.day).summary()
         self.assertEqual((summary.requests, summary.input_tokens, summary.output_tokens, summary.total_tokens), (2, 200, 20, 220))
-        self.assertAlmostEqual(summary.estimated_cost_usd, 0.000213)
+        self.assertAlmostEqual(summary.estimated_cost_usd, 0.000524)
         contents = self.ledger.path.read_bytes()
         self.assertNotIn(TEST_KEY.encode(), contents)
         self.assertNotIn(b"ciphertext", contents)
@@ -258,11 +258,11 @@ class AssistantAPITests(unittest.TestCase):
         self.assertEqual((summary.reserved_input_tokens, summary.reserved_output_tokens, summary.reserved_tokens),
                          (30, 32, 62))
         self.assertEqual(summary.allowance_tokens, 172)
-        self.assertAlmostEqual(summary.estimated_cost_usd, 0.0001065)
-        self.assertAlmostEqual(summary.reserved_cost_usd, 0.0001665)
-        self.assertAlmostEqual(summary.allowance_cost_usd, 0.000273)
+        self.assertAlmostEqual(summary.estimated_cost_usd, 0.000262)
+        self.assertAlmostEqual(summary.reserved_cost_usd, 0.000395)
+        self.assertAlmostEqual(summary.allowance_cost_usd, 0.000657)
         self.assertEqual((summary.remaining_requests, summary.remaining_tokens), (6, 828))
-        self.assertAlmostEqual(summary.remaining_budget_usd, 0.009727)
+        self.assertAlmostEqual(summary.remaining_budget_usd, 0.009343)
         self.assertEqual(summary.requests_by_purpose, {"chat": 1, "event": 1, "search": 1, "test": 1})
         unlimited = self.ledger.summary()
         self.assertEqual((unlimited.remaining_requests, unlimited.remaining_tokens, unlimited.remaining_budget_usd),
@@ -278,7 +278,7 @@ class AssistantAPITests(unittest.TestCase):
         pending_id, _, _ = self.ledger._reserve(replace(self.settings, model="custom-model"), 100, 16)
         self.ledger._finish(pending_id, "custom-model", None)
         summary = self.ledger.summary(replace(self.settings, daily_budget_usd=1, daily_token_limit=1000))
-        self.assertAlmostEqual(summary.estimated_cost_usd, 0.0001065)
+        self.assertAlmostEqual(summary.estimated_cost_usd, 0.000262)
         self.assertIsNone(summary.reserved_cost_usd)
         self.assertIsNone(summary.allowance_cost_usd)
         self.assertIsNone(summary.remaining_budget_usd)
@@ -402,7 +402,7 @@ class AssistantAPITests(unittest.TestCase):
             WebSource("자료 이름", cited_url, 5, 7, True),
             WebSource("another.example", fallback_url),
         ))
-        self.assertAlmostEqual(self.ledger.summary().estimated_cost_usd, 0.0101065)
+        self.assertAlmostEqual(self.ledger.summary().estimated_cost_usd, 0.010262)
 
     def test_search_reserves_affordable_call_count_and_honors_reported_discount(self):
         low_budget = replace(self.settings, daily_budget_usd=0.009)
@@ -426,7 +426,7 @@ class AssistantAPITests(unittest.TestCase):
         self.assertGreaterEqual(payload["max_output_tokens"], 16)
         self.assertTrue(result.used_web_search)
         self.assertEqual(result.web_search_calls, 0)
-        self.assertAlmostEqual(self.ledger.summary().estimated_cost_usd, 0.0001065)
+        self.assertAlmostEqual(self.ledger.summary().estimated_cost_usd, 0.000262)
 
     def test_forced_weather_function_does_not_enable_hosted_search(self):
         weather_tool = {"type": "function", "name": "get_weather", "parameters": {"type": "object"}}

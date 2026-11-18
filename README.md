@@ -4,6 +4,8 @@ Windows productivity timer and virtual secretary.
 
 ## Current development target
 
+`2.1.7` keeps only GPT-6.2 Sol and GPT-6.2 Astra in AI settings. Existing model selections migrate to Sol, with other settings and user data preserved. See [GPT-6.2 update](docs/GPT62_UPDATE.md).
+
 `2.1.6-hotfix.1` is a repair candidate based on the 2.1.6 release. It corrects per-date time accounting at midnight, interrupted backup restores, invalid numeric state fields on startup, and disabled break reminder labels. Windows packaging and physical-device verification are separate from the source tests. See [핫픽스 검증 및 사용 안내](docs/HOTFIX_216_1.md).
 
 `2.1.6` — adds named whole image sets assembled from multiple loose files. Assign all ten situations, review the final name and images, save without changing the current selection, then explicitly apply or reselect the set later. Existing image overrides, numbered ZIP sets and backups remain supported. Preserves 2.1.5's Korean input handling and unified timer notices, as well as the earlier timer, chat, inline scrolling and configurable AI features.

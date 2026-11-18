@@ -546,8 +546,10 @@ def _run_packaged_smoke(app_factory, report_path):
                         from assistant_ai.config import MODELS
                         model_settings = windows.settings_window
                         assert tuple(model_settings.model_entry.cget("values")) == MODELS, "model choices missing"
+                        assert MODELS == ("gpt-6.2-sol", "gpt-6.2-astra"), "legacy choices exposed"
+                        assert str(model_settings.model_entry.cget("state")) == "readonly", "model field permits unsupported entries"
                         configured_model = desktop._assistant_service.load_settings().model
-                        model_settings.model.set("gpt-6-astra")
+                        model_settings.model.set("gpt-6.2-astra")
                         root.update()
                         assert "low" in model_settings.price.get(), "model reasoning description missing"
                         assert model_settings.save_button.winfo_viewable(), "model settings save button hidden"
