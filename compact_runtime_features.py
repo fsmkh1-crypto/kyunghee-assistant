@@ -227,6 +227,9 @@ def _install_dynamic_timer_layout(app) -> None:
 
         try:
             _image_width, image_height = self._character_render_size()
+            source = getattr(self, "_character_fit_image", None)
+            if source is not None:
+                image_height = source.height
             _visible_left, visible_top, _visible_right, _visible_bottom = self._character_visible_bounds()
             bottom_gap = max(72, self._message_bottom_gap() + self._message_render_height() + 6)
 

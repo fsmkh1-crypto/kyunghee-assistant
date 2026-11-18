@@ -905,7 +905,9 @@ class CompactDesktopApp(DesktopApp):
         left_margin = 24
         right_margin = 8
         required_width = round(union_width + left_margin + right_margin)
-        width = max(360, required_width, self._character_render_size()[0] + _clock_width + (6 if _clock_width else 0) + 32)
+        source = getattr(self, "_character_fit_image", None)
+        canvas_width = source.width if source is not None else self._character_render_size()[0]
+        width = max(360, required_width, canvas_width + _clock_width + (6 if _clock_width else 0) + 32)
         required_height = max(
             self._scale(self.CHARACTER_MAX[1]) + 130,
             self._character_render_size()[1] + self._character_bottom_gap() + 42,
