@@ -1384,8 +1384,16 @@ class CompactDesktopApp(DesktopApp):
         return speech
 
     def _on_speech_resize(self, event):
+        if getattr(self, "_fitting_timer_viewport", False):
+            return
         if self.current_page == "timer" and event.widget is self._visible_speech():
-            self._apply_widget_appearance()
+            # Tk emits Configure for position-only changes too. Re-layout only
+            # when the speech's dimensions change, otherwise placement itself
+            # can feed an endless geometry notification loop.
+            size = (event.width, event.height)
+            if getattr(self, "_speech_layout_size", None) == size:
+                return
+            self._speech_layout_size = size
             self._resize_for_page("timer")
 
     def _cycle_message(self, _event=None):
